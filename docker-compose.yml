@@ -7,7 +7,7 @@ services:
     container_name: django
     build:
       context: ./system
-    command: python manage.py runserver 0.0.0.0:8000
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 4 --log-level debug --reload --reload-dir /usr/src/app/templates --reload-dir /usr/src/app/static
     volumes: 
       - ./system:/usr/src/app/
     ports:
