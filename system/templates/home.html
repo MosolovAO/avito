@@ -1,0 +1,25 @@
+<!-- templates/home.html -->
+<h1>Список записей</h1>
+<a href="{% url 'add_post' %}">Добавить новую запись</a>
+<ul>
+    {% for post in posts %}
+        <li>
+            <h2>{{ post.title }}</h2>
+            <ul>
+                {% for heading in post.get_headings %}
+                    <li>{{ heading }}</li>
+                {% endfor %}
+            </ul>
+            {% if post.is_running %}
+                <a href="{% url 'stop_post' post.pk %}">Остановить</a>
+            {% else %}
+                <a href="{% url 'start_post' post.pk %}">Запустить</a>
+            {% endif %}
+            <a href="{% url 'edit_post' post.pk %}">Редактировать</a>
+            <form action="{% url 'delete_post' post.pk %}" method="post" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit">Удалить</button>
+            </form>
+        </li>
+    {% endfor %}
+</ul>

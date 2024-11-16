@@ -23,7 +23,12 @@ from django.conf import settings
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', views.notification_page_view, name='notification_page'),
+    path('', views.home, name='home'),
+    path('add/', views.add_post, name='add_post'),
+    path('edit/<int:pk>/', views.edit_post, name='edit_post'),
+    path('delete/<int:pk>/', views.delete_post, name='delete_post'),
+    path('start/<int:pk>/', views.start_post, name='start_post'),
+    path('stop/<int:pk>/', views.stop_post, name='stop_post'),
 
 ] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 

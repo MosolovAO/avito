@@ -1,4 +1,4 @@
-services: 
+services:
   redis:
     image: redis:7.0.11-alpine
 
@@ -7,8 +7,8 @@ services:
     container_name: django
     build:
       context: ./system
-    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 4 --log-level debug --reload --reload-dir /usr/src/app/templates --reload-dir /usr/src/app/static
-    volumes: 
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 1 --log-level debug --reload --reload-include *.html
+    volumes:
       - ./system:/usr/src/app/
     ports:
       - 8001:8000
@@ -22,12 +22,32 @@ services:
     container_name: celery
     build:
       context: ./system
-    command: celery --app=system worker -l INFO
-    volumes: 
-      - ./system:/usr/src/app/  
+    command: celery --app=system worker -l info
+    volumes:
+      - ./system:/usr/src/app/
+    depends_on:
+      - redis
     environment:
       - DEBUG=1
       - SECRET_KEY=042847234525
       - ALLOW_HOSTS=localhost, 127.0.0.1
+  celery-beat:
+    build:
+      context: ./system
+    command: celery --app=system beat -l DEBUG
     depends_on:
-      - redis  
+      - redis
+    environment:
+      - DEBUG=1
+      - SECRET_KEY=042847234525
+      - ALLOW_HOSTS=localhost, 127.0.0.1
+  flower:
+    build:
+      context: ./system
+    command: celery -A system flower
+    volumes:
+      - ./system:/usr/src/app/
+    ports:
+      - 5555:5555
+    depends_on:
+      - celery
