@@ -20,6 +20,7 @@ from cworker import views
 from cworker.consumers import NotificationConsumer
 from django.conf.urls.static import static
 from django.conf import settings
+from avitotask.views import product_create_or_update, product_list
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -29,9 +30,15 @@ urlpatterns = [
     path('delete/<int:pk>/', views.delete_post, name='delete_post'),
     path('start/<int:pk>/', views.start_post, name='start_post'),
     path('stop/<int:pk>/', views.stop_post, name='stop_post'),
+    path('products/', product_list, name='product_list'),
+    path('product/add/', product_create_or_update, name='product_add'),
+    path('product/<int:pk>/edit/', product_create_or_update, name='product_edit'),
 
-] + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+]
 
 websocket_urlpatterns = [
     path("ws/notifications/", NotificationConsumer.as_asgi())
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

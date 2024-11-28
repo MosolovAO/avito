@@ -1,4 +1,6 @@
 from celery import shared_task
+from django.utils.timezone import now
+
 from .models import Product
 from datetime import datetime, timedelta
 
@@ -16,12 +18,12 @@ def update_product_price(product_id):
 
 @shared_task
 def schedule_price_updates():
-    products = Product.objects.all()
-    current_time = datetime.now()  # Naive время
+    products = Product.objects.filter(next_update_time__lte=now())  # Проверяем, какие продукты пора обновить
     for product in products:
-        next_update = product.last_updated.replace(tzinfo=None) + timedelta(seconds=product.update_interval)
-        if current_time >= next_update:
-            update_product_price.delay(product.id)
+        update_product_price.delay(product.id)
+        # Установим новое время обновления, если это требуется
+        product.next_update_time = None  # Или обновить на следующее запланированное время
+        product.save()
 
 
 @shared_task

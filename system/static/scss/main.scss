@@ -1,0 +1,102 @@
+@import "typography";
+
+$balck: #222736;
+$gray: #2A3042;
+$midlle: #262B3C;
+$accent: #556EE6;
+$border: 0,25rem;
+
+.vertical__menu {
+  background-color: $gray;
+  width: 250px;
+  height: 100%;
+  position: fixed;
+}
+
+.main__content {
+  margin-left: 250px;
+  padding: 90px 25px 25px 25px;
+  background-color: $balck;
+}
+
+.header {
+  position: fixed;
+  height: 70px;
+  width: 100%;
+  left: 250px;
+  top: -20px;
+  background-color: $midlle;
+}
+.step-nav {
+  .step-nav-btn {
+    background-color: transparent;
+    border: 1px solid $accent;
+    font-weight: bold;
+    transition: all .5s ease;
+    &:first-child {
+      margin-left: 0;
+    }
+  }
+  .active {
+    background-color: $accent;
+  }
+}
+.main__title {
+  margin-bottom: 15px;
+  font-size: 18px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.form-container {
+  padding: 20px;
+  border-radius: $border;
+  width: 100%;
+  background-color: $gray;
+}
+
+.step {
+  display: none;
+  position: relative;
+  padding: 30px 0;
+  h2 {
+    font-size: 18px;
+    padding-bottom: 15px;
+    &:first-letter {
+      font-weight: bold;
+      color: $accent;
+    }
+  }
+  .next-btn {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+  }
+}
+
+.step.active {
+    display: block;
+}
+
+button {
+    display: inline-block;
+    margin: 10px 5px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    background-color: #007bff;
+    color: #fff;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+button.prev-btn {
+    background-color: #6c757d;
+}
+
+button.prev-btn:hover {
+    background-color: #5a6268;
+}
+

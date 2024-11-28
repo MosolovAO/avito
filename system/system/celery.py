@@ -15,9 +15,10 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 # Автоматически обнаруживаем задачи в приложениях
 app.autodiscover_tasks()
 
+
 app.conf.beat_schedule = {
-    'schedule_price_updates_every_second': {
+    'schedule_price_updates_every_minute': {
         'task': 'avitotask.tasks.schedule_price_updates',
-        'schedule': schedule(10.0),  # Запуск каждую секунду
+        'schedule': crontab(minute='*'),  # Проверка каждую минуту
     },
 }

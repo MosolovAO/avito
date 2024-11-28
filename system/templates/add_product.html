@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+{% extends 'base.html' %}
+{% block content %}
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        .tag-container {
+            display: flex;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            border: 1px solid #ccc;
+            padding: 5px;
+            border-radius: 5px;
+        }
+
+        .tag {
+            background-color: #007BFF;
+            color: white;
+            padding: 5px 10px;
+            margin: 5px;
+            border-radius: 3px;
+            display: flex;
+            flex-direction: row;
+            align-content: center;
+        }
+
+        .tag .remove {
+            margin-left: 5px;
+            cursor: pointer;
+        }
+
+        .tag-input {
+            flex: 1;
+            border: none;
+            outline: none;
+            height: 200px;
+            width: 100%;
+            font-size: 14px;
+            padding: 10px;
+        }
+    </style>
+
+    <h1>{% if product %}Редактировать{% else %}Добавить{% endif %} продукт</h1>
+    <form method="post" id="product-form">
+        {% csrf_token %}
+        <label for="name">Название продукта:</label>
+        <input type="text" name="name" id="name" value="{% if product %}{{ product.name }}{% endif %}" required>
+        <br>
+        <label for="price">Цена:</label>
+        <input type="number" name="price" id="price" value="{% if product %}{{ product.price }}{% endif %}" step="0.01">
+        <br>
+        <label for="titles">Заголовки:</label>
+        <div class="tag-container" id="tag-container">
+            {% if product and product.titles %}
+                {% for title in product.titles %}
+                    <span class="tag">{{ title }} <span class="remove">×</span></span>
+                {% endfor %}
+            {% endif %}
+            <textarea id="tag-input" class="tag-input" placeholder="Введите заголовок и нажмите Enter"> </textarea>
+        </div>
+        <button type="submit">Сохранить</button>
+    </form>
+
+    <script>
+        $(document).ready(function () {
+            let tagContainer = $('#tag-container');
+            let tagInput = $('#tag-input');
+
+            // Отключение отправки формы при нажатии Enter
+            $('#tag-input').on('keypress', function (e) {
+                if (e.which === 13) {  // Проверяем, была ли нажата клавиша Enter
+                    e.preventDefault();  // Останавливаем стандартное поведение (отправку формы)
+                    let tag = tagInput.val().trim();
+                    if (tag) {
+                        let tagHtml = `<span class="tag">${tag} <span class="remove">×</span></span>`;
+                        tagContainer.prepend(tagHtml);
+                        tagInput.val('');  // Очищаем поле ввода
+                    }
+                }
+            });
+
+            // Удаление заголовка
+            tagContainer.on('click', '.remove', function () {
+                $(this).closest('.tag').remove();
+            });
+
+            // Передача данных на сервер
+            $('#product-form').on('submit', function (e) {
+                e.preventDefault();
+
+                // Собираем заголовки
+                let titles = [];
+                tagContainer.find('.tag').each(function () {
+                    titles.push($(this).text().trim().slice(0, -1)); // Убираем "×"
+                });
+
+                // Отправляем данные
+                $.ajax({
+                    url: window.location.href,
+                    method: 'POST',
+                    data: {
+                        name: $('#name').val(),
+                        price: $('#price').val(),
+                        titles: titles,
+                        csrfmiddlewaretoken: '{{ csrf_token }}'
+                    },
+                    success: function () {
+                        window.location.href = "{% url 'product_list' %}";  // Перенаправление
+                    },
+                    error: function () {
+                        alert('Ошибка при сохранении данных');
+                    }
+                });
+            });
+        });
+    </script>
+
+{% endblock %}
