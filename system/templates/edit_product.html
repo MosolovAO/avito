@@ -5,49 +5,25 @@
     <div class="container">
         <div class="row">
             <div class="col-12">
-                <div class="add__product__wrapper">
-                    <h1 class="main__title">Добавить продукт</h1>
+                <div class="edit__product__wrapper">
+                    <h1 class="main__title">Редактировать продукт</h1>
                     <form id="multi-step-form">
-
-                        <!-- Этап 1 -->
+                        <input type="hidden" id="product-id" value="{{ product_id }}">
+                        <!-- Этап 1: Заголовки -->
                         <div class="step active" id="step-1">
-                            <h2 class="pb-5">Шаг 1: Заголовки</h2>
-
-                            <div class="d-flex flex-column align-items-start mb-3 me-3">
-                                <label for="projects">Выберите категории</label>
-                                <select id="projects" name="categories" multiple class="form-select">
-                                    {% for project in projects %}
-                                        <option value="{{ project.id }}">{{ project.project_name }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-
-                            <div class="d-flex flex-column me-3">
-                                <label for="possible__combinations">Возможных комбинаций</label>
-                                <input type="number" id="possible__combinations" value="0">
-                            </div>
-
+                            <h2>Шаг 1: Заголовки</h2>
                             <input id="tag-input" class="tag-input" type="text"
                                    placeholder="Введите заголовок и нажмите Enter">
                             <div id="tag-container" class="tag-container">
-                                <!-- Теги будут добавляться сюда -->
-                            </div>
-                            <div class="container">
-                                <div class="row ">
-                                    <div class="col-6 p-0" style="color: #fff">
-
-
-                                    </div>
-                                    <div class="col-6">
-
-                                    </div>
-                                </div>
+                                {% for title in product.titles %}
+                                    <span class="tag">{{ title }}<span class="remove">×</span></span>
+                                {% endfor %}
                             </div>
                         </div>
 
-                        <!-- Этап 2 -->
+                        <!-- Этап 2: Изображения -->
                         <div class="step" id="step-2">
-                            <h2 class="pb-5">Шаг 2: Изображения</h2>
+                            <h2>Шаг 2: Изображения</h2>
                             <div class="container">
                                 <div class="row">
                                     <div class="col-6 p-0 pe-3">
@@ -57,45 +33,67 @@
                                                 или нажмите,
                                                 чтобы выбрать
                                             </div>
-                                            <div id="main-images-thumbnails" class="thumbnails"></div>
+                                            <div id="main-images-thumbnails" class="thumbnails">
+                                                {% for image in product.main_images %}
+                                                    <div class="thumbnail">
+                                                        <img src="{{ image }}" alt="Основное изображение">
+                                                        <button class="remove">×</button>
+                                                    </div>
+                                                {% endfor %}
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="col-6 p-0 ps-3 ">
                                         <div id="additional-images-container" class="image-upload-container">
                                             <h3>Дополнительные изображения</h3>
                                             <div id="additional-images-dropzone" class="dropzone">Перетащите изображения
-                                                сюда или
-                                                нажмите, чтобы выбрать
+                                                сюда
+                                                или нажмите, чтобы выбрать
                                             </div>
-                                            <div id="additional-images-thumbnails" class="thumbnails"></div>
+                                            <div id="additional-images-thumbnails" class="thumbnails">
+                                                {% for image in product.additional_images %}
+                                                    <div class="thumbnail">
+                                                        <img src="{{ image }}" alt="Дополнительное изображение">
+                                                        <button class="remove">×</button>
+                                                    </div>
+                                                {% endfor %}
+                                            </div>
                                         </div>
                                     </div>
-
                                 </div>
                             </div>
-
-
                         </div>
 
-                        <!-- Этап 3 -->
+                        <!-- Этап 3: Описания -->
                         <div class="step" id="step-3">
-                            <h2 class="pb-5">Шаг 3: Описания</h2>
+                            <h2>Шаг 3: Описания</h2>
                             <div class="accordion" id="description-accordion">
-                                <!-- Вкладки будут добавляться сюда -->
+                                {% for key, description in product.descriptions.items %}
+                                    <div class="accordion-item">
+                                        <div class="accordion-header" data-bs-toggle="collapse"
+                                             data-bs-target="#desc-{{ key }}">
+                                            {{ key }}
+                                        </div>
+                                        <div class="accordion-body collapse" id="desc-{{ key }}">
+                                            <textarea id="editor-{{ key }}"
+                                                      class="description-editor">{{ description }}</textarea>
+                                        </div>
+                                    </div>
+                                {% endfor %}
                             </div>
                             <button type="button" id="add-description-btn" class="btn btn-primary mt-3">Добавить
                                 описание
                             </button>
                         </div>
 
-                        <!-- Этап 4 -->
+                        <!-- Этап 4: Адреса -->
                         <div class="step" id="step-4">
-                            <h2 class="pb-5">Шаг 4: Адреса</h2>
+                            <h2>Шаг 4: Адреса</h2>
                             <textarea id="addresses" class="address"
-                                      placeholder="Введите каждый адрес с новой строки"></textarea>
+                                      placeholder="Введите каждый адрес с новой строки">{{ product.addresses }}</textarea>
                         </div>
 
-                        <!-- Этап 5 -->
+                        <!-- Этап 5: Опции -->
                         <div class="step" id="step-5">
                             <h2 class="pb-5">Шаг 5: Опции товара</h2>
                             <div class="container">
@@ -113,7 +111,7 @@
                                         <div id="price-static"
                                              class="price__fix flex-column align-items-start mb-3">
                                             <label for="price__fix">Цена в объявлении</label>
-                                            <input type="number" id="price__fix" value="0">
+                                            <input type="number" id="price__fix" value="{{ product.price }}">
                                         </div>
 
                                         <div id="price-dynamic"
@@ -122,71 +120,97 @@
                                             <div class="d-flex flex-row flex-wrap mb-3">
                                                 <div class="d-flex flex-column me-3">
                                                     <label for="price__min">Минимальная цена</label>
-                                                    <input type="number" id="price__min" value="0">
+                                                    <input type="number" id="price__min"
+                                                           value="{{ product.price_min }}">
                                                 </div>
                                                 <div class="d-flex flex-column me-3">
                                                     <label for="price__max">Максимальная цена</label>
-                                                    <input type="number" id="price__max" value="0">
+                                                    <input type="number" id="price__max"
+                                                           value="{{ product.price_max }}">
                                                 </div>
                                                 <div class="d-flex flex-column">
                                                     <label for="price__step">Шаг цены</label>
-                                                    <input type="number" id="price__step" value="0">
+                                                    <input type="number" id="price__step"
+                                                           value="{{ product.price_step }}">
                                                 </div>
                                             </div>
                                         </div>
-
-                                        <span class="separator"></span>
 
                                         <h2 class="pt-3">Cтандартный опции</h2>
                                         <div class="d-flex flex-row flex-wrap">
                                             <div class="d-flex flex-column align-items-start mb-3 me-3">
                                                 <label for="category">Категория</label>
-                                                <input type="text" id="category" name="category">
+                                                <input type="text" id="category" name="category"
+                                                       value="{{ product.category }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3 me-3">
                                                 <label for="listingfee">Стратегия размещения</label>
-                                                <input type="text" id="listingfee" name="listingfee">
+                                                <input type="text" id="listingfee" name="listingfee"
+                                                       value="{{ product.listingfee }}">
                                             </div>
 
                                             <div class="d-flex flex-column align-items-start mb-3">
                                                 <label for="email">E-mail</label>
-                                                <input type="email" id="email" name="email">
+                                                <input type="email" id="email" name="email" value="{{ product.email }}">
                                             </div>
 
                                             <div class="d-flex flex-column align-items-start mb-3 me-3">
                                                 <label for="contactphone">Телефон</label>
-                                                <input type="number" id="contactphone" name="contactphone">
+                                                <input type="number" id="contactphone" name="contactphone"
+                                                       value="{{ product.contactphone }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3">
                                                 <label for="managername">Имя менеджера</label>
-                                                <input type="text" id="managername" name="managername">
+                                                <input type="text" id="managername" name="managername"
+                                                       value="{{ product.managername }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3 me-3">
                                                 <label for="avitostatus">Статус</label>
-                                                <input type="text" id="avitostatus" name="avitostatus">
+                                                <input type="text" id="avitostatus" name="avitostatus"
+                                                       value="{{ product.avitostatus }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3 ">
                                                 <label for="companyname">Название компании</label>
-                                                <input type="text" id="companyname" name="companyname">
+                                                <input type="text" id="companyname" name="companyname"
+                                                       value="{{ product.companyname }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3 me-3">
                                                 <label for="contactmethod">Связаться</label>
-                                                <input type="text" id="contactmethod" name="contactmethod">
+                                                <input type="text" id="contactmethod" name="contactmethod"
+                                                       value="{{ product.contactmethod }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3">
                                                 <label for="adtype">Вид объявления</label>
-                                                <input type="text" id="adtype" name="adtype">
+                                                <input type="text" id="adtype" name="adtype"
+                                                       value="{{ product.adtype }}">
                                             </div>
                                             <div class="d-flex flex-column align-items-start mb-3">
                                                 <label for="availability">Наличие</label>
-                                                <input type="text" id="availability" name="availability">
+                                                <input type="text" id="availability" name="availability"
+                                                       value="{{ product.availability }}">
                                             </div>
                                         </div>
                                     </div>
                                     <div class="col-6 p-0">
                                         <h2 class="">Обязательные значения</h2>
                                         <div id="options-container">
-                                            <!-- Список выбранных опций будет добавляться сюда -->
+                                            {% for option in product.options.all %}
+                                                <div class="option-group">
+                                                    <select class="option-select">
+                                                        <option value="{{ option.id }}"
+                                                                selected>{{ option.option_title }}</option>
+                                                    </select>
+                                                    <select class="value-select">
+                                                        {% for value in option.option_value %}
+                                                            <option value="{{ value }}"
+                                                                    {% if value == option.selected_value %}selected{% endif %}>
+                                                                {{ value }}
+                                                            </option>
+                                                        {% endfor %}
+                                                    </select>
+                                                    <button class="remove-option">×</button>
+                                                </div>
+                                            {% endfor %}
                                         </div>
                                         <button type="button" id="add-option-btn" class="btn btn-primary mt-3">
                                             Добавить опцию
@@ -202,18 +226,18 @@
                         <div class="button-container">
                             <button type="button" id="prev-btn" disabled>Назад</button>
                             <button type="button" id="next-btn">Далее</button>
-                            <button type="button" id="submit-btn" style="display: none;">Сохранить</button>
+                            <button type="button" id="submit-btn" style="display: none;">Сохранить изменения</button>
                         </div>
                     </form>
                 </div>
             </div>
         </div>
-
-
     </div>
+
 
     <script src="{% static 'js/tasks_add.js' %}"></script>
     <script src="https://cdn.tiny.cloud/1/yqlhvg2vyiipkl8rrsd93gbyako7r1hroor149rozimqhn34/tinymce/7/tinymce.min.js"
             referrerpolicy="origin"></script>
+
 
 {% endblock %}

@@ -1,17 +1,44 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Список продуктов</title>
-</head>
-<body>
-    <h1>Список продуктов</h1>
-    <ul>
-        {% for product in products %}
-            <li>{{ product.name }} — {{ product.price }}</li>
-        {% endfor %}
-    </ul>
-    <a href="{% url 'product_add' %}">Добавить новый продукт</a>
-</body>
-</html>
+{% extends 'base.html' %}
+{% block content %}
+    <section class="heading">
+        <div class="container">
+            <div class="row pb-4">
+                <div class="col-8 d-flex justify-content-start align-items-center">
+                    <h1 class="main__title">Список продуктов</h1>
+                </div>
+                <div class="col-4 d-flex justify-content-end align-items-center">
+                    <a href="{% url 'product_add' %}" class="btn btn-success">Добавить новый продукт</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="task__wrapper">
+        <div class="container">
+            <div class="row row-cols-4">
+                {% for product in products %}
+                    <div class="col">
+                        <div class="task">
+                            <div class="task__topline">
+                                <h3 class="task__name">{{ product.name }}</h3>
+                                <span class="task__status"></span>
+                            </div>
+                            <a href="/products/edit/{{ product.id }}" class="btn-small btn-success ">Изменить</a>
+
+                            <p class="mt-3" style="font-size: 12px">Используется заголовков:
+                                <strong><span>{{ product.title_count }}</span></strong></p>
+                            <p>Раписание: <span>Каждый день</span></p>
+                            <p>Время: <span>08:00, 13:00</span></p>
+                            {% for project in product.projects.all %}
+                                <span style="font-size: 12px; font-weight: bold">{{ project.project_name }}{% if not forloop.last %}, {% endif %}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% endfor %}
+
+            </div>
+        </div>
+    </section>
+
+
+{% endblock %}

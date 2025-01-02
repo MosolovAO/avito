@@ -1,22 +1,59 @@
+@import "_vars";
 @import "typography";
-
-$balck: #222736;
-$gray: #2A3042;
-$midlle: #262B3C;
-$accent: #556EE6;
-$border: 0,25rem;
-
+html, body {
+  min-height: 100vh;
+  background-color: $balck;
+}
 .vertical__menu {
   background-color: $gray;
   width: 250px;
   height: 100%;
   position: fixed;
+  padding: 15px 0;
+
+  .menu__brand {
+    color: #fff;
+    font-weight: bold;
+    font-size: 32px;
+    text-align: center;
+  }
+
+  .menu__title {
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: #6a7187;
+    padding: 12px 20px;
+  }
+
+  .menu {
+    &__item {
+      padding: .625rem 1.5rem;
+
+      svg {
+        margin-right: 10px;
+      }
+
+      a {
+        color: #a6b0cf;
+        text-decoration: none;
+        font-weight: normal;
+        font-size: 14px;
+        transition: all .5s ease;
+
+        &:hover {
+          color: white;
+        }
+      }
+    }
+  }
 }
 
 .main__content {
   margin-left: 250px;
   padding: 90px 25px 25px 25px;
   background-color: $balck;
+  min-height: 100vh
 }
 
 .header {
@@ -27,26 +64,31 @@ $border: 0,25rem;
   top: -20px;
   background-color: $midlle;
 }
+
 .step-nav {
   .step-nav-btn {
     background-color: transparent;
     border: 1px solid $accent;
     font-weight: bold;
     transition: all .5s ease;
+
     &:first-child {
       margin-left: 0;
     }
   }
+
   .active {
     background-color: $accent;
   }
 }
+
 .main__title {
   margin-bottom: 15px;
   font-size: 18px;
   font-weight: bold;
   text-transform: uppercase;
 }
+
 .form-container {
   padding: 20px;
   border-radius: $border;
@@ -58,14 +100,17 @@ $border: 0,25rem;
   display: none;
   position: relative;
   padding: 30px 0;
+
   h2 {
     font-size: 18px;
     padding-bottom: 15px;
+
     &:first-letter {
       font-weight: bold;
       color: $accent;
     }
   }
+
   .next-btn {
     position: absolute;
     bottom: 0;
@@ -74,29 +119,227 @@ $border: 0,25rem;
 }
 
 .step.active {
-    display: block;
+  display: block;
 }
 
-button {
-    display: inline-block;
-    margin: 10px 5px;
-    padding: 10px 20px;
+.add__product__wrapper, .edit__product__wrapper {
+  background-color: $gray;
+  border-radius: $border;
+  box-shadow: 0 .75rem 1.5rem rgba(18, 38, 63, .03);
+  padding: 20px;
+}
+
+/// TAG CONTAINER
+.tag-input {
+  width: 100%;
+}
+
+.tag-container {
+  margin-top: 30px;
+  min-height: 100px;
+  border: 1px solid #353d55;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  padding: 10px;
+  border-radius: $border;
+
+  .tag {
+    background-color: $accent;
+    margin: 0 10px 10px 0;
+    padding: 5px 10px;
+    border-radius: 0.25rem;
+
+    .remove {
+      cursor: pointer;
+      margin-left: 10px;
+      padding-left: 10px;
+      border-left: 1px dashed $accent-hover;
+    }
+  }
+}
+
+/////////////////
+
+
+.image-upload-container {
+  margin-bottom: 20px;
+
+  h3 {
+    font-size: 14px;
+    padding-bottom: 15px;
+  }
+}
+
+.dropzone {
+  border: 2px dashed #353d55;
+  border-radius: 5px;
+  padding: 40px 70px;
+  text-align: center;
+  color: #353d55;
+  font-weight: bold;
+  cursor: pointer;
+  margin-bottom: 10px;
+
+  .dragover {
+    border-color: #0056b3;
+    background-color: #f1faff;
+  }
+}
+
+
+.thumbnails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-height: 220px;
+  overflow: scroll;
+}
+
+.thumbnail {
+  width: 119px;
+  height: 90px;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+
+  .remove {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    background: red;
+    color: white;
     border: none;
-    border-radius: 5px;
-    background-color: #007bff;
-    color: #fff;
+    border-radius: 50%;
     cursor: pointer;
+    font-size: 22px;
+    width: 20px;
+    height: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  img {
+    max-width: 100%;
+    max-height: 100%;
+  }
 }
 
-button:hover {
-    background-color: #0056b3;
+
+.accordion {
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  margin-bottom: 10px;
+  padding: 10px;
 }
 
-button.prev-btn {
-    background-color: #6c757d;
+.accordion-item {
+  margin-bottom: 10px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  overflow: hidden;
 }
 
-button.prev-btn:hover {
-    background-color: #5a6268;
+.accordion-header {
+  background-color: #f9f9f9;
+  padding: 10px;
+  cursor: pointer;
+  font-weight: bold;
+  border-bottom: 1px solid #ddd;
 }
 
+.show {
+  display: block !important;
+}
+
+.accordion-body {
+  padding: 10px;
+  display: none;
+  background-color: #fff;
+}
+
+.accordion-body.active {
+  display: block;
+}
+
+//// АДРЕСА
+
+.address {
+  width: 50%;
+  min-height: 300px;
+  border-radius: $border;
+  background-color: transparent;
+  padding: 20px;
+  color: #fff;
+}
+
+
+///// ОПЦИИ ТОВАРА
+
+#price-type {
+  padding: 12px;
+  width: 205px;
+}
+
+#price-static {
+  display: flex;
+}
+#price-dynamic {
+  display: flex;
+}
+.option-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.option-group select {
+  padding: 10px;
+  border-radius: 3px;
+  border: 1px solid #ccc;
+  width: 45%;
+}
+
+.option-group .remove-option {
+  cursor: pointer;
+  color: red;
+  font-weight: bold;
+}
+
+//// TASK_ITEM
+.task__wrapper {
+  .task {
+    margin-bottom: 15px;
+    background-color: $gray;
+    padding: 20px;
+    border-radius: $border;
+
+    .task__topline {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      margin-bottom: 15px;
+      justify-content: space-between;
+      .task__name {
+        font-size: 16px;
+      }
+      .task__status {
+        display: block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background-color: red;
+      }
+    }
+
+  }
+}
+
+//////

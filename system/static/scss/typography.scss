@@ -1,6 +1,110 @@
-h1, h2, h3, h4, h5, h6, p, span {
+@import "_vars";
+
+h1, h2, h3, h4, h5, h6, p, span, button {
   padding: 0;
   margin: 0;
   color: #fff;
-  font-family: "Nunito Sans", sans-serif;
+  font-family: "Golos Text", sans-serif;
+  font-optical-sizing: auto;
 }
+
+ul {
+  padding: 0;
+  margin: 0;
+  list-style-type: none;
+}
+
+button {
+  display: inline-block;
+  margin: 10px 5px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 5px;
+  background-color: $accent;
+  color: #fff;
+  cursor: pointer;
+  transition: all .5s ease;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+button:hover {
+  background-color: $accent-hover;
+}
+
+input {
+  border: 2px solid #353d55;
+  background-color: transparent;
+  border-radius: $border;
+  padding: 7.5px 12px;
+  color: #fff;
+
+  &:focus {
+    border: 1px solid red;
+  }
+}
+
+.separator {
+  margin: 30px 0;
+  height: 1px;
+  width: 100%;
+  display: block;
+  border-bottom: 1px solid $accent;
+}
+
+.btn {
+  padding: 7px 12px;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  transition: all .5s ease;
+  font-size: 14px;
+}
+
+.btn-large {
+  padding: 15px 30px;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  transition: all .5s ease;
+  font-size: 16px;
+
+  &:hover {
+    background-color: $accent-hover;
+  }
+}
+
+.btn-small {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  transition: all .5s ease;
+  font-size: 12px;
+
+  &:hover {
+    background-color: $accent-hover;
+  }
+}
+
+.btn-primary {
+  background-color: $accent;
+  text-decoration: none;
+
+  &:hover {
+    background-color: $accent-hover;
+  }
+}
+
+.btn-success {
+  background-color: $success;
+  text-decoration: none;
+
+  &:hover {
+    background-color: $accent-hover;
+  }
+}
+

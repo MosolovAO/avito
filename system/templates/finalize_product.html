@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+    <h1>Подтвердите сохранение продукта</h1>
+    <h2>Основные данные</h2>
+    <ul>
+        <li><strong>Заголовки:</strong> {{ product_data.titles }}</li>
+        <li><strong>Главные изображения:</strong> {{ product_data.main_images }}</li>
+        <li><strong>Дополнительные изображения:</strong> {{ product_data.additional_images }}</li>
+        <li><strong>Описания:</strong> {{ product_data.descriptions }}</li>
+        <li><strong>Адреса:</strong> {{ product_data.addresses }}</li>
+    </ul>
+
+    <h2>Опции</h2>
+    <ul>
+        <li><strong>Название:</strong> {{ option_data.option_title }}</li>
+        <li><strong>Значения:</strong> {{ option_data.option_value }}</li>
+    </ul>
+
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit">Сохранить</button>
+    </form>
+{% endblock %}

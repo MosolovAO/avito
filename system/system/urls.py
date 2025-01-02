@@ -1,26 +1,13 @@
-"""
-URL configuration for system project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
 from django.contrib import admin
 from django.urls import path
+
+from avitotask.utils import upload_images
 from cworker import views
 from cworker.consumers import NotificationConsumer
 from django.conf.urls.static import static
 from django.conf import settings
-from avitotask.views import product_create_or_update, product_list
+from avitotask.views import product_list, finalize_product_form, product_add, get_product_options, product_edit, \
+    get_product_data, product_random
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -31,8 +18,12 @@ urlpatterns = [
     path('start/<int:pk>/', views.start_post, name='start_post'),
     path('stop/<int:pk>/', views.stop_post, name='stop_post'),
     path('products/', product_list, name='product_list'),
-    path('product/add/', product_create_or_update, name='product_add'),
-    path('product/<int:pk>/edit/', product_create_or_update, name='product_edit'),
+    path('products/add/', product_add, name='product_add'),
+    path('products/finish/', finalize_product_form, name='finalize_product_form'),
+    path('products/<int:product_id>/upload-images/', upload_images, name='upload_images'),
+    path('options/', get_product_options, name='get_product_options'),
+    path('products/edit/<int:product_id>/', product_edit, name='product_edit'),
+    path('products/random/<int:product_id>/', product_random, name='product_random'),
 
 ]
 
@@ -41,4 +32,8 @@ websocket_urlpatterns = [
 ]
 
 if settings.DEBUG:
+    # Обслуживание статических файлов
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+
+    # Обслуживание медиафайлов
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
