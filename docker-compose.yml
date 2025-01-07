@@ -7,15 +7,15 @@ services:
     container_name: django
     build:
       context: ./system
-    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 1 --log-level debug --reload --reload-include *.html
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 80 --workers 1 --log-level debug --reload --reload-include *.html
     volumes:
       - ./system:/usr/src/app/
     ports:
-      - 8001:8000
+      - 8001:80
     environment:
       - DEBUG=1
       - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1
+      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
     depends_on:
       - redis
   celery:
@@ -30,7 +30,7 @@ services:
     environment:
       - DEBUG=1
       - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1
+      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
   celery-beat:
     build:
       context: ./system
@@ -40,7 +40,7 @@ services:
     environment:
       - DEBUG=1
       - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1
+      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
   flower:
     build:
       context: ./system

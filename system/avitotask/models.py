@@ -1,8 +1,20 @@
+import calendar
 import os
 import random
 from datetime import timedelta, datetime
-
 from django.db import models
+
+from system import settings
+
+RUS_TO_ENG_DAYS = {
+    'Пн': 'Monday',
+    'Вт': 'Tuesday',
+    'Ср': 'Wednesday',
+    'Чт': 'Thursday',
+    'Пт': 'Friday',
+    'Сб': 'Saturday',
+    'Вс': 'Sunday',
+}
 
 
 def product_image_upload_to(instance, filename):
@@ -37,6 +49,11 @@ class Product(models.Model):
     price_max = models.IntegerField(null=True, blank=True, default=0)
     price_step = models.IntegerField(null=True, blank=True, default=0)
     possible_combinations = models.IntegerField(null=True, blank=True, default=0)
+    schedule = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Расписание обновлений в формате {'Monday': '13:00', 'Saturday': '14:00'}"
+    )
     next_update_time = models.DateTimeField(
         null=True, blank=True,
         help_text="Точное время следующего обновления цены"
@@ -70,6 +87,44 @@ class Product(models.Model):
 
     projects = models.ManyToManyField(Project, related_name="projects")
 
+    def update_next_update_time(self):
+        """
+        Обновляет `next_update_time` в соответствии с расписанием.
+        """
+        if not self.schedule:
+            return
+
+        now = datetime.now()
+        current_day_eng = now.strftime('%A')  # Английское название текущего дня недели
+        current_time = now.time()
+
+        # Преобразуем расписание в английский формат
+        schedule_eng = {
+            RUS_TO_ENG_DAYS[rus_day]: time for rus_day, time in self.schedule.items()
+        }
+
+        # Сортируем дни недели и время
+        sorted_schedule = sorted(
+            [(day, datetime.strptime(time, '%H:%M').time()) for day, time in schedule_eng.items()],
+            key=lambda x: (current_day_eng != x[0], x[1])
+        )
+
+        for day, time in sorted_schedule:
+            day_index = list(calendar.day_name).index(day)
+            current_index = now.weekday()
+
+            if day_index > current_index or (day_index == current_index and time > current_time):
+                next_day = now + timedelta(days=(day_index - current_index))
+                self.next_update_time = datetime.combine(next_day, time)
+                self.save()
+                return
+
+        # Если ближайшее время в следующей неделе
+        first_day, first_time = sorted_schedule[0]
+        next_day = now + timedelta(days=(7 - current_index + list(calendar.day_name).index(first_day)))
+        self.next_update_time = datetime.combine(next_day, first_time)
+        self.save()
+
     def update_selected_options(self):
         assignments = self.productoptionassignment_set.select_related('option').all()
         self.selected_options = {
@@ -88,7 +143,7 @@ class Product(models.Model):
         return random.choice(list(self.descriptions.values()))
 
     def random_main_image(self):
-        return random.choice(self.main_images)
+        return f"localhost:8001{random.choice(self.main_images)}"
 
     def random_additional_image(self, count=9):
         if len(self.additional_images) <= count:

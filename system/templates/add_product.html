@@ -198,6 +198,32 @@
 
                         </div>
 
+                        <!-- Этап 6 -->
+                        <div class="step" id="step-6">
+                            <h2 class="pb-5">Шаг 6: Расписание</h2>
+                            <div class="schedule-container">
+                                <table>
+                                    <thead>
+                                    <tr>
+                                        <th>День недели</th>
+                                        <th>Время</th>
+                                    </tr>
+                                    </thead>
+                                    <tbody>
+                                    {% for day in days %}
+                                        <tr>
+                                            <td>{{ day }}</td>
+                                            <td>
+                                                <input type="time" name="schedule[{{ day }}]"/>
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+
                         <!-- Навигация -->
                         <div class="button-container">
                             <button type="button" id="prev-btn" disabled>Назад</button>

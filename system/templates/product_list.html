@@ -27,10 +27,16 @@
 
                             <p class="mt-3" style="font-size: 12px">Используется заголовков:
                                 <strong><span>{{ product.title_count }}</span></strong></p>
-                            <p>Раписание: <span>Каждый день</span></p>
-                            <p>Время: <span>08:00, 13:00</span></p>
+                            <p style="font-size: 12px; font-weight: bold">Раписание: <span>Каждый день</span></p>
+                            <ul style="color:white; font-size: 12px; padding: 10px 0;">
+                                {% for day, time in product.schedule.items %}
+                                    <li>{{ day }}: {{ time }}</li>
+                                {% endfor %}
+                            </ul>
+                            <p>Проекты:</p>
                             {% for project in product.projects.all %}
-                                <span style="font-size: 12px; font-weight: bold">{{ project.project_name }}{% if not forloop.last %}, {% endif %}</span>
+                                <span style="font-size: 12px; font-weight: bold">{{ project.project_name }}
+                                        {% if not forloop.last %}, {% endif %}</span>
                             {% endfor %}
                         </div>
                     </div>

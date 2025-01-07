@@ -343,3 +343,13 @@ html, body {
 }
 
 //////
+
+.schedule-table {
+  display: block;
+  overflow: scroll;
+  color: #fff;
+  font-size: 12px;
+  td {
+    text-align: center;
+  }
+}

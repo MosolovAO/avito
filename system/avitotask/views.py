@@ -1,16 +1,24 @@
 import json
 import os
 from datetime import datetime, timedelta
+from time import strftime
 
 from django.db.models import Q
 from django.shortcuts import render, redirect, get_object_or_404
-
+import string
 from .models import Product1, Product, ProductOptions, ProductOptionAssignment, Project
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import random
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment
+
+
+# Функция для генерации случайного ID
+def generate_random_id(length=16):
+    """Генерирует случайный ID из букв и цифр."""
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choices(characters, k=length))
 
 
 def product_random(request, product_id):
@@ -27,6 +35,8 @@ def product_random(request, product_id):
     existing_records = Product1.objects.filter(
         Q(task_id=product_id) & Q(created_date__gte=cutoff_date)
     ).count()
+
+    date_end = (datetime.now() + timedelta(days=31)).strftime('%Y-%m-%d')
 
     if existing_records >= product.possible_combinations:
         return JsonResponse({'error': 'Все возможные комбинации уже созданы.'}, status=400,
@@ -76,7 +86,6 @@ def product_random(request, product_id):
             new_product.save()
 
             # Создание или обновление Excel файла
-
             for project in projects:
                 file_path = f"{project}_avito_autoload.xlsx"
 
@@ -91,12 +100,14 @@ def product_random(request, product_id):
                         ws.title = "Products"
                         # Добавляем заголовки, если файл создается впервые
                         ws.append(
-                            ["Title", "ImageUrls", "Description", "Category", "Price", "ListingFee", "EMail",
+                            ["Id", "DateEnd", "Title", "ImageUrls", "Description", "Category", "Price", "ListingFee", "EMail",
                              "ContactPhone", "ManagerName", "AvitoStatus", "CompanyName", "ContactMethod", "AdType",
                              "Availability", "Address"])
 
                     # Добавляем данные нового продукта
                     row_data = {
+                        "Id": generate_random_id(),
+                        "DateEnd": date_end,
                         "Title": product_title,
                         "ImageUrls": " | ".join(product_images),
                         "Description": product_descriptions,
@@ -112,6 +123,7 @@ def product_random(request, product_id):
                         "AdType": product.adtype,
                         "Availability": product.availability,
                         "Address": product_addres,
+
                     }
 
                     # Обработка опций через ProductOptionAssignment
@@ -136,6 +148,8 @@ def product_random(request, product_id):
                     # Сохраняем файл
                     wb.save(file_path)
 
+            product.update_next_update_time()
+
             return JsonResponse({
                 'matches': matches,
                 'random_title': product_title,
@@ -153,7 +167,14 @@ def product_add(request):
 
     projects = Project.objects.all()
 
-    context = {'projects': projects}
+    hours = [f"{hour:02}:00" for hour in range(24)]
+    days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+    context = {
+        'projects': projects,
+        'hours': hours,
+        'days': days
+    }
 
     return render(request, 'add_product.html', context=context)
 
@@ -219,7 +240,7 @@ def finalize_product_form(request):
                 product.price_max = data['price_max']
                 product.price_min = data['price_min']
                 product.price_step = data['price_step']
-
+                product.schedule = data.get('schedule', {})
                 product.save()
 
                 # Обновляем опции
@@ -257,9 +278,9 @@ def finalize_product_form(request):
                     price_min=data['price_min'],
                     price_step=data['price_step'],
                     possible_combinations=data['possible_combinations'],
-
+                    schedule=data.get('schedule', {}),
                 )
-
+                product.update_next_update_time()
                 product.projects.set(projects)
 
                 for option_data in data.get('options', []):

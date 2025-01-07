@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     'cworker',
     'avitotask',
     'channels',
@@ -72,7 +73,6 @@ STATICFILES_FINDERS = [
     'sass_processor.finders.CssFinder',
 ]
 
-
 WSGI_APPLICATION = 'system.wsgi.application'
 
 # Database
@@ -111,7 +111,6 @@ LANGUAGE_CODE = 'en-us'
 USE_I18N = True
 
 USE_TZ = True
-
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'static'

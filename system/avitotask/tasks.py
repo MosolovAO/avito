@@ -21,7 +21,7 @@ def update_product_price(product_id):
 def schedule_price_updates():
     products = Product.objects.filter(next_update_time__lte=now())  # Проверяем, какие продукты пора обновить
     for product in products:
-        #product_random(product.id)
+        product_random(product.id)
         print(product.id)
 
     print("DONE!")

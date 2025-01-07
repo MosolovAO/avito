@@ -180,8 +180,10 @@ $(document).ready(function () {
     // Сбор данных для отправки
     $('#submit-btn').click(function () {
 
-        const projects = $('#projects').val()
 
+        const currentUrl = $(location).attr('href');
+        const projects = $('#projects').val()
+        const schedule = {};
         const category = $('#category').val();
         const listingfee = $('#listingfee').val();
         const email = $('#email').val();
@@ -207,12 +209,12 @@ $(document).ready(function () {
 
         const mainImages = [];
         $('#main-images-thumbnails .thumbnail img').each(function () {
-            mainImages.push($(this).attr('src'));
+            mainImages.push("http://localhost:8001" + $(this).attr('src'));
         });
 
         const additionalImages = [];
         $('#additional-images-thumbnails .thumbnail img').each(function () {
-            additionalImages.push($(this).attr('src'));
+            additionalImages.push("http://localhost:8001" + $(this).attr('src'));
         });
 
         const descriptions = {};
@@ -240,6 +242,14 @@ $(document).ready(function () {
             }
         });
 
+        $('.schedule-container tbody tr').each(function () {
+            const day = $(this).find('td:first').text().trim();
+            const time = $(this).find('input[type="time"]').val();
+            if (time) {
+                schedule[day] = time;
+            }
+        });
+
         const data = {
             product_id: productId, // Передаем ID продукта для обновления
             titles: tags,
@@ -263,8 +273,8 @@ $(document).ready(function () {
             price_step: price__step,
             category: category,
             possible_combinations: possible__combinations,
-            projects: projects
-
+            projects: projects,
+            schedule: schedule,
         };
 
         console.log(projects)
@@ -287,7 +297,7 @@ $(document).ready(function () {
     });
 
     let currentStep = 1;
-    const totalSteps = 5;
+    const totalSteps = 6;
 
     function showStep(step) {
         $('.step').removeClass('active');
