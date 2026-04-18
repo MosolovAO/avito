@@ -1,53 +1,99 @@
+x-backend-env: &backend-env
+  DEBUG: "1"
+  SECRET_KEY: django-insecure-change-this-in-production
+  ALLOW_HOSTS: localhost,127.0.0.1
+  POSTGRES_DB: avito
+  POSTGRES_USER: avito_user
+  POSTGRES_PASSWORD: avito_password
+  DB_HOST: db
+  DB_PORT: "5432"
+  CELERY_BROKER: redis://redis:6379/0
+  CELERY_BACKEND: redis://redis:6379/0
+
+x-backend-service: &backend-service
+  build:
+    context: ./backend
+  volumes:
+    - ./backend:/usr/src/app
+  environment:
+    <<: *backend-env
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: avito_db
+    environment:
+      POSTGRES_DB: avito
+      POSTGRES_USER: avito_user
+      POSTGRES_PASSWORD: avito_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U avito_user -d avito"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: redis:7.0.11-alpine
-
+    container_name: avito_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   django:
-    container_name: django
-    build:
-      context: ./system
-    command: uvicorn system.asgi:application --host 0.0.0.0 --port 80 --workers 1 --log-level debug --reload --reload-include *.html
-    volumes:
-      - ./system:/usr/src/app/
+    <<: *backend-service
+    container_name: avito_backend
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 1 --log-level debug --reload --reload-include "*.html"
     ports:
-      - 8001:80
-    environment:
-      - DEBUG=1
-      - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
-    depends_on:
-      - redis
+      - "8000:8000"
+
   celery:
-    container_name: celery
-    build:
-      context: ./system
+    <<: *backend-service
+    container_name: avito_celery
     command: celery --app=system worker -l info
-    volumes:
-      - ./system:/usr/src/app/
-    depends_on:
-      - redis
-    environment:
-      - DEBUG=1
-      - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
+
   celery-beat:
-    build:
-      context: ./system
+    <<: *backend-service
+    container_name: avito_celery_beat
     command: celery --app=system beat -l DEBUG
-    depends_on:
-      - redis
-    environment:
-      - DEBUG=1
-      - SECRET_KEY=042847234525
-      - ALLOW_HOSTS=localhost, 127.0.0.1, 4047457-xr54529.twc1.net
-  flower:
+
+  frontend:
+    container_name: avito_frontend
     build:
-      context: ./system
-    command: celery -A system flower
+      context: ./frontend
     volumes:
-      - ./system:/usr/src/app/
+      - ./frontend:/usr/src/app
+      - /usr/src/app/node_modules
     ports:
-      - 5555:5555
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_PROXY_TARGET: http://django:8000
     depends_on:
-      - celery
+      django:
+        condition: service_started
+
+  flower:
+    <<: *backend-service
+    container_name: avito_flower
+    command: celery -A system flower --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      celery:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

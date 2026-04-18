@@ -1,0 +1,159 @@
+//// TASK_ITEM
+.task__wrapper {
+  .task {
+    margin-bottom: 15px;
+    background-color: $gray;
+    padding: 20px;
+    border-radius: $border;
+    position: relative;
+
+    .task__project {
+      position: absolute;
+      left: -5px;
+      top: -5px;
+      box-shadow: 1px 3px 2px rgba(0, 0, 0, 0.3);
+
+      .task__project-name {
+        background-color: $accent;
+        font-size: 12px;
+        border-radius: 2px;
+        padding: 3px 7px;
+        font-weight: bold;
+        display: flex;
+
+      }
+
+    }
+
+    .task__status {
+      position: absolute;
+      display: inline-block;
+      right: 10px;
+      top: 10px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+    }
+
+    .status-active {
+      background-color: $success;
+    }
+
+    .status-inactive {
+      background-color: $danger;
+    }
+
+
+    .task__topline {
+      display: flex;
+      flex-direction: column;
+      align-items: self-start;
+      margin: 30px 0 15px 0;
+      justify-content: space-between;
+
+      .task__name {
+        font-size: 18px;
+        font-weight: bold;
+      }
+
+    }
+
+    .task__middleline {
+      border-top: dashed 1px #6c757d;
+      padding-top: 10px;
+
+      .task__options {
+        margin-bottom: 15px;
+
+        p {
+          font-size: 12px;
+        }
+      }
+
+      .task__schedule {
+        list-style-type: none;
+        column-count: 2;
+        margin: 5px 0 15px 0;
+
+        li {
+          color: #fff;
+          font-size: 12px;
+          border-bottom: 1px solid #6c757d;
+          margin-bottom: 3px;
+
+          span {
+            font-weight: bold;
+          }
+        }
+      }
+
+      .task__nexttimestart {
+        padding-bottom: 35px;
+
+        p {
+          padding-bottom: 5px;
+          font-size: 12px;
+        }
+
+        .countdown__timer {
+          color: #fff;
+
+          span {
+            background-color: #fff;
+            color: $accent;
+            width: 35px;
+            display: inline-block;
+            text-align: center;
+            border-radius: 4px;
+            font-weight: bold;
+            padding: 5px 0;
+          }
+        }
+      }
+    }
+
+    .task__bottomline {
+      display: flex;
+      flex-direction: row;
+      justify-content: space-between;
+      align-items: center;
+
+      .button__group-right {
+        display: flex;
+        flex-direction: row;
+
+        button {
+          padding: 5px 10px;
+
+          img {
+            max-width: 12px;
+          }
+        }
+
+        .pause {
+          display: flex;
+          align-items: center;
+          padding: 9px 10px;
+        }
+
+        .play {
+          background-color: #FFC507;
+          display: flex;
+          align-items: center;
+          padding: 9px 10px;
+        }
+
+        .active--enabled {
+          background-color: $success;
+        }
+
+        .pause--enabled {
+          background-color: $danger;
+        }
+      }
+    }
+
+  }
+}
+
+//////

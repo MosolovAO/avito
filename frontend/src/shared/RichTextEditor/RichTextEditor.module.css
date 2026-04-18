@@ -1,0 +1,81 @@
+/* DescriptionsSection.module.css */
+
+.editorWrapper {
+    border: 1px solid #d9d9d9;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 300px;
+}
+
+.editorContent {
+    flex: 1;
+    overflow-y: auto;
+    background-color: #fff;
+    /* Убираем стандартный outline у contenteditable */
+}
+
+/* Ключевое — растягиваем ProseMirror на всю высоту */
+.editorContent :global(.ProseMirror) {
+    height: 100%;
+    min-height: 100%;
+    padding: 12px;
+    outline: none; /* убираем синюю рамку браузера */
+    cursor: text; /* показываем текстовый курсор везде */
+    box-sizing: border-box;
+    caret-color: #000; /* явно задаём цвет мигающего курсора */
+}
+
+/* Базовые стили контента */
+.editorContent :global(.ProseMirror p) {
+    margin: 0 0 8px 0;
+}
+
+.editorContent :global(.ProseMirror p:last-child) {
+    margin-bottom: 0;
+}
+
+.editorContent :global(.ProseMirror ul),
+.editorContent :global(.ProseMirror ol) {
+    padding-left: 20px;
+}
+
+/* Плейсхолдер */
+.editorContent :global(.ProseMirror p.is-editor-empty:first-child::before) {
+    content: attr(data-placeholder);
+    float: left;
+    color: #adb5bd;
+    pointer-events: none;
+    height: 0;
+    display: block;
+}
+
+.editorContent :global(.ProseMirror > p.is-editor-empty:first-child) {
+    color: #adb5bd;
+}
+
+
+/* HTML Textarea */
+.htmlTextarea {
+    flex: 1;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    resize: none;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    outline: none;
+    box-sizing: border-box;
+}
+
+.htmlTextarea::placeholder {
+    color: #6a6a6a;
+}
+
+.htmlTextarea:focus {
+    background-color: #1e1e1e;
+}

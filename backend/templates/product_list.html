@@ -1,0 +1,98 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block content %}
+    <section class="heading">
+        <div class="container">
+            <div class="row pb-4">
+                <div class="col-8 d-flex justify-content-start align-items-center">
+                    <h1 class="main__title">Список задач</h1>
+                </div>
+                <div class="col-4 d-flex justify-content-end align-items-center">
+                    <a href="{% url 'product_add' %}" class="btn btn-success">Добавить новый продукт</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="task__wrapper">
+        <div class="container">
+            <div class="row row-cols-4">
+                {% for product in products %}
+                    <div class="col">
+                        <div class="task">
+                            <div class="task__project">
+                                {% for project in product.projects.all %}
+                                    <span class="task__project-name">{{ project.project_name }}
+                                        {% if not forloop.last %}, {% endif %}</span>
+                                {% endfor %}
+                            </div>
+
+                            <span class="task__status {% if product.activate %}status-active{% else %}status-inactive{% endif %}"></span>
+
+                            <div class="task__topline">
+                                <h3 class="task__name">{{ product.name }}</h3>
+                            </div>
+
+                            <div class="task__middleline">
+
+                                <div class="task__options">
+                                    <p>Используется заголовков:
+                                        <strong><span>{{ product.title_count }}</span></strong></p>
+                                    <p>Используется фотографий:
+                                        <strong><span>{{ product.title_count }}</span></strong></p>
+                                    <p>Используется описаний:
+                                        <strong><span>{{ product.title_count }}</span></strong></p>
+
+                                </div>
+
+                                <p style="font-size: 12px;  margin-bottom: 0">Раписание: <span
+                                        style="font-weight: bold;">Каждую неделю</span>
+                                </p>
+                                <ul class="task__schedule">
+                                    {% for day, time in product.schedule.items %}
+                                        <li>{{ day }}: <span>{{ time }}</span></li>
+                                    {% endfor %}
+                                </ul>
+                                <div class="task__nexttimestart">
+                                    <p>Запустится через: <br></p>
+
+                                    <div class="countdown__timer" data-end-date="{{ product.next_update_time|date:"Y-m-d\TH:i" }}">
+                                        <span>Д<span class="days">0</span></span> :
+                                        <span>Ч<span class="hours">0</span></span> :
+                                        <span>М<span class="minutes">0</span></span> :
+                                        <span>С<span class="seconds">0</span></span>
+                                    </div>
+
+                                </div>
+                            </div>
+
+                            <div class="task__bottomline">
+                                <a href="/products/edit/{{ product.id }}" class="btn-small btn-success ">Изменить</a>
+
+                                <div class="button__group-right">
+                                    <button
+                                            class="play {% if product.activate %}active--enabled{% endif %}"
+                                            data-product-id="{{ product.id }}"
+                                            data-action="activate"
+                                    ><img src="{% static "img/play-buttton.png" %}" alt="">
+                                    </button>
+                                    <button
+                                            class="pause {% if not product.activate %}pause--enabled{% endif %}"
+                                            data-product-id="{{ product.id }}"
+                                            data-action="deactivate"
+                                    ><img src="{% static "img/pause.png" %}" alt="">
+                                    </button>
+                                </div>
+                            </div>
+
+
+                        </div>
+                    </div>
+                {% endfor %}
+
+            </div>
+        </div>
+    </section>
+
+
+{% endblock %}

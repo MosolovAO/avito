@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block content %}
+
+    <div class="container">
+        <div class="row">
+            <div class="col-12">
+                <div class="edit__product__wrapper">
+
+                    <h1 class="main__title" style="font-weight: bold">Редактор записи</h1>
+
+                    <h4 class="mt-5 mb-5" style="color: #fff; font-weight: normal">Запись: {{ adv.title }}</h4>
+
+                    <div class="row" style="color: #fff">
+                        <!-- Левая колонка: уже выбранные опции (старые) -->
+                        <div class="col-6">
+                            <h6 class="mb-3" style="font-weight: bold">Текущие опции (selected_options)</h6>
+                            <div id="existing-options-container">
+                                {% for key, value in adv.selected_option.items %}
+                                    <div class="option-group flex-row justify-content-between">
+                                        <!--
+                                           key храним как скрытое поле,
+                                           value – в обычном (но readonly)
+                                        -->
+                                        <input type="hidden" class="option-key" value="{{ key }}">
+                                        <label style="width: 30%; display: inline-block">{{ key }}</label>
+                                        <input type="text" class="value-select w-25" value="{{ value }}" readonly>
+                                        <button class="remove-existing-option btn btn-sm btn-danger w-25">Удалить
+                                        </button>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+
+                        <!-- Правая колонка: добавление новых опций -->
+                        <div class="col-6">
+                            <h6 class="mb-3 " style="font-weight: bold">Добавить новые опции</h6>
+                            <div id="new-options-container">
+                                <!-- Аналогично тому, как в product_add.html был id="options-container" -->
+                            </div>
+                            <button type="button" id="add-new-option-btn" class="btn btn-primary mt-2">
+                                Добавить опцию
+                            </button>
+                        </div>
+                    </div>
+
+                    <hr>
+
+                    <!-- Кнопка для сохранения всего объявления -->
+                    <button type="button" id="save-adv-btn" class="btn btn-success">Сохранить</button>
+
+                    <!-- Скрытое поле с ID, чтобы JS понимал, с каким adv мы работаем -->
+                    <input type="hidden" id="adv-id" value="{{ adv.id }}">
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{% static 'js/adv_edit.js' %}"></script>
+
+{% endblock %}

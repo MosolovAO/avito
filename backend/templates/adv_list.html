@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% load static %}
+{% block content %}
+    <h2 class="mb-3">Список</h2>
+    <div class="container">
+        <div class="row">
+            <div class="col-12">
+                {% for ad in adv %}
+                    <div class="adv_list_wrapper d-flex flex-row align-items-center justify-content-between mb-3">
+                        <p style="color: #fff; width: 40%" class="me-5">{{ ad.title }}</p>
+                        <p style="font-size: 12px" class="me-5"> {{ ad.created_date }}</p>
+                        <a href="/products/edit/adv-edit/{{ ad.id }}" class="btn btn-success"> Редактировать</a>
+                    </div>
+                {% endfor %}
+
+            </div>
+        </div>
+    </div>
+
+{% endblock %}
