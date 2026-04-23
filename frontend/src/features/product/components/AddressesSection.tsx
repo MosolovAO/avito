@@ -70,7 +70,7 @@ export const AddressesSection: React.FC<AddressesSectionProps> = ({
     ]
     return (
         <Card title="📍 Адреса" style={{marginBottom: '16px'}}>
-            <Space direction="vertical" style={{width: '100%'}} size="medium">
+            <Space orientation="vertical" style={{width: '100%'}} size="medium">
 
                 {/* Массовое добавление */}
                 <div>

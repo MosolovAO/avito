@@ -33,7 +33,9 @@ export const ProductList: React.FC<ProductListProps> = ({
             title: 'ID',
             dataIndex: 'id',
             key: 'id',
-            width: 60,
+            width: 70,
+            sorter: (a, b) => a.id - b.id,
+            defaultSortOrder: 'ascend'
         },
         {
             title: 'Название',
@@ -75,19 +77,22 @@ export const ProductList: React.FC<ProductListProps> = ({
         {
             title: 'Действия',
             key: 'actions',
-            width: 200,
+            width: 240,
             render: (_, record) => (
                 <Space size="small">
                     <Button
+                        size="small"
                         type="primary"
                         icon={record.activate ? <ThunderboltFilled/> : <ThunderboltOutlined/>}
                         onClick={() => onToggleActive(record.id, record.activate ? 'deactivate' : 'activate')}
                     />
                     <Button
+                        size="small"
                         icon={<EditOutlined/>}
                         onClick={() => onEdit(record.id)}
                     />
                     <Button
+                        size="small"
                         type="primary"
                         onClick={() => onGenerate(record.id)}
                     >
@@ -99,7 +104,7 @@ export const ProductList: React.FC<ProductListProps> = ({
                         okText="Да"
                         cancelText="Отмена"
                     >
-                        <Button danger icon={<DeleteOutlined/>}/>
+                        <Button size="small" danger icon={<DeleteOutlined/>}/>
                     </Popconfirm>
                 </Space>
             ),

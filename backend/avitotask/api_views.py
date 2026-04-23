@@ -9,7 +9,7 @@ import random
 import string
 import json
 
-from .models import Product, Product1, ProductOptions, Project, ProductOptionAssignment
+from .models import Product, Product1, ProductOptions, Project, ProductOptionAssignment, Category
 from .serializers import (
     ProductSerializer,
     Product1Serializer,
@@ -34,16 +34,27 @@ class Product1ViewSet(viewsets.ModelViewSet):
 
 class ProjectViewSet(viewsets.ModelViewSet):
     """ API endpoint для управления проектами"""
-    queryset = Project.objects.all()
+    queryset = Project.objects.all().order_by('project_name')
     serializer_class = ProjectSerializer
     permission_classes = [AllowAny]
 
 
 class ProductOptionsViewSet(viewsets.ModelViewSet):
     """ API endpoint для управления опциями продуктов"""
-    queryset = ProductOptions.objects.all()
     serializer_class = ProductOptionsSerializer
     permission_classes = [AllowAny]
+    queryset = ProductOptions.objects.prefetch_related('categories').order_by('option_title_ru')
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        category_id = self.request.query_params.get('category_id')
+        category_name = (self.request.query_params.get('category') or '').strip()
+
+        if category_id:
+            return queryset.filter(categories_id=category_id).distinct()
+        if category_name:
+            return queryset.filter(categories__category__iexact=category_name.strip()).distinct()
+        return queryset.none()
 
 
 @api_view(['POST'])
@@ -148,9 +159,9 @@ def toggle_product_active(request, product_id):
 
 
 @api_view(['GET'])
-def get_product_options(request):
-    """
-    Получение списка доступных опций
-    """
-    options = ProductOptions.objects.all().values('id', 'option_title', 'option_value')
-    return Response(list(options))
+def get_product_categories(request):
+    categories = list(Category.objects.order_by('category').values_list('category', flat=True))
+
+    return Response(categories)
+
+

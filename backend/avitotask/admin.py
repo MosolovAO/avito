@@ -30,7 +30,7 @@ class ProductOptionAdmin(admin.ModelAdmin):
 
     def get_categories(self, obj):
         """Список категорий, к которым привязана опция"""
-        categories = Category.objects.all()
+        categories = obj.categories.all()
         if categories.exists():
             return ", ".join(cat.category for cat in categories)
         return "Не привязана"
@@ -78,7 +78,7 @@ class ProductAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Основная информация', {
-            'fields': ('name', 'category', 'url', 'price', 'price_min', 'price_max', 'price_step', 'activate')
+            'fields': ('name', 'category', 'url', 'price', 'price_min', 'price_max', 'price_step', 'activate', 'price_randomization_enabled')
         }),
         ('Контент', {
             'fields': ('titles', 'main_images', 'additional_images', 'descriptions', 'addresses')

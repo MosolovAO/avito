@@ -10,7 +10,24 @@ export const getProducts = async (): Promise<Product[]> => {
 
 // Получение одного продукта
 export const getProduct = async (id: number): Promise<Product> => {
-    const response = await api.get(`/api/products/${id}`)
+    const response = await api.get(`/api/products/${id}/`)
+    return response.data
+}
+
+export const getProductCategories = async (): Promise<string[]> => {
+    const response = await api.get<string[]>('/api/categories/')
+    return response.data
+}
+
+// Получение опций
+export const getProductOptions = async (category?: string): Promise<ProductOption[]> => {
+    if (!category?.trim()) {
+        return []
+    }
+    const response = await api.get('/api/options/', {
+        params: {category: category?.trim()},
+    })
+
     return response.data
 }
 
@@ -28,7 +45,7 @@ export const updateProduct = async (id: number, data: ProductFormData): Promise<
 
 // Удаление продукта
 export const deleteProduct = async (id: number): Promise<void> => {
-    await api.delete(`/api/products/${id}`)
+    await api.delete(`/api/products/${id}/`)
 }
 
 // Активация/деактивация продукта
@@ -59,8 +76,3 @@ export const getProjects = async (): Promise<Project[]> => {
     return response.data
 }
 
-// Получение опций
-export const getProductOptions = async (): Promise<ProductOption[]> => {
-    const response = await api.get('/api/options/')
-    return response.data
-}

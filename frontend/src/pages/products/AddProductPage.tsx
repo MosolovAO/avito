@@ -3,7 +3,7 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Typography, Card, message, Spin} from 'antd'
 import {useNavigate} from 'react-router-dom'
 import {ProductForm} from '../../features/product/ProductForm'
-import {getProjects, getProductOptions, createProduct} from '../../shared/api/products'
+import {getProjects, createProduct, getProductCategories} from '../../shared/api/products'
 import type {ProductFormData} from '../../entities/product'
 
 const {Title} = Typography
@@ -12,16 +12,16 @@ export const AddProductPage: React.FC = () => {
     const navigate = useNavigate()
     const queryClient = useQueryClient()
 
+    const {data: categories = [], isLoading: categoriesLoading} = useQuery({
+        queryKey: ['product-categories'],
+        queryFn: getProductCategories,
+        staleTime: 5 * 60 * 1000,
+    })
+
     // Загрущка проектов
     const {data: projects = [], isLoading: projectsLoading} = useQuery({
         queryKey: ['projects'],
         queryFn: getProjects,
-    })
-
-    // Загрузка опций
-    const {data: options = [], isLoading: optionsLoading} = useQuery({
-        queryKey: ['options'],
-        queryFn: getProductOptions,
     })
 
     // Мутация для создания продукта
@@ -37,15 +37,15 @@ export const AddProductPage: React.FC = () => {
         }
     })
 
-    const handleSubmit = (data: ProductFormData) => {
-        createMutation.mutate(data)
+    const handleSubmit = async (data: ProductFormData) => {
+        await createMutation.mutateAsync(data)
     }
 
     const handleCancel = () => {
         navigate('/products')
     }
 
-    const isLoading = projectsLoading || optionsLoading || createMutation.isPending
+    const isLoading = projectsLoading || categoriesLoading || createMutation.isPending
 
     if (isLoading) {
         return (
@@ -60,7 +60,7 @@ export const AddProductPage: React.FC = () => {
             <Card>
                 <ProductForm
                     projects={projects}
-                    options={options}
+                    categories={categories}
                     onSubmit={handleSubmit}
                     onCancel={handleCancel}
                     loading={createMutation.isPending}

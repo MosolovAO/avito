@@ -1,4 +1,4 @@
-import {Card, Col, Form, Input, InputNumber, Row, Select, Switch} from 'antd'
+import {Card, Col, Form, InputNumber, Row, Select, Switch} from 'antd'
 import React from "react";
 import type {Project} from '../../../entities/project'
 
@@ -6,12 +6,14 @@ interface BasicInfoSectionProps {
     randomizeEnabled?: boolean
     onRandomizeChange?: (enable: boolean) => void
     projects: Project[]
+    categories: string[]
 }
 
 export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
                                                                       randomizeEnabled = false,
                                                                       onRandomizeChange,
-                                                                      projects
+                                                                      projects,
+                                                                      categories
 
                                                                   }) => {
     return (
@@ -38,7 +40,15 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
                         label="Категория"
                         rules={[{required: true, message: 'Введите категорию'}]}
                     >
-                        <Input placeholder="Например: Квартиры"/>
+                        <Select
+                            showSearch
+                            placeholder="Выберите категорию"
+                            optionFilterProp="label"
+                            options={categories.map((category) => ({
+                                value: category,
+                                label: category
+                            }))}
+                        />
 
                     </Form.Item>
                 </Col>

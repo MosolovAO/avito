@@ -11,6 +11,12 @@ from django.core.serializers.json import DjangoJSONEncoder
 
 
 class MyJSONEncoder(DjangoJSONEncoder):
+    """
+    JSONField с кастомным encoder-ом для человекочитаемой кириллицы.
+    Используется там, где важно сохранять русские значения в JSON без
+    unicode-escape: выбранные опции, проекты, данные объявлений.
+     """
+
     def __init__(self, *args, **kwargs):
         # Удаляем параметр ensure_ascii, если его кто-то уже задал
         kwargs.pop('ensure_ascii', None)
@@ -39,6 +45,10 @@ DAY_NAME_TO_INDEX = {name: i for i, name in enumerate(calendar.day_name)}
 
 
 def product_image_upload_to(instance, filename):
+    """
+    Формирует путь загрузки изображения продукта.
+    """
+
     # Получаем дату в формате день-месяц-год
     today = datetime.now().strftime('%d-%m-%y')
     # Генерируем имя файла: id продукта + оригинальное имя
@@ -59,6 +69,7 @@ class Category(models.Model):
         return self.category
 
 
+# Проекты на аккаунте
 class Project(models.Model):
     project_name = models.CharField(max_length=100, null=True, blank=True, )
 
@@ -66,7 +77,9 @@ class Project(models.Model):
         return self.project_name
 
 
+# Уже созданные товары
 class Product1(models.Model):
+    """Уже сгенерированное объявление."""
     title = models.CharField(max_length=255, db_index=True, help_text="Заголовок продукта")
     urls = models.JSONField(default=list, blank=True, help_text="Список URL фото продукта")
     description = models.TextField(help_text="Описание продукта")
@@ -76,7 +89,9 @@ class Product1(models.Model):
     project_name = MyJSONField(default=list, blank=True, null=True)
 
 
+# Создание задачи для автоматического создания товаров
 class Product(models.Model):
+    """Задача генерации объявлений."""
     name = models.CharField(max_length=255)
     url = models.URLField()
     price = models.IntegerField(null=True, blank=True, default=0)
@@ -85,6 +100,10 @@ class Product(models.Model):
     price_max = models.IntegerField(null=True, blank=True, default=0)
     price_step = models.IntegerField(null=True, blank=True, default=0)
     possible_combinations = models.IntegerField(null=True, blank=True, default=0)
+    price_randomization_enabled = models.BooleanField(
+        default=False,
+        help_text="Включена ли рандомизация цены"
+    )
     schedule = models.JSONField(
         default=dict,
         blank=True,
@@ -171,10 +190,10 @@ class Product(models.Model):
     def update_selected_options(self):
         assignments = self.productoptionassignment_set.select_related('option').all()
         self.selected_options = {
-            assignment.option.option_title: assignment.selected_value
+            assignment.option.option_title_en: assignment.selected_value
             for assignment in assignments
         }
-        self.save()
+        self.save(update_fields=['selected_options'])
 
     def __str__(self):
         return self.name
@@ -210,6 +229,8 @@ class ProductImage(models.Model):
 class ProductOptions(models.Model):
     option_title_ru = models.CharField(max_length=255, help_text="Название опции (например, Цвет, Размер)")
     option_title_en = models.CharField(max_length=150, help_text="Параметр для автозагрузки")
+    allow_multiple_options = models.BooleanField(default=False,
+                                                 help_text="Можно ли указать несколько значений для этой опции")
     categories = models.ManyToManyField(
         Category,
         related_name='options',
@@ -232,4 +253,8 @@ class ProductOptions(models.Model):
 class ProductOptionAssignment(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     option = models.ForeignKey(ProductOptions, on_delete=models.CASCADE)
-    selected_value = models.CharField(max_length=255, help_text="Выбранное значение опции")
+    selected_value = models.JSONField(default=list, blank=True,
+                                      help_text="Значения, введенные пользователем для этой опции")
+
+    class Meta:
+        unique_together = [('product', 'option')]

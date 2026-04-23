@@ -26,6 +26,7 @@ export interface Product {
     schedule: Record<string, string>
     next_update_time: string | null
     projects: { id: number; project_name: string }[]
+    price_randomization_enabled: boolean
 
 }
 
@@ -46,14 +47,22 @@ export interface Product1 {
 export interface ProductOption {
     id: number
     option_title: string
-    option_value: string[]
+    option_code: string
+    option_title_ru: string
+    option_title_en: string
+    allow_multiple: boolean
+    allow_multiple_options: boolean
+    categories: number[]
 }
 
+export type ProductImageValue = File | string
+
 // Типы для формы добавления/редактирования продукта
-export interface ProductFormData {
+export interface ProductFormData  {
     titles: string[]
-    main_images: File[]
-    additional_images: File[]
+    price_randomization_enabled: boolean
+    main_images: ProductImageValue[]
+    additional_images: ProductImageValue[]
     descriptions: string[]
     addresses: string[]
     category: string
@@ -72,7 +81,10 @@ export interface ProductFormData {
     price_step: number
     projects: number[]
     options: { option_id: number; value: string }[]
-    schedule: Record<string, string>
+    schedule: {
+        frequency?: number
+        days?: string[]
+    }
 
 }
 

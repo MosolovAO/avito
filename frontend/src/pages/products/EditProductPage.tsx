@@ -3,7 +3,7 @@ import {useNavigate, useParams} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Typography, Card, message, Spin} from 'antd'
 import {ProductForm} from '../../features/product/ProductForm'
-import {getProjects, getProductOptions, getProduct, updateProduct} from '../../shared/api/products'
+import {getProjects, getProduct, updateProduct, getProductCategories} from '../../shared/api/products'
 import type {ProductFormData, Product} from '../../entities/product'
 
 
@@ -16,6 +16,12 @@ export const EditProductPage: React.FC = () => {
     const [productData, setProductData] = useState<Partial<ProductFormData> | null>(null)
 
 
+    const {data: categories = [], isLoading: categoriesLoading} = useQuery({
+        queryKey: ['product-categories'],
+        queryFn: getProductCategories,
+        staleTime: 5 * 60 * 1000,
+    })
+
     // Загрузка продукта
     const {data: product, isLoading: productLoading} = useQuery<Product>({
         queryKey: ['product', id],
@@ -27,22 +33,28 @@ export const EditProductPage: React.FC = () => {
     const {data: projects = [], isLoading: projectsLoading} = useQuery({
         queryKey: ['projects'],
         queryFn: getProjects,
+        staleTime: 5 * 60 * 1000,
     })
 
-    // Загрузка опций
-    const {data: options = [], isLoading: optionsLoading} = useQuery({
-        queryKey: ['options'],
-        queryFn: getProductOptions
-    })
+
+    // Нормализация описания
+    const normalizeDescriptions = (description: Product['descriptions']): string[] => {
+        if (Array.isArray(description)) {
+            return description
+        }
+
+        return Object.values(description ?? {})
+    }
 
     // Подготовка данных для формы
     useEffect(() => {
         if (product) {
             setProductData({
+                price_randomization_enabled: product.price_randomization_enabled,
                 titles: product.titles,
                 main_images: product.main_images,
                 additional_images: product.additional_images,
-                descriptions: product.descriptions,
+                descriptions: normalizeDescriptions(product.descriptions),
                 addresses: product.addresses,
                 category: product.category,
                 listingfee: product.listingfee,
@@ -79,15 +91,15 @@ export const EditProductPage: React.FC = () => {
         }
     })
 
-    const handleSubmit = (data: ProductFormData) => {
-        updateMutation.mutate(data)
+    const handleSubmit = async (data: ProductFormData) => {
+        await updateMutation.mutateAsync(data)
     }
 
     const handleCancel = () => {
         navigate('/products')
     }
 
-    const isLoading = productLoading || projectsLoading || optionsLoading || !productData
+    const isLoading = productLoading || projectsLoading || !productData || categoriesLoading
 
     if (isLoading) {
         return (
@@ -103,7 +115,7 @@ export const EditProductPage: React.FC = () => {
             <Card>
                 <ProductForm
                     projects={projects}
-                    options={options}
+                    categories={categories}
                     initialData={productData || undefined}
                     onSubmit={handleSubmit}
                     onCancel={handleCancel}
