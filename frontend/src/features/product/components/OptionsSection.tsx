@@ -1,15 +1,25 @@
 import React from 'react'
-import {Select, Card, Form, Input, Empty} from 'antd'
+import {Select, Card, Form, Input, Empty, Alert} from 'antd'
 import type {ProductOption} from '../../../entities/product'
 
 interface OptionsSectionProps {
     options: ProductOption[]
     loading?: boolean
+    error?: Error | null
 }
 
-export const OptionsSection: React.FC<OptionsSectionProps> = ({options, loading = false}) => {
+export const OptionsSection: React.FC<OptionsSectionProps> = ({options, loading = false, error}) => {
     return (
         <Card title="⚙️ Опции" loading={loading} style={{marginBottom: '16px'}}>
+            {error && (
+                <Alert
+                    type="error"
+                    showIcon
+                    message="Не удалось загрузить опции"
+                    description={error.message}
+                    style={{marginBottom: 16}}
+                />
+            )}
             {options.length === 0 ? (
                 <Empty description="Выберите категорию, чтобы загрузить доступные опции"/>
             ) : (

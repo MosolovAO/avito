@@ -1,82 +1,72 @@
+// src/features/product/components/TitlesSection.tsx
 import React, {useState} from 'react'
-import {Input, Card, Tag, message} from 'antd'
+import {Card, Form, Input, message, Tag} from 'antd'
+import type {ProductFormValues} from '../lib/productFormMapper'
 
-interface TitlesSectionProps {
-    initialTitles?: string[]
-    onChange?: (titles: string[]) => void
-    value?: string[]
+const EMPTY_TITLES: string[] = []
 
-}
+export const TitlesSection: React.FC = () => {
+    const form = Form.useFormInstance<ProductFormValues>()
+    const watchedTitles = Form.useWatch('titles', {form, preserve: true})
+    const titles = watchedTitles ?? EMPTY_TITLES
 
-export const TitlesSection: React.FC<TitlesSectionProps> = ({
-                                                                initialTitles = [],
-                                                                onChange,
-                                                            }) => {
-    const [titles, setTitles] = useState<string[]>(initialTitles?.filter(t => t.trim()) || [])
     const [inputValue, setInputValue] = useState('')
 
     const handleAddTitle = () => {
-        const trimmedValue = inputValue.trim()
+        const title = inputValue.trim()
 
-        if (!trimmedValue) {
+        if (!title) {
             return
         }
-        if (titles.includes(trimmedValue)) {
-            return message.warning(`Заголовок "${trimmedValue}" уже существует`)
 
+        if (titles.includes(title)) {
+            message.warning(`Заголовок "${title}" уже существует`)
+            return
         }
 
-        const newTitles = [...titles, trimmedValue]
-        setTitles(newTitles)
-        onChange?.(newTitles)
+        form.setFieldValue('titles', [...titles, title])
         setInputValue('')
-
-    }
-
-    const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === 'Enter') {
-            e.preventDefault()
-            handleAddTitle()
-        }
     }
 
     const handleRemoveTitle = (removedTitle: string) => {
-        const newTitles = titles.filter((title) => title !== removedTitle)
-        setTitles(newTitles)
-        onChange?.(newTitles)
+        form.setFieldValue(
+            'titles',
+            titles.filter((title) => title !== removedTitle)
+        )
     }
 
     return (
-        <Card title="📝 Заголовки" style={{marginBottom: '16px'}}>
+        <Card title="📝 Заголовки" style={{marginBottom: 16}}>
             <Input
                 value={inputValue}
                 placeholder="Введите заголовок и нажмите Enter"
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyPress={handleKeyPress}
-                style={{marginBottom: '12px'}}
+                onChange={(event) => setInputValue(event.target.value)}
+                onPressEnter={(event) => {
+                    event.preventDefault()
+                    handleAddTitle()
+                }}
+                style={{marginBottom: 12}}
             />
 
-            {/* Область с тегами (как textarea) */}
             <div
                 style={{
-                    minHeight: '100px',
-                    padding: '8px',
+                    minHeight: 100,
+                    padding: 8,
                     border: '1px solid #d9d9d9',
-                    borderRadius: '6px',
-                    backgroundColor: '#fafafa'
+                    borderRadius: 6,
+                    backgroundColor: '#fafafa',
                 }}
             >
                 {titles.length === 0 ? (
-                    <span style={{color: '#999'}}>Заголовки не добавлены </span>
+                    <span style={{color: '#999'}}>Заголовки не добавлены</span>
                 ) : (
-                    <div style={{display: 'flex', flexWrap: 'wrap', gap: '8px'}}>
+                    <div style={{display: 'flex', flexWrap: 'wrap', gap: 8}}>
                         {titles.map((title) => (
                             <Tag
                                 key={title}
                                 closable
-                                onClose={() => handleRemoveTitle(title)}
                                 color="blue"
-                                style={{marginBottom: '4px'}}
+                                onClose={() => handleRemoveTitle(title)}
                             >
                                 {title}
                             </Tag>
@@ -85,14 +75,11 @@ export const TitlesSection: React.FC<TitlesSectionProps> = ({
                 )}
             </div>
 
-            {/* Счётчик заголовков */}
-
             {titles.length > 0 && (
-                <div style={{marginTop: '8px', color: '#999', fontSize: '12px'}}>
+                <div style={{marginTop: 8, color: '#999', fontSize: 12}}>
                     Всего заголовков: {titles.length}
                 </div>
             )}
-
         </Card>
     )
 }

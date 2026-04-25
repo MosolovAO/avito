@@ -174,6 +174,32 @@ class ProductSerializer(serializers.ModelSerializer):
             product.next_update_time = None
             product.save(update_fields=['next_update_time'])
 
+    def _valid_image_urls(self, value, field_name):
+        if value is None:
+            return []
+
+        if not isinstance(value, list):
+            raise serializers.ValidationError(f'{field_name} должен быть списком URL.')
+
+        invalid_items = [
+            item
+            for item in value
+            if not isinstance(item.src) or not item.strip()
+        ]
+
+        if invalid_items:
+            raise serializers.ValidationError(
+                f'{field_name} должен содержать только непустые строки URL.'
+            )
+
+        return [item.strip() for item in value]
+
+    def valid_main_images(self, value):
+        return self._valid_image_urls(value, 'main_images')
+
+    def valid_additional_images(self, value):
+        return self._valid_image_urls(value, 'additional_images')
+
     @transaction.atomic
     def create(self, validated_data):
         """Создает Product и связанные данные."""

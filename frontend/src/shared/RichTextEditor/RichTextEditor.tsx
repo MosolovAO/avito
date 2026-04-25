@@ -118,12 +118,19 @@ const EditorToolbar: React.FC<EditorToolbarProps> = ({editor, showHtml, onToggle
     )
 }
 
-export const RichTextEditor: React.FC<RichTextEditorProps> = ({content, onChange, placeholder = 'Введите описание...//' }) => {
+export const RichTextEditor: React.FC<RichTextEditorProps> = ({
+                                                                  content,
+                                                                  onChange,
+                                                                  placeholder = 'Введите описание...//'
+                                                              }) => {
     const [showHtml, setShowHtml] = useState(false)
 
     const editor = useEditor({
         extensions: [
-            StarterKit,
+            StarterKit.configure({
+                link: false,
+                underline: false,
+            }),
             Underline,
             TextAlign.configure({types: ['heading', 'paragraph']}),
             Link.configure({openOnClick: false}),

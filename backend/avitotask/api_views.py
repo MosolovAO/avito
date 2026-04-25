@@ -1,10 +1,17 @@
+from pathlib import Path
+from uuid import uuid4
+
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, parser_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
+from rest_framework.parsers import FormParser, MultiPartParser
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from datetime import datetime, timedelta
+from django.core.files.storage import default_storage
+from django.conf import settings
+
 import random
 import string
 import json
@@ -56,6 +63,48 @@ class ProductOptionsViewSet(viewsets.ModelViewSet):
             return queryset.filter(categories__category__iexact=category_name.strip()).distinct()
         return queryset.none()
 
+
+ALLOWED_IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/png'}
+MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+def upload_product_image(request):
+    uploaded_file = request.FILES.get('image')
+    if uploaded_file is None:
+        return Response(
+            {'error': 'Изображение обязательно'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if uploaded_file.content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        return Response(
+            {'error': 'Можно загружать только JPEG или PNG изображения.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if uploaded_file.size > MAX_IMAGE_SIZE_BYTES:
+        return Response(
+            {'error': 'Размер файла не должен превышать 2MB.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    extension = Path(uploaded_file.name).suffix.lower()
+
+    if extension not in ('.jpg', '.jpeg', '.png'):
+        return Response(
+            {'error': 'Недопустимое расширение файла.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    relative_path = default_storage.save(
+        f'uploads/products/{uuid4().hex}{extension}',
+        uploaded_file,
+    )
+    image_url = request.build_absolute_uri(default_storage.url(relative_path))
+
+    return Response(
+        {'url': image_url},
+        status=status.HTTP_201_CREATED,
+    )
 
 @api_view(['POST'])
 def product_random(request, product_id):
@@ -163,5 +212,3 @@ def get_product_categories(request):
     categories = list(Category.objects.order_by('category').values_list('category', flat=True))
 
     return Response(categories)
-
-

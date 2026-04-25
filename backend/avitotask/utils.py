@@ -12,7 +12,7 @@ from django.conf import settings
 
 
 @csrf_exempt
-def upload_images(request, product_id):
+def ____upload_images(request, product_id):
     """
     Обработчик для загрузки изображений и добавления их в main_images или additional_images.
     """

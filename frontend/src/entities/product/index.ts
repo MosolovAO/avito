@@ -1,1 +1,1 @@
-export type { Product, Product1, ProductOption, ProductFormData, UploadImageResponse} from './types.ts'
+export type { Product, Product1, ProductOption, ProductFormData, UploadImageResponse, ProductOptionValue, ProductImageValue} from './types.ts'

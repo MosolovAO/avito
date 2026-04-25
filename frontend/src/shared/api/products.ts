@@ -76,3 +76,16 @@ export const getProjects = async (): Promise<Project[]> => {
     return response.data
 }
 
+
+export const uploadProductImage = async (file: File): Promise<UploadImageResponse> => {
+    const formData = new FormData()
+    formData.append('image', file)
+
+    const response = await api.post<UploadImageResponse>('/api/product-images/upload/', formData, {
+        headers: {
+            'Content-Type': 'multipart/form-data',
+        },
+    })
+
+    return response.data
+}

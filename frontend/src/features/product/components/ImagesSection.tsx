@@ -1,37 +1,32 @@
-import React, {useState, useCallback, useRef, useEffect} from 'react'
-import {Button, Space, Card, Divider, Row, Col, message} from 'antd'
+// src/features/product/components/ImagesSection.tsx
+import React, {useEffect, useRef, useState} from 'react'
+import {Button, Card, Col, Divider, Form, message, Row, Space} from 'antd'
 import {MinusOutlined, UploadOutlined} from '@ant-design/icons'
-import type {ProductImageValue} from "../../../entities/product/types.ts";
+import type {ProductImageValue} from '../../../entities/product/types'
+import type {ProductFormValues} from '../lib/productFormMapper'
 
+type ImageFieldName = 'main_images' | 'additional_images'
 
-interface ImagesSectionProps {
-    initialMainImages?: ProductImageValue[]
-    initialAdditionalImages?: ProductImageValue[]
-    onMainImagesChange?: (files: ProductImageValue[]) => void
-    onAdditionalImagesChange?: (files: ProductImageValue[]) => void
+interface ImageUploadZoneProps {
+    title: string
+    name: ImageFieldName
 }
-
 
 interface FilePreview {
     source: ProductImageValue
     url: string
-    id: string // FIX: стабильный ключ
+    id: string
     revokeUrl: boolean
 }
 
-interface ImageUploadZoneProps {
-    title: string
-    items: FilePreview[]
-    setItems: React.Dispatch<React.SetStateAction<FilePreview[]>>
-    onFilesChange: (files: ProductImageValue[]) => void
-}
-
 const MAX_FILES = 10
-const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2MB
+const MAX_FILE_SIZE = 2 * 1024 * 1024
 const ALLOWED_TYPES = ['image/jpeg', 'image/png']
 const FILE_ID_UNSAFE_CHARS_REGEXP = /[^a-zA-Z0-9]/g
+const EMPTY_IMAGES: ProductImageValue[] = []
 
-/** Проверка файла на валидность **/
+const isFile = (value: ProductImageValue): value is File => value instanceof File
+
 const validateFile = (file: File): string | null => {
     if (!ALLOWED_TYPES.includes(file.type)) {
         return 'Можно загружать только JPEG или PNG изображения'
@@ -44,167 +39,137 @@ const validateFile = (file: File): string | null => {
     return null
 }
 
-const isFile = (value: ProductImageValue): value is File => value instanceof File
-
-const generateFileId = (file: File): string => {
-    // Простой hash без специальных символов
-    const safeName = file.name.replace(FILE_ID_UNSAFE_CHARS_REGEXP, '') || 'file'
-    return `${safeName}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`
-}
-
-const createFilePreview = (file: File): FilePreview => ({
-    source: file,
-    url: URL.createObjectURL(file),
-    id: generateFileId(file),
-    revokeUrl: true,
-})
-
-const revokePreviewUrl = (item: FilePreview): void => {
-    if (item.revokeUrl) {
-        URL.revokeObjectURL(item.url)
-    }
-}
-
 const getImageFiles = (files: FileList | null): File[] =>
     Array.from(files ?? []).filter((file) => file.type.startsWith('image/'))
 
-const getPreviewSources = (items: FilePreview[]): ProductImageValue[] =>
-    items.map((item) => item.source)
+const getPreviewId = (image: ProductImageValue, index: number): string => {
+    if (!isFile(image)) {
+        return `remote-${index}-${image}`
+    }
 
-const toPreviewItems = (images: ProductImageValue[]): FilePreview[] =>
-    images.map((image, index) => {
-        if (isFile(image)) {
-            return createFilePreview(image)
-        }
+    const safeName = image.name.replace(FILE_ID_UNSAFE_CHARS_REGEXP, '') || 'file'
+    return `file-${index}-${safeName}-${image.size}-${image.lastModified}`
+}
+
+const createPreview = (image: ProductImageValue, index: number): FilePreview => {
+    if (!isFile(image)) {
         return {
             source: image,
             url: image,
-            id: `remote-${index}-${image}`,
+            id: getPreviewId(image, index),
             revokeUrl: false,
         }
-    })
+    }
 
-const noopImagesChange = (): void => {
+    return {
+        source: image,
+        url: URL.createObjectURL(image),
+        id: getPreviewId(image, index),
+        revokeUrl: true,
+    }
 }
 
-const ImageUploadZone: React.FC<ImageUploadZoneProps> = ({
-                                                             title,
-                                                             items,
-                                                             setItems,
-                                                             onFilesChange,
-                                                         }) => {
+const revokePreviewUrl = (preview: FilePreview): void => {
+    if (preview.revokeUrl) {
+        URL.revokeObjectURL(preview.url)
+    }
+}
+
+
+const ImageUploadZone: React.FC<ImageUploadZoneProps> = ({title, name}) => {
+    const form = Form.useFormInstance<ProductFormValues>()
+    const watchedImages = Form.useWatch(name, {form, preserve: true})
+    const images = watchedImages ?? EMPTY_IMAGES
+
     const [dragOver, setDragOver] = useState(false)
+    const [previews, setPreviews] = useState<FilePreview[]>([])
     const fileInputRef = useRef<HTMLInputElement>(null)
-    const latestItemsRef = useRef(items)
 
-    // Храним актуальный список для cleanup при размонтировании.
     useEffect(() => {
-        latestItemsRef.current = items;
-    }, [items])
-    // Освобождаем только object URL, созданные через URL.createObjectURL().
-    useEffect(() => {
+        const nextPreviews = images.map(createPreview)
+
+        setPreviews(nextPreviews)
+
         return () => {
-            latestItemsRef.current.forEach(revokePreviewUrl)
+            nextPreviews.forEach(revokePreviewUrl)
         }
-    }, [])
+    }, [images])
 
-    // Единая точка изменения локального состояния и уведомления родителя.
-    const commitItems = useCallback(
-        (nextItems: FilePreview[]) => {
-            setItems(nextItems)
-            onFilesChange(getPreviewSources(nextItems))
-        },
-        [onFilesChange, setItems]
-    )
+    const updateImages = (nextImages: ProductImageValue[]) => {
+        form.setFieldValue(name, nextImages)
+    }
 
-    // Валидирует выбранные файлы, создаёт preview и добавляет их в список.
-    const handleFiles = useCallback(
-        (newFiles: File[]) => {
-            const availableSlots = MAX_FILES - items.length
+    const handleFiles = (newFiles: File[]) => {
+        const availableSlots = MAX_FILES - images.length
 
-            if (availableSlots <= 0) {
-                message.warning(`Максимум ${MAX_FILES} изображений`)
-                return
+        if (availableSlots <= 0) {
+            message.warning(`Максимум ${MAX_FILES} изображений`)
+            return
+        }
+
+        const acceptedFiles: File[] = []
+
+        for (const file of newFiles) {
+            if (acceptedFiles.length >= availableSlots) {
+                break
             }
 
-            const acceptedItems: FilePreview[] = []
+            const validationError = validateFile(file)
 
-            for (const file of newFiles) {
-                if (acceptedItems.length >= availableSlots) {
-                    break
-                }
-
-                const validationError = validateFile(file)
-
-                if (validationError) {
-                    message.error(validationError)
-                    continue
-                }
-
-                acceptedItems.push(createFilePreview(file))
+            if (validationError) {
+                message.error(validationError)
+                continue
             }
 
-            if (newFiles.length > availableSlots) {
-                message.warning(`Максимум ${MAX_FILES} изображений`)
-            }
-            if (acceptedItems.length === 0) {
-                return
-            }
-            commitItems([...items, ...acceptedItems])
-        }, [commitItems, items]
-    )
+            acceptedFiles.push(file)
+        }
 
+        if (newFiles.length > availableSlots) {
+            message.warning(`Максимум ${MAX_FILES} изображений`)
+        }
 
-    // Обработка drop события
-    const handleDrop = useCallback(
-        (e: React.DragEvent) => {
-            e.preventDefault()
-            setDragOver(false)
+        if (acceptedFiles.length === 0) {
+            return
+        }
 
-            const droppedFiles = getImageFiles(e.dataTransfer.files)
+        updateImages([...images, ...acceptedFiles])
+    }
 
-            if (droppedFiles.length === 0) {
-                message.warning('Перетащите изображения для загрузки')
-                return
-            }
+    const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+        event.preventDefault()
+        setDragOver(false)
 
-            handleFiles(droppedFiles)
-        },
-        [handleFiles]
-    )
+        const droppedFiles = getImageFiles(event.dataTransfer.files)
 
-    // Обработка выбора файлов через input
-    const handleFileSelect = useCallback(
-        (e: React.ChangeEvent<HTMLInputElement>) => {
-            const selectedFiles = getImageFiles(e.target.files)
+        if (droppedFiles.length === 0) {
+            message.warning('Перетащите изображения для загрузки')
+            return
+        }
 
-            if (selectedFiles.length > 0) {
-                handleFiles(selectedFiles)
-            }
+        handleFiles(droppedFiles)
+    }
 
-            e.target.value = ''
-        },
-        [handleFiles]
-    )
+    const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const selectedFiles = getImageFiles(event.target.files)
 
-    // Удаление изображения
-    const handleRemove = useCallback(
-        (itemToRemove: FilePreview) => {
-            revokePreviewUrl(itemToRemove)
+        if (selectedFiles.length > 0) {
+            handleFiles(selectedFiles)
+        }
 
-            commitItems(items.filter((item) => item.id !== itemToRemove.id))
-        },
-        [commitItems, items]
-    )
+        event.target.value = ''
+    }
+
+    const handleRemove = (indexToRemove: number) => {
+        updateImages(images.filter((_, index) => index !== indexToRemove))
+    }
 
     return (
         <div>
             <Divider orientation="horizontal">{title}</Divider>
 
-            {/*Зона Drag and Drop*/}
             <div
-                onDragOver={(e) => {
-                    e.preventDefault()
+                onDragOver={(event) => {
+                    event.preventDefault()
                     setDragOver(true)
                 }}
                 onDragLeave={() => setDragOver(false)}
@@ -212,54 +177,56 @@ const ImageUploadZone: React.FC<ImageUploadZoneProps> = ({
                 onClick={() => fileInputRef.current?.click()}
                 style={{
                     border: `2px dashed ${dragOver ? '#1890ff' : '#d9d9d9'}`,
-                    borderRadius: '8px',
-                    padding: '24px',
+                    borderRadius: 8,
+                    padding: 24,
                     textAlign: 'center',
                     backgroundColor: dragOver ? '#e6f7ff' : '#fafafa',
                     transition: 'all 0.3s',
-                    marginBottom: '16px',
+                    marginBottom: 16,
                     cursor: 'pointer',
-
                 }}
             >
                 <UploadOutlined
-                    style={{fontSize: '48px', color: dragOver ? '#1890ff' : '#bfbfbf'}}
+                    style={{
+                        fontSize: 48,
+                        color: dragOver ? '#1890ff' : '#bfbfbf',
+                    }}
                 />
+
                 <p style={{margin: '8px 0 0', color: '#666'}}>
                     Перетащите изображения сюда или кликните для выбора
                 </p>
-                <p style={{margin: '4px 0 0', fontSize: '12px', color: '#999'}}>
+
+                <p style={{margin: '4px 0 0', fontSize: 12, color: '#999'}}>
                     Макс. размер: 2MB | Форматы: JPEG, PNG
                 </p>
 
-                {/*Скрытый инпут*/}
-
                 <input
-                    type='file'
+                    ref={fileInputRef}
+                    type="file"
                     accept="image/jpeg,image/png"
                     multiple
                     onChange={handleFileSelect}
                     style={{display: 'none'}}
-                    ref={fileInputRef}
                 />
             </div>
-            {/*Превью изображений*/}
-            {items.length > 0 && (
-                <Space wrap size='small'>
-                    {items.map(item => (
+
+            {previews.length > 0 && (
+                <Space wrap size="small">
+                    {previews.map((preview, index) => (
                         <div
-                            key={item.id}
+                            key={preview.id}
                             style={{
                                 position: 'relative',
-                                width: '100px',
-                                height: '100px',
+                                width: 100,
+                                height: 100,
                                 border: '1px solid #d9d9d9',
-                                borderRadius: '4px',
+                                borderRadius: 4,
                                 overflow: 'hidden',
                             }}
                         >
                             <img
-                                src={item.url}
+                                src={preview.url}
                                 alt="Preview"
                                 style={{
                                     width: '100%',
@@ -268,22 +235,21 @@ const ImageUploadZone: React.FC<ImageUploadZoneProps> = ({
                                 }}
                             />
 
-                            {/* Кнопка удаления */}
                             <Button
                                 danger
                                 size="small"
                                 icon={<MinusOutlined/>}
-                                onClick={e => {
-                                    e.stopPropagation()
-                                    handleRemove(item)
+                                onClick={(event) => {
+                                    event.stopPropagation()
+                                    handleRemove(index)
                                 }}
                                 style={{
                                     position: 'absolute',
-                                    top: '4px',
-                                    right: '4px',
+                                    top: 4,
+                                    right: 4,
                                     borderRadius: '50%',
-                                    width: '24px',
-                                    height: '24px',
+                                    width: 24,
+                                    height: 24,
                                     padding: 0,
                                     display: 'flex',
                                     alignItems: 'center',
@@ -298,45 +264,16 @@ const ImageUploadZone: React.FC<ImageUploadZoneProps> = ({
     )
 }
 
-
-/**
- * Основной компонент ImagesSection
- */
-
-export const ImagesSection: React.FC<ImagesSectionProps> = ({
-                                                                initialMainImages = [],
-                                                                initialAdditionalImages = [],
-                                                                onMainImagesChange,
-                                                                onAdditionalImagesChange,
-                                                            }) => {
-    const [mainItems, setMainItems] = useState<FilePreview[]>(() =>
-        toPreviewItems(initialMainImages)
-    )
-    const [additionalItems, setAdditionalItems] = useState<FilePreview[]>(() =>
-        toPreviewItems(initialAdditionalImages)
-    )
-
+export const ImagesSection: React.FC = () => {
     return (
-        <Card title="🖼️ Изображения" style={{marginBottom: '16px'}}>
+        <Card title="🖼️ Изображения" style={{marginBottom: 16}}>
             <Row gutter={16}>
-                {/* Колонка основных изображений */}
                 <Col xs={24} lg={12}>
-                    <ImageUploadZone
-                        title="Основные изображения"
-                        items={mainItems}
-                        setItems={setMainItems}
-                        onFilesChange={onMainImagesChange ?? noopImagesChange}
-                    />
+                    <ImageUploadZone title="Основные изображения" name="main_images"/>
                 </Col>
 
-                {/* Колонка дополнительных изображений */}
                 <Col xs={24} lg={12}>
-                    <ImageUploadZone
-                        title="Дополнительные изображения"
-                        items={additionalItems}
-                        setItems={setAdditionalItems}
-                        onFilesChange={onAdditionalImagesChange ?? noopImagesChange}
-                    />
+                    <ImageUploadZone title="Дополнительные изображения" name="additional_images"/>
                 </Col>
             </Row>
         </Card>

@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from "react";
+import React from "react";
 import {useNavigate, useParams} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Typography, Card, message, Spin} from 'antd'
@@ -9,12 +9,46 @@ import type {ProductFormData, Product} from '../../entities/product'
 
 const {Title} = Typography
 
+// Нормализация описания
+const normalizeDescriptions = (description: Product['descriptions']): string[] => {
+    if (Array.isArray(description)) {
+        return description
+    }
+
+    return Object.values(description ?? {})
+}
+
+// Подготовка данных для формы
+const mapProductToFormData = (product: Product): Partial<ProductFormData> => ({
+    price_randomization_enabled: product.price_randomization_enabled,
+    titles: product.titles,
+    main_images: product.main_images,
+    additional_images: product.additional_images,
+    descriptions: normalizeDescriptions(product.descriptions),
+    addresses: product.addresses,
+    category: product.category,
+    listingfee: product.listingfee,
+    email: product.email,
+    contactphone: product.contactphone,
+    managername: product.managername,
+    avitostatus: product.avitostatus,
+    companyname: product.companyname,
+    contactmethod: product.contactmethod,
+    adtype: product.adtype,
+    availability: product.availability,
+    price: product.price,
+    price_min: product.price_min,
+    price_max: product.price_max,
+    price_step: product.price_step,
+    projects: product.projects?.map((project) => project.id) ?? [],
+    options: product.options ?? [],
+    schedule: product.schedule ?? {},
+})
+
 export const EditProductPage: React.FC = () => {
     const {id} = useParams<{ id: string }>()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
-    const [productData, setProductData] = useState<Partial<ProductFormData> | null>(null)
-
 
     const {data: categories = [], isLoading: categoriesLoading} = useQuery({
         queryKey: ['product-categories'],
@@ -23,10 +57,11 @@ export const EditProductPage: React.FC = () => {
     })
 
     // Загрузка продукта
-    const {data: product, isLoading: productLoading} = useQuery<Product>({
+    const {data: productData, isLoading: productLoading} = useQuery({
         queryKey: ['product', id],
         queryFn: () => getProduct(Number(id)),
-        enabled: !!id,
+        enabled: Boolean(id),
+        select: mapProductToFormData
     })
 
     // Загрузка проектов
@@ -36,46 +71,6 @@ export const EditProductPage: React.FC = () => {
         staleTime: 5 * 60 * 1000,
     })
 
-
-    // Нормализация описания
-    const normalizeDescriptions = (description: Product['descriptions']): string[] => {
-        if (Array.isArray(description)) {
-            return description
-        }
-
-        return Object.values(description ?? {})
-    }
-
-    // Подготовка данных для формы
-    useEffect(() => {
-        if (product) {
-            setProductData({
-                price_randomization_enabled: product.price_randomization_enabled,
-                titles: product.titles,
-                main_images: product.main_images,
-                additional_images: product.additional_images,
-                descriptions: normalizeDescriptions(product.descriptions),
-                addresses: product.addresses,
-                category: product.category,
-                listingfee: product.listingfee,
-                email: product.email,
-                contactphone: product.contactphone,
-                managername: product.managername,
-                avitostatus: product.avitostatus,
-                companyname: product.companyname,
-                contactmethod: product.contactmethod,
-                adtype: product.adtype,
-                availability: product.availability,
-                price: product.price,
-                price_min: product.price_min,
-                price_max: product.price_max,
-                price_step: product.price_step,
-                projects: product.projects?.map(p => p.id) || [],
-                options: [],
-                schedule: product.schedule || {},
-            })
-        }
-    }, [product])
 
     // Мутация для обновления продукта
     const updateMutation = useMutation({

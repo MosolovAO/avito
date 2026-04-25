@@ -1,21 +1,21 @@
-import {Card, Col, Form, InputNumber, Row, Select, Switch} from 'antd'
 import React from "react";
+import {Card, Col, Form, InputNumber, Row, Select, Switch} from 'antd'
 import type {Project} from '../../../entities/project'
+import type {ProductFormValues} from "../lib/productFormMapper.ts"
 
 interface BasicInfoSectionProps {
-    randomizeEnabled?: boolean
-    onRandomizeChange?: (enable: boolean) => void
     projects: Project[]
     categories: string[]
 }
 
 export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
-                                                                      randomizeEnabled = false,
-                                                                      onRandomizeChange,
                                                                       projects,
                                                                       categories
 
                                                                   }) => {
+    const form = Form.useFormInstance<ProductFormValues>()
+    const randomizeEnabled = Form.useWatch('price_randomization_enabled', form) ?? false
+
     return (
         <Card title="📦 Основная информация" style={{marginBottom: '16px'}}>
             <Row gutter={16}>
@@ -25,13 +25,14 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
                         label="Выберите проект"
                         rules={[{required: true, message: 'Выберите хотя бы один проект'}]}
                     >
-                        <Select mode="multiple" placeholder="Выберите проекты">
-                            {projects.map((project) => (
-                                <Select.Option key={project.id} value={project.id}>
-                                    {project.project_name}
-                                </Select.Option>
-                            ))}
-                        </Select>
+                        <Select
+                            mode="multiple"
+                            placeholder="Выберите проекты"
+                            options={projects.map((project) => ({
+                                value: project.id,
+                                label: project.project_name,
+                            }))}
+                        />
                     </Form.Item>
                 </Col>
                 <Col span={8}>
@@ -40,13 +41,13 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
                         label="Категория"
                         rules={[{required: true, message: 'Введите категорию'}]}
                     >
-                        <Select
+                         <Select
                             showSearch
                             placeholder="Выберите категорию"
                             optionFilterProp="label"
                             options={categories.map((category) => ({
                                 value: category,
-                                label: category
+                                label: category,
                             }))}
                         />
 
@@ -65,10 +66,8 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
 
             </Row>
 
-            <Form.Item label="Включить рандомизацию цены?" valuePropName="checked">
+            <Form.Item label="Включить рандомизацию цены?" valuePropName="checked" name="price_randomization_enabled">
                 <Switch
-                    checked={randomizeEnabled}
-                    onChange={onRandomizeChange}
                     checkedChildren="Вкл"
                     unCheckedChildren="Выкл"
                 />

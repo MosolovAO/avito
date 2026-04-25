@@ -12,6 +12,7 @@ from avitotask.api_views import (
     ProjectViewSet,
     ProductOptionsViewSet,
     get_product_categories,
+    upload_product_image,
     product_random as product_random_api,
     toggle_product_active as toggle_product_active_api,
 )
@@ -28,6 +29,7 @@ urlpatterns = [
     path('api/product-random/<int:product_id>/', product_random_api, name='product-random-api'),
     path('api/toggle-product-active/<int:product_id>/', toggle_product_active_api, name='toggle-product-active-api'),
     path('api/categories/', get_product_categories, name='categories-api'),
+    path('api/product-images/upload/', upload_product_image, name='product-image-upload-api'),
     path('api/', include(router.urls)),
 ]
 
