@@ -12,7 +12,8 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Project
-        fields = ['id', 'project_name']
+        fields = ['id', 'workspace', 'project_name']
+        read_only_fields = ['workspace']
 
 
 class ProductOptionsSerializer(serializers.ModelSerializer):
@@ -97,7 +98,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'url', 'price', 'price_randomization_enabled', 'activate',
+            'id', 'workspace', 'name', 'url', 'price', 'price_randomization_enabled', 'activate',
             'price_min', 'price_max', 'price_step',
             'possible_combinations', 'schedule', 'next_update_time',
             'titles', 'main_images', 'additional_images',
@@ -107,7 +108,14 @@ class ProductSerializer(serializers.ModelSerializer):
             'contactmethod', 'adtype', 'availability',
             'projects', 'options',
         ]
-        read_only_fields = ['possible_combinations', 'next_update_time', 'selected_options']
+        read_only_fields = ['workspace', 'possible_combinations', 'next_update_time', 'selected_options']
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+            workspace = self.context.get("workspace")
+            if workspace is not None:
+                self.fields["projects"].queryset = Project.objects.filter(workspace=workspace)
 
     def _normalize_descriptions(self, value):
         """Приводит descriptions к формату модели Product.descriptions."""
@@ -310,7 +318,7 @@ class Product1Serializer(serializers.ModelSerializer):
     class Meta:
         model = Product1
         fields = [
-            'id', 'title', 'urls', 'description',
+            'id', 'workspace', 'title', 'urls', 'description',
             'created_date', 'task_id', 'selected_option', 'project_name'
         ]
-        read_only_fields = ['created_date']
+        read_only_fields = ['workspace', 'created_date']

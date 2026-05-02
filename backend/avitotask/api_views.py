@@ -1,15 +1,24 @@
 from pathlib import Path
 from uuid import uuid4
+from datetime import datetime, timedelta
+from typing import Any
 
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
+
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
-from datetime import datetime, timedelta
+
 from django.core.files.storage import default_storage
+
+from accounts.models import WorkspaceMembership
+from accounts.permissions import WorkspacePermission, membership_has_permission
 from django.conf import settings
 
 import random
@@ -25,31 +34,120 @@ from .serializers import (
 )
 
 
-class ProductViewSet(viewsets.ModelViewSet):
+def get_request_membership(request, required_permission=None):
+    memberships = WorkspaceMembership.objects.select_related("workspace").filter(
+        user=request.user,
+        status=WorkspaceMembership.Status.ACTIVE,
+    )
+
+    workspace_id = request.headers.get("X-Workspace-Id")
+
+    if workspace_id:
+        membership = memberships.filter(workspace_id=workspace_id).first()
+        if membership is None:
+            raise PermissionDenied("У вас нет доступа к этому кабинету.")
+    else:
+        count = memberships.count()
+
+        if count == 0:
+            raise PermissionDenied("У пользователя нет активного кабинета.")
+
+        if count > 1:
+            raise ValidationError({
+                "workspace": "Передайте X-Workspace-Id, потому что у пользователя несколько кабинетов."
+            })
+
+        membership = memberships.first()
+
+    if required_permission and not membership_has_permission(membership, required_permission):
+        raise PermissionDenied("Недостаточно прав для выполнения действия.")
+
+    return membership
+
+
+def get_request_workspace(request, required_permission=None):
+    return get_request_membership(request, required_permission).workspace
+
+
+class WorkspaceScopedModelViewSet(viewsets.ModelViewSet):
+    request: Request
+    action: str
+
+    read_permission = None
+    write_permission = None
+    read_actions = {"list", "retrieve"}
+
+    def get_required_workspace_permission(self):
+        if self.action in self.read_actions:
+            return self.read_permission
+        return self.write_permission
+
+    def get_workspace(self):
+        return get_request_workspace(
+            self.request,
+            required_permission=self.get_required_workspace_permission(),
+        )
+
+    def get_serializer_context(self) -> dict[str, Any]:
+        context = super().get_serializer_context()
+        context["workspace"] = self.get_workspace()
+        return context
+
+
+class ProductViewSet(WorkspaceScopedModelViewSet):
     """ API endpoint для управления задачами"""
-    queryset = Product.objects.prefetch_related('projects', 'productoptionassignment_set').all()
     serializer_class = ProductSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+    read_permission = WorkspacePermission.VIEW_TASKS
+    write_permission = WorkspacePermission.MANAGE_TASKS
+
+    def get_queryset(self):
+        return (
+            Product.objects
+            .filter(workspace=self.get_workspace())
+            .prefetch_related('projects', 'productoptionassignment_set')
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(workspace=self.get_workspace())
 
 
-class Product1ViewSet(viewsets.ModelViewSet):
+class Product1ViewSet(WorkspaceScopedModelViewSet):
     """ API endpoint для управления объектами Product1"""
-    queryset = Product1.objects.all()
     serializer_class = Product1Serializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+    read_permission = WorkspacePermission.VIEW_ADS
+    write_permission = WorkspacePermission.MANAGE_ADS
+
+    def get_queryset(self):
+        return Product1.objects.filter(
+            workspace=self.get_workspace()
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(workspace=self.get_workspace())
 
 
-class ProjectViewSet(viewsets.ModelViewSet):
+class ProjectViewSet(WorkspaceScopedModelViewSet):
     """ API endpoint для управления проектами"""
-    queryset = Project.objects.all().order_by('project_name')
     serializer_class = ProjectSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
+    read_permission = WorkspacePermission.VIEW_TASKS
+    write_permission = WorkspacePermission.MANAGE_TASKS
+
+    def get_queryset(self):
+        return Project.objects.filter(
+            workspace=self.get_workspace()
+        ).order_by('project_name')
+
+    def perform_create(self, serializer):
+        serializer.save(workspace=self.get_workspace())
 
 
 class ProductOptionsViewSet(viewsets.ModelViewSet):
     """ API endpoint для управления опциями продуктов"""
     serializer_class = ProductOptionsSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
     queryset = ProductOptions.objects.prefetch_related('categories').order_by('option_title_ru')
 
     def get_queryset(self):
@@ -67,9 +165,12 @@ class ProductOptionsViewSet(viewsets.ModelViewSet):
 ALLOWED_IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/png'}
 MAX_IMAGE_SIZE_BYTES = 2 * 1024 * 1024
 
+
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser])
 def upload_product_image(request):
+    get_request_workspace(request, WorkspacePermission.MANAGE_TASKS)
     uploaded_file = request.FILES.get('image')
     if uploaded_file is None:
         return Response(
@@ -106,7 +207,9 @@ def upload_product_image(request):
         status=status.HTTP_201_CREATED,
     )
 
+
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def product_random(request, product_id):
     """
     Генерация случайного продукта (объявления)
@@ -187,6 +290,7 @@ def product_random(request, product_id):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def toggle_product_active(request, product_id):
     """
     Активация/деактивация продукта
@@ -208,6 +312,7 @@ def toggle_product_active(request, product_id):
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_product_categories(request):
     categories = list(Category.objects.order_by('category').values_list('category', flat=True))
 

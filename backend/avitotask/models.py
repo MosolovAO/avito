@@ -71,6 +71,12 @@ class Category(models.Model):
 
 # Проекты на аккаунте
 class Project(models.Model):
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+    )
     project_name = models.CharField(max_length=100, null=True, blank=True, )
 
     def __str__(self):
@@ -80,6 +86,13 @@ class Project(models.Model):
 # Уже созданные товары
 class Product1(models.Model):
     """Уже сгенерированное объявление."""
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='generated_products',
+        null=True,
+        blank=True,
+    )
     title = models.CharField(max_length=255, db_index=True, help_text="Заголовок продукта")
     urls = models.JSONField(default=list, blank=True, help_text="Список URL фото продукта")
     description = models.TextField(help_text="Описание продукта")
@@ -92,6 +105,13 @@ class Product1(models.Model):
 # Создание задачи для автоматического создания товаров
 class Product(models.Model):
     """Задача генерации объявлений."""
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='products',
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
     url = models.URLField()
     price = models.IntegerField(null=True, blank=True, default=0)

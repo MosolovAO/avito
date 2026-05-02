@@ -431,3 +431,83 @@
 - 1С
 - Google Sheets
 - Telegram-уведомления
+
+
+
+План реализации
+
+Типы и API-клиент
+
+Добавить frontend/src/shared/api/workspaceUsers.ts.
+Описать строгие типы: WorkspaceRole, WorkspacePermission, WorkspaceMember, WorkspaceInvitation, PublicInvitation.
+Добавить query keys: workspaceMembersKeys, workspaceInvitationsKeys.
+Без any, ответы типизировать вручную.
+Текущее workspace
+
+Сейчас AuthProvider отдаёт workspaces, но выбранного workspace нет.
+Нужно добавить Zustand-store для selectedWorkspaceId, потому что это клиентское состояние.
+Важно: zustand отсутствует в package.json, хотя указан в стеке. Значит либо добавить dependency, либо временно не начинать это изменение до согласования.
+Permissions
+
+Использовать workspaces[].permissions.
+Управление пользователями показывать только если есть manage_users.
+Не полагаться только на UI: backend всё равно вернёт 403, но кнопку/раздел скрывать нужно.
+Страница управления
+
+Добавить страницу, например:
+frontend/src/pages/workspace/WorkspaceUsersPage.tsx
+маршрут /workspace/users
+В layout добавить пункт меню “Пользователи” или “Команда”.
+Если прав manage_users нет: показывать Result status="403".
+Участники
+
+Компонент WorkspaceMembersTable.
+Колонки: email, имя, роль, статус, дата присоединения, действия.
+Действия:
+сменить роль через Select;
+отключить участника через Popconfirm.
+Роль owner нельзя назначать и нельзя менять, это совпадает с backend.
+Приглашения
+
+Компонент WorkspaceInvitationsTable.
+Колонки: email, роль, статус, пригласил, истекает, действия.
+Для pending показывать “Отозвать”.
+Для accepted/revoked/expired действий не давать.
+После create/revoke инвалидировать queries участников и приглашений.
+Форма приглашения
+
+AntD Form + Zod schema.
+Поля:
+email;
+role, варианты: admin, manager, analyst, viewer.
+owner не показывать вообще.
+После успешного POST /invites/ можно показать accept_url, если backend вернул его, и кнопку копирования.
+Публичная страница приглашения
+
+Маршрут /invites/:token должен быть вне ProtectedRoute.
+Делает GET /api/workspace-invites/:token/.
+Если status !== "pending" или просрочено: показать недоступное приглашение.
+Если пользователь авторизован:
+показать workspace/email/role;
+кнопка “Принять приглашение”;
+POST /accept/;
+после успеха обновить auth/me и перейти в workspace.
+Если пользователь не авторизован:
+показать две опции: “Войти и принять” или “Создать аккаунт”.
+Регистрация через POST /register/ без поля email, потому что email берётся из приглашения.
+AuthProvider
+
+Сейчас auth query key локальный: frontend/src/features/auth/model/AuthProvider.tsx (line 31).
+Его лучше экспортировать, чтобы invite accept/register могли инвалидировать или обновлять session.
+Также есть баг: logoutLoading сейчас равен loginMutation.isPending на frontend/src/features/auth/model/AuthProvider.tsx (line 109), должен быть logoutMutation.isPending.
+Проверка
+
+npm run build
+Ручные сценарии:
+admin создаёт invite;
+invite виден в таблице;
+invite можно отозвать;
+новый пользователь регистрируется по invite;
+существующий пользователь логинится и принимает invite;
+пользователь без manage_users не видит управление командой.
+Главный риск: без выбранного workspace фронт будет неустойчивым, потому что backend API требует workspace_id. Поэтому я бы начинал именно с модели текущего workspace, а уже потом делал таблицы и invite-flow.

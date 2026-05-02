@@ -31,7 +31,11 @@ urlpatterns = [
     path('api/categories/', get_product_categories, name='categories-api'),
     path('api/product-images/upload/', upload_product_image, name='product-image-upload-api'),
     path('api/', include(router.urls)),
-]
+
+    path('api/auth/', include('accounts.urls')),
+    path('api/workspaces/', include('accounts.workspace_urls')),
+    path('api/workspace-invites/', include('accounts.invitation_urls')),
+]   
 
 websocket_urlpatterns = [
     path("ws/notifications/", NotificationConsumer.as_asgi()),
