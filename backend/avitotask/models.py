@@ -6,7 +6,7 @@ from django.db import models
 from django.utils.timezone import now
 
 from system import settings
-from django.db.models import JSONField
+from django.db.models import JSONField, Q
 from django.core.serializers.json import DjangoJSONEncoder
 
 
@@ -100,6 +100,12 @@ class Product1(models.Model):
     task_id = models.IntegerField(null=True, blank=True, default=0)
     selected_option = MyJSONField(default=dict, blank=True, null=True)
     project_name = MyJSONField(default=list, blank=True, null=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['task_id', 'created_date'], name='idx_product1_task_date'),
+            models.Index(fields=['workspace', 'task_id', 'created_date'], name='idx_product1_ws_task_date'),
+        ]
 
 
 # Создание задачи для автоматического создания товаров
@@ -278,3 +284,493 @@ class ProductOptionAssignment(models.Model):
 
     class Meta:
         unique_together = [('product', 'option')]
+
+
+# Новые таблицы в базе данных (Рефакторинг)
+class AvitoAccount(models.Model):
+    """Аккаунт Avito внутри workspace. Заменяет старую сущность Project."""
+
+    class ExportStatus(models.TextChoices):
+        CLEAN = "clean", "CSV актуален"
+        DIRTY = "dirty", "CSV требует пересборки"
+        EXPORTING = "exporting", "CSV пересобирается"
+        ERROR = "error", "Ошибка пересборки CSV"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name="avito_accounts",
+    )
+
+    name = models.CharField(max_length=255)
+    external_account_id = models.CharField(max_length=255, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
+    export_status = models.CharField(
+        max_length=20,
+        choices=ExportStatus.choices,
+        default=ExportStatus.CLEAN
+    )
+    export_file_path = models.CharField(max_length=255, blank=True, null=True)
+    export_requested_at = models.DateTimeField(null=True, blank=True)
+    export_started_at = models.DateTimeField(null=True, blank=True)
+    last_exported_at = models.DateTimeField(null=True, blank=True)
+    export_error = models.TextField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Аккаунт Авито"
+        verbose_name_plural = "Аккаунты Авито"
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=['workspace', 'is_active'], name='idx_avacc_ws_active'),
+            models.Index(fields=["workspace", "export_status"], name='idx_avacc_ws_export')
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['workspace', 'name'],
+                name='uniq_avacc_ws_name',
+            ),
+            models.UniqueConstraint(
+                fields=['workspace', 'external_account_id'],
+                condition=Q(external_account_id__isnull=False) & ~Q(external_account_id=""),
+                name='uniq_avacc_ws_ext',
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class AdGenerationTask(models.Model):
+    """Задача генерации объявлений. Заменяет Product."""
+
+    class IntervalDays(models.IntegerChoices):
+        EVERY_7_DAYS = 7, "Каждые 7 дней"
+        EVERY_14_DAYS = 14, "Каждые 14 дней"
+        EVERY_21_DAYS = 21, "Каждые 21 день"
+        EVERY_28_DAYS = 28, "Каждые 28 дней"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ad_generation_tasks',
+    )
+    avito_accounts = models.ManyToManyField(
+        AvitoAccount,
+        related_name='generation_tasks',
+        blank=True,
+    )
+
+    name = models.CharField(max_length=255)
+    is_active = models.BooleanField(default=True)
+    url = models.URLField(blank=True, null=True)
+
+    category = models.ForeignKey(
+        Category,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ad_generation_tasks',
+    )
+
+    titles = MyJSONField(default=list, blank=True)
+    descriptions = MyJSONField(default=dict, blank=True)
+    main_images = MyJSONField(default=list, blank=True)
+    additional_images = MyJSONField(default=list, blank=True)
+    addresses = MyJSONField(default=list, blank=True)
+
+    base_data = MyJSONField(
+        default=dict, blank=True, help_text="Общие поля объявления для CSV: цена, контакты, тип объявления и т.д.",
+    )
+    selected_options = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Выбранные параметры Avito для задачи генерации."
+    )
+
+    price = models.IntegerField(null=True, blank=True, default=0)
+    price_min = models.IntegerField(null=True, blank=True, default=0)
+    price_max = models.IntegerField(null=True, blank=True, default=0)
+    price_step = models.IntegerField(null=True, blank=True, default=0)
+    price_randomization_enabled = models.BooleanField(default=False)
+
+    possible_combinations = models.IntegerField(null=True, blank=True, default=0)
+
+    schedule = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Расписание вида {'Пн': '12:00', 'Ср': '12:00'} или нормализованный аналог.",
+    )
+
+    publication_interval_days = models.PositiveSmallIntegerField(
+        choices=IntervalDays.choices,
+        default=IntervalDays.EVERY_7_DAYS,
+    )
+
+    schedule_cycle_started_at = models.DateTimeField(null=True, blank=True)
+    next_update_time = models.DateTimeField(null=True, blank=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+
+    options = models.ManyToManyField(
+        ProductOptions,
+        through="AdGenerationTaskOptionAssignment",
+        related_name='ad_generation_tasks',
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Задача генерации объявлений"
+        verbose_name_plural = "Задачи генерации объявлений"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["workspace", "is_active", "next_update_time"], name="idx_adtask_ws_next"),
+            models.Index(fields=["workspace", "-created_at"], name="idx_adtask_ws_created_at"),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class AdGenerationTaskOptionAssignment(models.Model):
+    """Выбранные значения опций Avito для новой задачи генерации."""
+    task = models.ForeignKey(AdGenerationTask, on_delete=models.CASCADE)
+    option = models.ForeignKey(ProductOptions, on_delete=models.CASCADE)
+    selected_value = MyJSONField(default=list, blank=True)
+
+    class Meta:
+        verbose_name = "Опция задачи генерации"
+        verbose_name_plural = "Опции задач генерации"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['task', 'option'],
+                name='uniq_adtask_option',
+            )
+        ]
+
+
+class AdBatch(models.Model):
+    """Одна операция создания объявлений: автогенерация, ручной масс-постинг или импорт."""
+
+    class Source(models.TextChoices):
+        AUTO = "auto", "Автогенерация"
+        MANUAL = "manual", "Ручной масс-постинг"
+        IMPORT = "import", "Импорт из Avito"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Черновик"
+        COMPLETED = "completed", "Завершено"
+        FAILED = "failed", "Ошибка"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ad_batches',
+    )
+
+    task = models.ForeignKey(
+        AdGenerationTask,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='batches',
+    )
+
+    source = models.CharField(max_length=20, choices=Source.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+
+    created_by = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ad_batches',
+    )
+
+    total_creatives = models.PositiveIntegerField(default=0)
+    total_publications = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Пакет объявлений"
+        verbose_name_plural = "Пакеты объявлений"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["workspace", "-created_at"], name="idx_adbatch_ws_created"),
+            models.Index(fields=["workspace", "task"], name="idx_adbatch_ws_task"),
+            models.Index(fields=["workspace", "status"], name="idx_adbatch_ws_status"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_source_display()} #{self.id}"
+
+
+class AdCreative(models.Model):
+    """Уникальный вариант объявления без привязки к конкретному адресу."""
+
+    class Source(models.TextChoices):
+        AUTO = "auto", "Автогенерация"
+        MANUAL = "manual", "Ручное создание"
+        IMPORT = "import", "Импорт из Avito"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ad_creatives',
+    )
+    task = models.ForeignKey(
+        AdGenerationTask,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='creatives',
+    )
+    batch = models.ForeignKey(
+        AdBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='creatives',
+    )
+
+    source = models.CharField(max_length=20, choices=Source.choices)
+    title = models.CharField(max_length=255)
+    description = models.TextField()
+    image_urls = MyJSONField(default=list, blank=True)
+
+    base_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Общие CSV-поля этого варианта объявления.",
+    )
+    option_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Параметры Avito для этого варианта объявления.",
+    )
+    identity_hash = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+        help_text="Хэш набора title/description/images/options для быстрой проверки дублей.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Креатив объявления"
+        verbose_name_plural = "Креативы объявлений"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["workspace", "task", "-created_at"], name="idx_adcreative_ws_task"),
+            models.Index(fields=["workspace", "batch"], name="idx_adcreative_ws_batch"),
+            models.Index(fields=["workspace", "identity_hash"], name="idx_adcreative_ws_hash"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['workspace', 'task', 'identity_hash'],
+                condition=Q(identity_hash__isnull=False) & ~Q(identity_hash=""),
+                name='uniq_adcreative_hash',
+            )
+        ]
+
+    def __str__(self):
+        return self.title
+
+
+class AdPublication(models.Model):
+    """Конкретная публикация: креатив + адрес + аккаунт Avito. Это будущая строка CSV."""
+
+    class Source(models.TextChoices):
+        AUTO = "auto", "Автогенерация"
+        MANUAL = "manual", "Ручной масс-постинг"
+        IMPORT = "import", "Импорт из Avito"
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Черновик"
+        ACTIVE = "active", "Активно"
+        PAUSED = "paused", "Приостановлено"
+        ARCHIVED = "archived", "Архив"
+        ERROR = "error", "Ошибка"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ad_publications',
+    )
+    avito_account = models.ForeignKey(
+        AvitoAccount,
+        on_delete=models.CASCADE,
+        related_name='publications',
+    )
+    creative = models.ForeignKey(
+        AdCreative,
+        on_delete=models.CASCADE,
+        related_name='publications',
+    )
+    task = models.ForeignKey(
+        AdGenerationTask,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='publications',
+    )
+    batch = models.ForeignKey(
+        AdBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='publications',
+    )
+
+    source = models.CharField(max_length=20, choices=Source.choices)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+
+    row_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Наш внутренний ID строки для CSV и последующего связывания с Avito.",
+    )
+    address = models.TextField()
+    address_data = MyJSONField(default=dict, blank=True)
+
+    overrides = MyJSONField(default=dict, blank=True,
+                            help_text="Индивидуальные изменения этой публикации поверх AdCreative.base_data.", )
+    published_at = models.DateTimeField(null=True, blank=True)
+    last_exported_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Публикация объявления"
+        verbose_name_plural = "Публикации объявлений"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=["workspace", "avito_account", "status"], name="idx_adpub_ws_acc_status"),
+            models.Index(fields=["workspace", "creative"], name="idx_adpub_ws_creative"),
+            models.Index(fields=["workspace", "task", "status"], name="idx_adpub_ws_task_status"),
+            models.Index(fields=["workspace", "batch"], name="idx_adpub_ws_batch"),
+            models.Index(fields=["workspace", "avito_account", "row_id"], name="idx_adpub_ws_row"),
+            models.Index(fields=["workspace", "avito_account", "-created_at"], name="idx_adpub_ws_created"),
+            models.Index(fields=["workspace", "avito_account"], name="idx_adpub_active_export",
+                         condition=Q(status='active')),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "avito_account", "row_id"],
+                condition=Q(row_id__isnull=False) & ~Q(row_id=""),
+                name="uniq_adpub_row"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.creative.title} / {self.address}"
+
+
+class AvitoListing(models.Model):
+    """Реальное объявление на Avito, полученное после публикации или импорта по API."""
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='avito_listings',
+    )
+    avito_account = models.ForeignKey(
+        AvitoAccount,
+        on_delete=models.CASCADE,
+        related_name='avito_listings',
+    )
+    publication = models.OneToOneField(
+        AdPublication,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='avito_listing',
+    )
+
+    avito_id = models.CharField(max_length=100)
+    status = models.CharField(max_length=50, blank=True, null=True)
+    title = models.CharField(max_length=255, blank=True, null=True)
+    url = models.URLField(blank=True, null=True)
+
+    imported_payload = MyJSONField(default=dict, blank=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Объявление Avito"
+        verbose_name_plural = "Объявления Avito"
+        ordering = ['-created_at']
+
+        indexes = [
+            models.Index(fields=["workspace", "avito_account", "avito_id"], name="idx_avlisting_acc_id"),
+            models.Index(fields=["publication"], name="idx_avlisting_pub"),
+            models.Index(fields=["workspace", "-last_seen_at"], name="idx_avlisting_ws_seen"),
+            models.Index(fields=["workspace", "status"], name="idx_avlisting_ws_status")
+        ]
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "avito_account", "avito_id"],
+                name="uniq_avlisting_id"
+            )
+        ]
+
+    def __str__(self):
+        return str(self.avito_id)
+
+
+class AvitoListingDailyStats(models.Model):
+    """Дневная статистика объявления Avito."""
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='avito_listing_daily_stats',
+    )
+    listing = models.ForeignKey(
+        AvitoListing,
+        on_delete=models.CASCADE,
+        related_name='daily_stats',
+    )
+
+    date = models.DateField()
+    views = models.PositiveIntegerField(default=0)
+    contacts = models.PositiveIntegerField(default=0)
+    favorites = models.PositiveIntegerField(default=0)
+    calls = models.PositiveIntegerField(default=0)
+    messages = models.PositiveIntegerField(default=0)
+
+    raw_metrics = MyJSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Дневная статистика Авито"
+        verbose_name_plural = "Дневная статистика Авито"
+        ordering = ['-date']
+        indexes = [
+            models.Index(fields=["listing", "date"], name="idx_avstats_listing_date"),
+            models.Index(fields=["workspace", "-date"], name="idx_avstats_ws_date")
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["listing", "date"],
+                name="uniq_avstats_listing_date"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.listing.avito_id} / {self.date}"

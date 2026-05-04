@@ -110,12 +110,12 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['workspace', 'possible_combinations', 'next_update_time', 'selected_options']
 
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-            workspace = self.context.get("workspace")
-            if workspace is not None:
-                self.fields["projects"].queryset = Project.objects.filter(workspace=workspace)
+        workspace = self.context.get("workspace")
+        if workspace is not None:
+            self.fields["projects"].queryset = Project.objects.filter(workspace=workspace)
 
     def _normalize_descriptions(self, value):
         """Приводит descriptions к формату модели Product.descriptions."""

@@ -1,8 +1,7 @@
 import random
-from celery import Celery, shared_task
+from celery import shared_task
 from .models import Post
 from .models import Record
-app = Celery()
 
 
 @shared_task
@@ -24,5 +23,3 @@ def print_random_title(record_id):
         print(random.choice(titles))
     except Record.DoesNotExist:
         print("Record not found")
-
-

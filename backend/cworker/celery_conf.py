@@ -1,9 +1,7 @@
-from celery import Celery
+from system.celery import app
 from celery.schedules import crontab
 from .models import Record
 from .tasks import print_random_title
-
-app = Celery()
 
 
 @app.on_after_configure.connect
