@@ -4,25 +4,56 @@ from avitotask.services.ad_export import (
     build_publication_export_row,
     export_avito_account_publications_to_csv,
 )
-from datetime import datetime
+
+from django.utils import timezone
+
+from avitotask.services.avito_import import import_avito_listings_for_account
+
+from avitotask.services.avito_autoload import link_publications_to_avito_ids_for_account
+
+from urllib.parse import parse_qs, urlparse
+from django.test import TestCase, override_settings
+from accounts.models import User, Workspace, WorkspaceMembership
+from avitotask.services.avito_api import (
+    build_avito_authorization_url,
+    build_avito_oauth_state,
+    connect_avito_account_from_authorization_code,
+    connect_avito_account_from_token,
+    parse_avito_oauth_state,
+)
+
+from django.urls import NoReverseMatch, reverse
+from system.celery import app as celery_app
+
+from datetime import datetime, date, timedelta
 
 from avitotask.services.ad_schedule import (
     advance_task_schedule_after_run,
     initialize_task_schedule,
     run_due_ad_generation_tasks,
 )
+from avitotask.services.ad_cleanup import archive_stale_publications
+from avitotask.services.avito_stats import import_avito_listing_daily_stats_for_account
 
-from avitotask.tasks import export_avito_account_csv_task, export_dirty_avito_accounts_csv_task
+from avitotask.tasks import export_avito_account_csv_task, export_dirty_avito_accounts_csv_task, \
+    import_avito_account_listings_task, link_avito_account_publications_task, import_avito_account_daily_stats_task
 from accounts.models import User, Workspace
 from avitotask.models import (
+    AdBatch,
+    AdCreative,
+    AvitoListing,
+    AvitoListingDailyStats,
     AdGenerationTask,
     AdPublication,
     AvitoAccount,
+    AvitoOAuthToken,
 )
 from avitotask.services.ad_generation import (
     create_manual_mass_posting,
     generate_ads_from_task,
 )
+
+from avitotask.services.avito_api import connect_avito_account_from_token
 
 import csv
 import tempfile
@@ -477,3 +508,743 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(generated_count, 1)
         self.assertEqual(AdPublication.objects.filter(task=task).count(), 1)
         self.assertEqual(task.next_update_time, datetime(2026, 5, 6, 12, 0))
+
+    def test_connect_avito_account_from_token_sets_external_account_id(self):
+        user = User.objects.create_user(email="avito-api-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Avito API workspace",
+            slug="avito-api-workspace",
+            owner=user,
+        )
+
+        account = AvitoAccount.objects.create(workspace=workspace, name="Local Avito Account")
+
+        token = AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="test-access-token",
+            refresh_token="test-refresh-token",
+            scope="user:read items:info stats:read autoload:reports",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            text = '{"id": 94235311}'
+
+            def json(self):
+                return {
+                    "id": 94235311,
+                    "name": "Петр",
+                    "email": "owner@example.com",
+                    "phone": "71112223344",
+                    "phones": ["71112223344"],
+                    "profile_url": "https://avito.ru/user/test/profile",
+                }
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                self.method = method
+                self.url = url
+                self.kwargs = kwargs
+                return FakeResponse()
+
+        session = FakeSession()
+
+        connected_account = connect_avito_account_from_token(
+            avito_account=account,
+            token=token,
+            session=session,
+        )
+
+        token.refresh_from_db()
+
+        self.assertEqual(connected_account.external_account_id, "94235311")
+        self.assertEqual(token.user_info["id"], 94235311)
+        self.assertEqual(token.user_info["name"], "Петр")
+        self.assertEqual(session.method, "GET")
+        self.assertEqual(session.url, "https://api.avito.ru/core/v1/accounts/self")
+        self.assertEqual(
+            session.kwargs["headers"]["Authorization"],
+            "Bearer test-access-token",
+        )
+
+    @override_settings(AVITO_CLIENT_ID="test-client-id")
+    def test_build_avito_authorization_url_contains_signed_state(self):
+        user = User.objects.create_user(email="oauth-url-owner@example.com", password="test")
+        workspace = Workspace.objects.create(name="OAuth URL workspace", slug="oauth-url-workspace", owner=user)
+        account = AvitoAccount.objects.create(workspace=workspace, name="OAuth Account")
+
+        authorization_url = build_avito_authorization_url(account)
+        parsed = urlparse(authorization_url)
+        query = parse_qs(parsed.query)
+
+        self.assertEqual(f"{parsed.scheme}://{parsed.netloc}{parsed.path}", "https://avito.ru/oauth")
+        self.assertEqual(query["response_type"], ["code"])
+        self.assertEqual(query["pro_users_flow"], ["true"])
+        self.assertEqual(query["client_id"], ["test-client-id"])
+        self.assertEqual(query["scope"], ["user:read,items:info,stats:read,autoload:reports"])
+
+        state_payload = parse_avito_oauth_state(query["state"][0])
+        self.assertEqual(state_payload["workspace_id"], workspace.id)
+        self.assertEqual(state_payload["avito_account_id"], account.id)
+
+    @override_settings(AVITO_CLIENT_ID="test-client-id", AVITO_CLIENT_SECRET="test-client-secret")
+    def test_connect_avito_account_from_authorization_code_exchanges_code_and_connects_account(self):
+        user = User.objects.create_user(email="oauth-callback-owner@example.com", password="test")
+        workspace = Workspace.objects.create(name="OAuth callback workspace", slug="oauth-callback-workspace",
+                                             owner=user)
+        account = AvitoAccount.objects.create(workspace=workspace, name="Callback Account")
+        state = build_avito_oauth_state(account)
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self.payload = payload
+                self.text = "json"
+
+            def json(self):
+                return self.payload
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                if url == "https://api.avito.ru/token":
+                    return FakeResponse(200, {
+                        "access_token": "new-access-token",
+                        "refresh_token": "new-refresh-token",
+                        "expires_in": 86400,
+                        "token_type": "Bearer",
+                        "scope": "user:read items:info stats:read autoload:reports",
+                    })
+                return FakeResponse(200, {
+                    "id": 94235311,
+                    "name": "Петр",
+                    "email": "owner@example.com",
+                })
+
+        session = FakeSession()
+
+        connected_account = connect_avito_account_from_authorization_code(
+            code="auth-code",
+            state=state,
+            session=session,
+        )
+
+        token = AvitoOAuthToken.objects.get(avito_account=account)
+
+        self.assertEqual(connected_account.external_account_id, "94235311")
+        self.assertEqual(token.access_token, "new-access-token")
+        self.assertEqual(token.refresh_token, "new-refresh-token")
+        self.assertIsNotNone(token.expires_at)
+        self.assertEqual(session.calls[0][0], "POST")
+        self.assertEqual(session.calls[1][0], "GET")
+
+    def test_import_avito_listings_for_account_creates_listings_and_is_idempotent(self):
+        user = User.objects.create_user(email="avito-import-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Avito import workspace",
+            slug="avito-import-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Import Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="import-access-token",
+            refresh_token="import-refresh-token",
+            scope="items:info",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "meta": {"page": 1, "per_page": 25},
+                    "resources": [
+                        {
+                            "id": 24122231,
+                            "title": "Кирпич облицовочный",
+                            "status": "active",
+                            "url": "https://www.avito.ru/item/24122231",
+                            "price": 100,
+                            "address": "Москва, Лесная 7",
+                            "category": {"id": 19, "name": "Стройматериалы"},
+                        },
+                        {
+                            "id": 24122232,
+                            "title": "Кирпич рядовой",
+                            "status": "removed",
+                            "url": None,
+                            "price": None,
+                            "address": "Москва, Тестовая 1",
+                            "category": {"id": 19, "name": "Стройматериалы"},
+                        },
+                    ],
+                }
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        session = FakeSession()
+
+        result = import_avito_listings_for_account(account, session=session)
+
+        self.assertEqual(result.total_received, 2)
+        self.assertEqual(result.created_listings, 2)
+        self.assertEqual(result.updated_listings, 0)
+        self.assertEqual(result.created_publications, 2)
+
+        self.assertEqual(AvitoListing.objects.filter(avito_account=account).count(), 2)
+        self.assertEqual(AdCreative.objects.filter(workspace=workspace, source="import").count(), 2)
+        self.assertEqual(AdPublication.objects.filter(workspace=workspace, source="import").count(), 2)
+
+        listing = AvitoListing.objects.get(avito_id="24122231")
+        self.assertEqual(listing.status, "active")
+        self.assertEqual(listing.title, "Кирпич облицовочный")
+        self.assertEqual(listing.publication.status, AdPublication.Status.DRAFT)
+        self.assertEqual(listing.publication.address, "Москва, Лесная 7")
+        self.assertEqual(listing.publication.creative.base_data["Price"], 100)
+        self.assertEqual(listing.publication.creative.base_data["Category"], "Стройматериалы")
+
+        second_result = import_avito_listings_for_account(account, session=session)
+
+        self.assertEqual(second_result.created_listings, 0)
+        self.assertEqual(second_result.updated_listings, 2)
+        self.assertEqual(second_result.created_publications, 0)
+        self.assertEqual(AvitoListing.objects.filter(avito_account=account).count(), 2)
+        self.assertEqual(AdPublication.objects.filter(workspace=workspace, source="import").count(), 2)
+
+    def test_import_avito_account_listings_task_imports_account_listings(self):
+        user = User.objects.create_user(email="avito-import-task-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Avito import task workspace",
+            slug="avito-import-task-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Import Task Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="import-task-access-token",
+            refresh_token="import-task-refresh-token",
+            scope="items:info",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "resources": [
+                        {
+                            "id": 24122233,
+                            "title": "Импорт через task",
+                            "status": "active",
+                            "url": "https://www.avito.ru/item/24122233",
+                            "price": 150,
+                            "address": "Москва, Task 1",
+                            "category": {"id": 19, "name": "Стройматериалы"},
+                        },
+                    ],
+                }
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                return FakeResponse()
+
+        result = import_avito_account_listings_task(
+            account.id,
+            session=FakeSession(),
+        )
+
+        self.assertEqual(result["total_received"], 1)
+        self.assertEqual(result["created_listings"], 1)
+        self.assertEqual(AvitoListing.objects.filter(avito_account=account).count(), 1)
+
+    def test_link_publications_to_avito_ids_for_account_links_row_id_to_listing(self):
+        user = User.objects.create_user(email="autoload-link-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Autoload link workspace",
+            slug="autoload-link-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Autoload Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="autoload-access-token",
+            refresh_token="autoload-refresh-token",
+            scope="autoload:reports",
+        )
+
+        mass_posting = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Autoload Address 1", "Autoload Address 2"],
+            title="Autoload title",
+            description="Autoload description",
+            image_urls=["https://example.com/autoload.jpg"],
+            base_data={"Price": 500},
+            option_data={},
+        )
+
+        first_publication = mass_posting.publications[0]
+        second_publication = mass_posting.publications[1]
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "ad_id": first_publication.row_id,
+                            "avito_id": 24122241,
+                        },
+                        {
+                            "ad_id": second_publication.row_id,
+                            "avito_id": None,
+                        },
+                    ],
+                }
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        session = FakeSession()
+
+        result = link_publications_to_avito_ids_for_account(
+            account,
+            session=session,
+        )
+
+        first_publication.refresh_from_db()
+        second_publication.refresh_from_db()
+
+        self.assertEqual(result.total_requested, 2)
+        self.assertEqual(result.linked, 1)
+        self.assertEqual(result.missing, 1)
+        self.assertEqual(result.conflicts, 0)
+        self.assertEqual(result.created_listings, 1)
+        self.assertEqual(result.updated_listings, 0)
+
+        listing = AvitoListing.objects.get(avito_id="24122241")
+        self.assertEqual(listing.publication, first_publication)
+        self.assertEqual(listing.avito_account, account)
+        self.assertEqual(listing.status, "published")
+        self.assertEqual(first_publication.avito_listing, listing)
+
+        self.assertFalse(hasattr(second_publication, "avito_listing"))
+
+        self.assertEqual(session.calls[0][0], "GET")
+        self.assertEqual(
+            session.calls[0][1],
+            "https://api.avito.ru/autoload/v2/items/avito_ids",
+        )
+        self.assertIn(first_publication.row_id, session.calls[0][2]["params"]["query"])
+        self.assertIn(second_publication.row_id, session.calls[0][2]["params"]["query"])
+
+        second_result = link_publications_to_avito_ids_for_account(
+            account,
+            session=session,
+        )
+
+        self.assertEqual(second_result.created_listings, 0)
+        self.assertEqual(second_result.updated_listings, 1)
+        self.assertEqual(AvitoListing.objects.filter(avito_account=account).count(), 1)
+
+    def test_link_avito_account_publications_task_links_publications(self):
+        user = User.objects.create_user(email="autoload-link-task-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Autoload link task workspace",
+            slug="autoload-link-task-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Autoload Link Task Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="autoload-link-task-token",
+            refresh_token="autoload-link-task-refresh",
+            scope="autoload:reports",
+        )
+
+        mass_posting = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Task Link Address"],
+            title="Task link title",
+            description="Task link description",
+            image_urls=["https://example.com/task-link.jpg"],
+            base_data={"Price": 500},
+            option_data={},
+        )
+
+        publication = mass_posting.publications[0]
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "items": [
+                        {
+                            "ad_id": publication.row_id,
+                            "avito_id": 24122251,
+                        },
+                    ],
+                }
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                return FakeResponse()
+
+        result = link_avito_account_publications_task(
+            account.id,
+            session=FakeSession(),
+        )
+
+        publication.refresh_from_db()
+
+        self.assertEqual(result["total_requested"], 1)
+        self.assertEqual(result["linked"], 1)
+        self.assertEqual(result["created_listings"], 1)
+        self.assertEqual(publication.avito_listing.avito_id, "24122251")
+
+    def test_import_avito_listing_daily_stats_for_account_upserts_daily_stats(self):
+        user = User.objects.create_user(email="avito-stats-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Avito stats workspace",
+            slug="avito-stats-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Stats Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="stats-access-token",
+            refresh_token="stats-refresh-token",
+            scope="stats:read",
+        )
+
+        listing = AvitoListing.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            avito_id="24122261",
+            status="active",
+            title="Stats listing",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "result": {
+                        "items": [
+                            {
+                                "itemId": "24122261",
+                                "stats": [
+                                    {
+                                        "date": "2026-05-01",
+                                        "uniqViews": 10,
+                                        "uniqContacts": 2,
+                                        "uniqFavorites": 1,
+                                    },
+                                    {
+                                        "date": "2026-05-02",
+                                        "uniqViews": 15,
+                                        "uniqContacts": 3,
+                                        "uniqFavorites": 4,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                }
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, method, url, **kwargs):
+                self.calls.append((method, url, kwargs))
+                return FakeResponse()
+
+        session = FakeSession()
+
+        result = import_avito_listing_daily_stats_for_account(
+            avito_account=account,
+            date_from=date(2026, 5, 1),
+            date_to=date(2026, 5, 2),
+            session=session,
+        )
+
+        self.assertEqual(result.total_listings, 1)
+        self.assertEqual(result.total_days, 2)
+        self.assertEqual(result.created_stats, 2)
+        self.assertEqual(result.updated_stats, 0)
+
+        first_day = AvitoListingDailyStats.objects.get(
+            listing=listing,
+            date=date(2026, 5, 1),
+        )
+        self.assertEqual(first_day.views, 10)
+        self.assertEqual(first_day.contacts, 2)
+        self.assertEqual(first_day.favorites, 1)
+        self.assertEqual(first_day.raw_metrics["uniqViews"], 10)
+
+        self.assertEqual(session.calls[0][0], "POST")
+        self.assertEqual(
+            session.calls[0][1],
+            "https://api.avito.ru/stats/v1/accounts/94235311/items",
+        )
+        self.assertEqual(session.calls[0][2]["json"]["itemIds"], [24122261])
+        self.assertEqual(session.calls[0][2]["json"]["dateFrom"], "2026-05-01")
+        self.assertEqual(session.calls[0][2]["json"]["dateTo"], "2026-05-02")
+
+        second_result = import_avito_listing_daily_stats_for_account(
+            avito_account=account,
+            date_from=date(2026, 5, 1),
+            date_to=date(2026, 5, 2),
+            session=session,
+        )
+
+        self.assertEqual(second_result.created_stats, 0)
+        self.assertEqual(second_result.updated_stats, 2)
+        self.assertEqual(AvitoListingDailyStats.objects.filter(listing=listing).count(), 2)
+
+    def test_import_avito_account_daily_stats_task_imports_stats(self):
+        user = User.objects.create_user(email="avito-stats-task-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Avito stats task workspace",
+            slug="avito-stats-task-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Stats Task Account",
+            external_account_id="94235311",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            access_token="stats-task-access-token",
+            refresh_token="stats-task-refresh-token",
+            scope="stats:read",
+        )
+
+        listing = AvitoListing.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            avito_id="24122271",
+            status="active",
+            title="Stats task listing",
+        )
+
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {
+                    "result": {
+                        "items": [
+                            {
+                                "itemId": "24122271",
+                                "stats": [
+                                    {
+                                        "date": "2026-05-03",
+                                        "uniqViews": 20,
+                                        "uniqContacts": 4,
+                                        "uniqFavorites": 2,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                }
+
+        class FakeSession:
+            def request(self, method, url, **kwargs):
+                return FakeResponse()
+
+        result = import_avito_account_daily_stats_task(
+            account.id,
+            "2026-05-03",
+            "2026-05-03",
+            session=FakeSession(),
+        )
+
+        stats = AvitoListingDailyStats.objects.get(
+            listing=listing,
+            date=date(2026, 5, 3),
+        )
+
+        self.assertEqual(result["total_listings"], 1)
+        self.assertEqual(result["total_days"], 1)
+        self.assertEqual(result["created_stats"], 1)
+        self.assertEqual(stats.views, 20)
+        self.assertEqual(stats.contacts, 4)
+        self.assertEqual(stats.favorites, 2)
+
+    def test_archive_stale_publications_archives_only_old_inactive_publications(self):
+        user = User.objects.create_user(email="cleanup-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Cleanup workspace",
+            slug="cleanup-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Cleanup Account")
+
+        old_batch = AdBatch.objects.create(
+            workspace=workspace,
+            source=AdBatch.Source.MANUAL,
+            status=AdBatch.Status.COMPLETED,
+        )
+
+        old_creative = AdCreative.objects.create(
+            workspace=workspace,
+            batch=old_batch,
+            source=AdCreative.Source.MANUAL,
+            title="Old cleanup title",
+            description="Old cleanup description",
+            image_urls=[],
+            base_data={},
+            option_data={},
+        )
+
+        old_publication = AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            creative=old_creative,
+            batch=old_batch,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.PAUSED,
+            row_id="OLD-ROW",
+            address="Old address",
+        )
+        fresh_publication = AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            creative=old_creative,
+            batch=old_batch,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.PAUSED,
+            row_id="FRESH-ROW",
+            address="Fresh address",
+        )
+        active_publication = AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            creative=old_creative,
+            batch=old_batch,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.ACTIVE,
+            row_id="ACTIVE-ROW",
+            address="Active address",
+        )
+        linked_active_publication = AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            creative=old_creative,
+            batch=old_batch,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.PAUSED,
+            row_id="LINKED-ROW",
+            address="Linked address",
+        )
+
+        AvitoListing.objects.create(
+            workspace=workspace,
+            avito_account=account,
+            publication=linked_active_publication,
+            avito_id="24122281",
+            status="active",
+            title="Linked active listing",
+        )
+
+        old_dt = timezone.now() - timedelta(days=90)
+        fresh_dt = timezone.now() - timedelta(days=5)
+
+        AdPublication.objects.filter(id=old_publication.id).update(created_at=old_dt)
+        AdPublication.objects.filter(id=active_publication.id).update(created_at=old_dt)
+        AdPublication.objects.filter(id=linked_active_publication.id).update(created_at=old_dt)
+        AdPublication.objects.filter(id=fresh_publication.id).update(created_at=fresh_dt)
+
+        result = archive_stale_publications(
+            workspace=workspace,
+            older_than_days=60,
+        )
+
+        old_publication.refresh_from_db()
+        fresh_publication.refresh_from_db()
+        active_publication.refresh_from_db()
+        linked_active_publication.refresh_from_db()
+
+        self.assertEqual(result.archived_publications, 1)
+        self.assertEqual(old_publication.status, AdPublication.Status.ARCHIVED)
+        self.assertIsNotNone(old_publication.archived_at)
+
+        self.assertEqual(fresh_publication.status, AdPublication.Status.PAUSED)
+        self.assertEqual(active_publication.status, AdPublication.Status.ACTIVE)
+        self.assertEqual(linked_active_publication.status, AdPublication.Status.PAUSED)
+        self.assertEqual(AvitoListing.objects.filter(publication=linked_active_publication).count(), 1)
+
+    def test_legacy_product_random_and_toggle_routes_are_disabled(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("product-random-api", args=[1])
+
+        with self.assertRaises(NoReverseMatch):
+            reverse("toggle-product-active-api", args=[1])
+
+    def test_legacy_schedule_price_updates_is_not_in_beat_schedule(self):
+        beat_schedule = celery_app.conf.beat_schedule
+
+        self.assertNotIn("schedule_price_updates_every_minute", beat_schedule)
+        self.assertIn("run_due_ad_generation_tasks_every_minute", beat_schedule)
+        self.assertEqual(
+            beat_schedule["run_due_ad_generation_tasks_every_minute"]["task"],
+            "avitotask.tasks.run_due_ad_generation_tasks",
+        )

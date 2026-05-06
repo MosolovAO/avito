@@ -17,18 +17,19 @@ app.set_default()
 app.autodiscover_tasks()
 
 app.conf.beat_schedule = {
-    'schedule_price_updates_every_minute': {
-        'task': 'avitotask.tasks.schedule_price_updates',
-        'schedule': crontab(minute='*'),  # Проверка каждую минуту
-    },
     'export_dirty_avito_accounts_csv_every_minute': {
         'task': 'avitotask.tasks.export_dirty_avito_accounts_csv_task',
         'schedule': crontab(minute='*'),
         'args': (20,),
     },
     'run_due_ad_generation_tasks_every_minute': {
-        'task': 'avitotask.tasks.run_due_ad_generation_tasks_task',
+        'task': 'avitotask.tasks.run_due_ad_generation_tasks',
         'schedule': crontab(minute='*'),
         'args': (50,),
+    },
+    'archive_stale_publications_daily': {
+        'task': 'avitotask.tasks.archive_stale_publications_task',
+        'schedule': crontab(hour=3, minute=30),
+        'args': (60, 1000),
     },
 }

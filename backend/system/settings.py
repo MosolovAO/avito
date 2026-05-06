@@ -203,6 +203,13 @@ AUTH_USER_MODEL = 'accounts.User'
 
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
+AVITO_API_BASE_URL = os.environ.get("AVITO_API_BASE_URL", "https://api.avito.ru")
+AVITO_CLIENT_ID = os.environ.get("AVITO_CLIENT_ID", "")
+AVITO_CLIENT_SECRET = os.environ.get("AVITO_CLIENT_SECRET", "")
+AVITO_OAUTH_AUTHORIZE_URL = os.environ.get(
+    "AVITO_OAUTH_AUTHORIZE_URL",
+    os.environ.get("AVITO_OAUTH_AUTHORIZATION_URL", "https://avito.ru/oauth"),
+)
 EMAIL_BACKEND = os.environ.get(
     "EMAIL_BACKEND",
     "django.core.mail.backends.console.EmailBackend",

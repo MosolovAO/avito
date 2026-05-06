@@ -13,8 +13,6 @@ from avitotask.api_views import (
     ProductOptionsViewSet,
     get_product_categories,
     upload_product_image,
-    product_random as product_random_api,
-    toggle_product_active as toggle_product_active_api,
 )
 
 router = DefaultRouter()
@@ -26,8 +24,6 @@ router.register(r'options', ProductOptionsViewSet, basename='options-api')
 urlpatterns = [
     path('admin/', admin.site.urls),
 
-    path('api/product-random/<int:product_id>/', product_random_api, name='product-random-api'),
-    path('api/toggle-product-active/<int:product_id>/', toggle_product_active_api, name='toggle-product-active-api'),
     path('api/categories/', get_product_categories, name='categories-api'),
     path('api/product-images/upload/', upload_product_image, name='product-image-upload-api'),
     path('api/', include(router.urls)),
@@ -35,7 +31,10 @@ urlpatterns = [
     path('api/auth/', include('accounts.urls')),
     path('api/workspaces/', include('accounts.workspace_urls')),
     path('api/workspace-invites/', include('accounts.invitation_urls')),
-]   
+
+    # UR: для работы с API Avito
+    path('api/avito/', include('avitotask.avito_urls')),
+]
 
 websocket_urlpatterns = [
     path("ws/notifications/", NotificationConsumer.as_asgi()),

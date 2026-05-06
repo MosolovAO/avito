@@ -774,3 +774,50 @@ class AvitoListingDailyStats(models.Model):
 
     def __str__(self):
         return f"{self.listing.avito_id} / {self.date}"
+
+class AvitoOAuthToken(models.Model):
+    """OAuth-состояние подключенного аккаунта Avito."""
+    class AuthType(models.TextChoices):
+        AUTHORIZATION_CODE = "authorization_code", "Authorization Code"
+        CLIENT_CREDENTIALS = "client_credentials", "Client Credentials"
+
+    workspace = models.ForeignKey(
+        "accounts.Workspace",
+        on_delete=models.CASCADE,
+        related_name="avito_oauth_tokens",
+    )
+
+    avito_account = models.OneToOneField(
+        AvitoAccount,
+        on_delete=models.CASCADE,
+        related_name='oauth_tokens',
+    )
+    auth_type = models.CharField(
+        max_length=32,
+        choices=AuthType.choices,
+        default=AuthType.AUTHORIZATION_CODE
+    )
+    access_token = models.TextField()
+    refresh_token = models.TextField(blank=True, null=True)
+    token_type = models.CharField(max_length=32, default="Bearer")
+    scope = models.TextField(blank=True, null=True)
+    expires_at = models.DateTimeField(blank=True, null=True)
+
+    user_info = MyJSONField(default=dict, blank=True)
+    last_verified_at = models.DateTimeField(blank=True, null=True)
+    last_refreshed_at = models.DateTimeField(blank=True, null=True)
+    last_error = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "OAuth-токен Avito"
+        verbose_name_plural = "OAuth-токены Avito"
+        indexes= [
+            models.Index(fields=["workspace", "expires_at"], name="idx_avtoken_ws_exp"),
+            models.Index(fields=["workspace", "auth_type"], name="idx_avtoken_ws_auth"),
+        ]
+
+    def __str__(self):
+        return f"Avito token for {self.avito_account_id}"

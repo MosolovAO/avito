@@ -1,15 +1,15 @@
 from celery import shared_task
-from django.utils.timezone import now
 
 import logging
 
+from .services.avito_import import import_avito_listings_for_account
 from .models import Product
-from datetime import datetime, timedelta
-from .services.ad_schedule import run_due_ad_generation_tasks as run_due_ad_generation_tasks_service
-from .views import product_random
 
 from .models import AvitoAccount
 from .services.ad_export import export_avito_account_publications_to_csv
+from .services.avito_autoload import link_publications_to_avito_ids_for_account
+from .services.avito_stats import import_avito_listing_daily_stats_for_account
+from .services.ad_cleanup import archive_stale_publications
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +26,13 @@ def update_product_price(product_id):
 
 @shared_task
 def schedule_price_updates():
-    products = Product.objects.filter(next_update_time__lte=now())  # Проверяем, какие продукты пора обновить
-    for product in products:
-        print(product.id)
-        product_random(product.id)  # Вызываем как обычную функцию
-        print(f"Updated product ID: {product.id}")
-
-    print("DONE!")
+    logger.warning(
+        "Legacy schedule_price_updates task is disabled. Use run_due_ad_generation_tasks instead."
+    )
+    return {
+        "status": "disabled",
+        "replacement": "avitotask.tasks.run_due_ad_generation_tasks",
+    }
 
 
 @shared_task
@@ -81,6 +81,128 @@ def export_dirty_avito_accounts_csv_task(limit=20):
         exported_count += 1
 
     return exported_count
+
+
+@shared_task
+def import_avito_account_listings_task(avito_account_id, session=None):
+    avito_account = (
+        AvitoAccount.objects
+        .select_related("workspace")
+        .get(id=avito_account_id)
+    )
+
+    result = import_avito_listings_for_account(
+        avito_account,
+        session=session
+    )
+
+    logger.info(
+        "Imported Avito listings for account_id=%s: total=%s created=%s updated=%s publications=%s",
+        avito_account.id,
+        result.total_received,
+        result.created_listings,
+        result.updated_listings,
+        result.created_publications,
+    )
+
+    return {
+        "total_received": result.total_received,
+        "created_listings": result.created_listings,
+        "updated_listings": result.updated_listings,
+        "created_publications": result.created_publications,
+        "batch_id": result.batch.id if result.batch else None,
+    }
+
+
+@shared_task
+def link_avito_account_publications_task(avito_account_id, row_ids=None, session=None):
+    avito_account = (
+        AvitoAccount.objects
+        .select_related("workspace")
+        .get(id=avito_account_id)
+    )
+
+    result = link_publications_to_avito_ids_for_account(
+        avito_account,
+        row_ids=row_ids,
+        session=session
+    )
+
+    logger.info(
+        "Linked Avito publications for account_id=%s: requested=%s linked=%s missing=%s conflicts=%s",
+        avito_account.id,
+        result.total_requested,
+        result.linked,
+        result.missing,
+        result.conflicts,
+    )
+
+    return {
+        "total_requested": result.total_requested,
+        "linked": result.linked,
+        "missing": result.missing,
+        "conflicts": result.conflicts,
+        "created_listings": result.created_listings,
+        "updated_listings": result.updated_listings,
+    }
+
+
+@shared_task
+def import_avito_account_daily_stats_task(
+        avito_account_id,
+        date_from,
+        date_to,
+        listing_ids=None,
+        session=None,
+):
+    avito_account = (
+        AvitoAccount.objects
+        .select_related("workspace")
+        .get(id=avito_account_id)
+    )
+
+    result = import_avito_listing_daily_stats_for_account(
+        avito_account=avito_account,
+        date_from=date_from,
+        date_to=date_to,
+        listing_ids=listing_ids,
+        session=session
+    )
+
+    logger.info(
+        "Imported Avito daily stats for account_id=%s: listings=%s days=%s created=%s updated=%s",
+        avito_account.id,
+        result.total_listings,
+        result.total_days,
+        result.created_stats,
+        result.updated_stats,
+    )
+
+    return {
+        "total_listings": result.total_listings,
+        "total_days": result.total_days,
+        "created_stats": result.created_stats,
+        "updated_stats": result.updated_stats,
+    }
+
+
+@shared_task
+def archive_stale_publications_task(older_than_days=60, limit=1000):
+    result = archive_stale_publications(
+        older_than_days=older_than_days,
+        limit=limit
+    )
+
+    logger.info(
+        "Archived stale publications: archived=%s older_than_days=%s limit=%s",
+        result.archived_publications,
+        older_than_days,
+        limit,
+    )
+
+    return {
+        "archived_publications": result.archived_publications,
+    }
 
 
 @shared_task
