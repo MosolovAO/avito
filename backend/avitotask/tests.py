@@ -11,17 +11,6 @@ from avitotask.services.avito_import import import_avito_listings_for_account
 
 from avitotask.services.avito_autoload import link_publications_to_avito_ids_for_account
 
-from urllib.parse import parse_qs, urlparse
-from django.test import TestCase, override_settings
-from accounts.models import User, Workspace, WorkspaceMembership
-from avitotask.services.avito_api import (
-    build_avito_authorization_url,
-    build_avito_oauth_state,
-    connect_avito_account_from_authorization_code,
-    connect_avito_account_from_token,
-    parse_avito_oauth_state,
-)
-
 from django.urls import NoReverseMatch, reverse
 from system.celery import app as celery_app
 
@@ -567,80 +556,6 @@ class AdGenerationServiceTests(TestCase):
             session.kwargs["headers"]["Authorization"],
             "Bearer test-access-token",
         )
-
-    @override_settings(AVITO_CLIENT_ID="test-client-id")
-    def test_build_avito_authorization_url_contains_signed_state(self):
-        user = User.objects.create_user(email="oauth-url-owner@example.com", password="test")
-        workspace = Workspace.objects.create(name="OAuth URL workspace", slug="oauth-url-workspace", owner=user)
-        account = AvitoAccount.objects.create(workspace=workspace, name="OAuth Account")
-
-        authorization_url = build_avito_authorization_url(account)
-        parsed = urlparse(authorization_url)
-        query = parse_qs(parsed.query)
-
-        self.assertEqual(f"{parsed.scheme}://{parsed.netloc}{parsed.path}", "https://avito.ru/oauth")
-        self.assertEqual(query["response_type"], ["code"])
-        self.assertEqual(query["pro_users_flow"], ["true"])
-        self.assertEqual(query["client_id"], ["test-client-id"])
-        self.assertEqual(query["scope"], ["user:read,items:info,stats:read,autoload:reports"])
-
-        state_payload = parse_avito_oauth_state(query["state"][0])
-        self.assertEqual(state_payload["workspace_id"], workspace.id)
-        self.assertEqual(state_payload["avito_account_id"], account.id)
-
-    @override_settings(AVITO_CLIENT_ID="test-client-id", AVITO_CLIENT_SECRET="test-client-secret")
-    def test_connect_avito_account_from_authorization_code_exchanges_code_and_connects_account(self):
-        user = User.objects.create_user(email="oauth-callback-owner@example.com", password="test")
-        workspace = Workspace.objects.create(name="OAuth callback workspace", slug="oauth-callback-workspace",
-                                             owner=user)
-        account = AvitoAccount.objects.create(workspace=workspace, name="Callback Account")
-        state = build_avito_oauth_state(account)
-
-        class FakeResponse:
-            def __init__(self, status_code, payload):
-                self.status_code = status_code
-                self.payload = payload
-                self.text = "json"
-
-            def json(self):
-                return self.payload
-
-        class FakeSession:
-            def __init__(self):
-                self.calls = []
-
-            def request(self, method, url, **kwargs):
-                self.calls.append((method, url, kwargs))
-                if url == "https://api.avito.ru/token":
-                    return FakeResponse(200, {
-                        "access_token": "new-access-token",
-                        "refresh_token": "new-refresh-token",
-                        "expires_in": 86400,
-                        "token_type": "Bearer",
-                        "scope": "user:read items:info stats:read autoload:reports",
-                    })
-                return FakeResponse(200, {
-                    "id": 94235311,
-                    "name": "Петр",
-                    "email": "owner@example.com",
-                })
-
-        session = FakeSession()
-
-        connected_account = connect_avito_account_from_authorization_code(
-            code="auth-code",
-            state=state,
-            session=session,
-        )
-
-        token = AvitoOAuthToken.objects.get(avito_account=account)
-
-        self.assertEqual(connected_account.external_account_id, "94235311")
-        self.assertEqual(token.access_token, "new-access-token")
-        self.assertEqual(token.refresh_token, "new-refresh-token")
-        self.assertIsNotNone(token.expires_at)
-        self.assertEqual(session.calls[0][0], "POST")
-        self.assertEqual(session.calls[1][0], "GET")
 
     def test_import_avito_listings_for_account_creates_listings_and_is_idempotent(self):
         user = User.objects.create_user(email="avito-import-owner@example.com", password="test")

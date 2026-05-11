@@ -11,6 +11,8 @@ from avitotask.api_views import (
     Product1ViewSet,
     ProjectViewSet,
     ProductOptionsViewSet,
+    AvitoAccountViewSet,
+    AvitoListingViewSet,
     get_product_categories,
     upload_product_image,
 )
@@ -20,6 +22,8 @@ router.register(r'products', ProductViewSet, basename='product-api')
 router.register(r'product1', Product1ViewSet, basename='product1-api')
 router.register(r'projects', ProjectViewSet, basename='project-api')
 router.register(r'options', ProductOptionsViewSet, basename='options-api')
+router.register(r'avito-accounts', AvitoAccountViewSet, basename='avito-account-api')
+router.register(r'avito-listings', AvitoListingViewSet, basename='avito-listing-api')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 import os
 from datetime import timedelta
 from pathlib import Path
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -161,6 +162,9 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-workspace-id",
+]
 
 # REST Framework settings
 REST_FRAMEWORK = {
@@ -200,16 +204,19 @@ AUTH_REFRESH_COOKIE_SECURE = False
 
 AUTH_USER_MODEL = 'accounts.User'
 
-
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 
 AVITO_API_BASE_URL = os.environ.get("AVITO_API_BASE_URL", "https://api.avito.ru")
-AVITO_CLIENT_ID = os.environ.get("AVITO_CLIENT_ID", "")
-AVITO_CLIENT_SECRET = os.environ.get("AVITO_CLIENT_SECRET", "")
-AVITO_OAUTH_AUTHORIZE_URL = os.environ.get(
-    "AVITO_OAUTH_AUTHORIZE_URL",
-    os.environ.get("AVITO_OAUTH_AUTHORIZATION_URL", "https://avito.ru/oauth"),
+AVITO_API_MIN_REQUEST_INTERVAL_SECONDS = float(
+    os.environ.get("AVITO_API_MIN_REQUEST_INTERVAL_SECONDS", "0.5")
 )
+AVITO_API_MAX_RETRIES = int(
+    os.environ.get("AVITO_API_MAX_RETRIES", "5")
+)
+AVITO_API_DEFAULT_RETRY_AFTER_SECONDS = int(
+    os.environ.get("AVITO_API_DEFAULT_RETRY_AFTER_SECONDS", "60")
+)
+
 EMAIL_BACKEND = os.environ.get(
     "EMAIL_BACKEND",
     "django.core.mail.backends.console.EmailBackend",

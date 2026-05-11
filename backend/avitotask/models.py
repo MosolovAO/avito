@@ -290,6 +290,12 @@ class ProductOptionAssignment(models.Model):
 class AvitoAccount(models.Model):
     """Аккаунт Avito внутри workspace. Заменяет старую сущность Project."""
 
+    class SyncStatus(models.TextChoices):
+        IDLE = "idle", "Нет активной синхронизации"
+        QUEUED = "queued", "Синхронизация в очереди"
+        SYNCING = "syncing", "Синхронизация выполняется"
+        ERROR = "error", "Ошибка синхронизации"
+
     class ExportStatus(models.TextChoices):
         CLEAN = "clean", "CSV актуален"
         DIRTY = "dirty", "CSV требует пересборки"
@@ -304,6 +310,10 @@ class AvitoAccount(models.Model):
 
     name = models.CharField(max_length=255)
     external_account_id = models.CharField(max_length=255, blank=True, null=True)
+
+    client_id = models.CharField(max_length=255, blank=True)
+    client_secret = models.TextField(blank=True)
+
     is_active = models.BooleanField(default=True)
     export_status = models.CharField(
         max_length=20,
@@ -313,6 +323,17 @@ class AvitoAccount(models.Model):
     export_file_path = models.CharField(max_length=255, blank=True, null=True)
     export_requested_at = models.DateTimeField(null=True, blank=True)
     export_started_at = models.DateTimeField(null=True, blank=True)
+
+    sync_status = models.CharField(
+        max_length=20,
+        choices=SyncStatus.choices,
+        default=SyncStatus.IDLE,
+    )
+    sync_requested_at = models.DateTimeField(null=True, blank=True)
+    sync_started_at = models.DateTimeField(null=True, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    sync_error = models.TextField(null=True, blank=True)
+
     last_exported_at = models.DateTimeField(null=True, blank=True)
     export_error = models.TextField(null=True, blank=True)
 
@@ -325,7 +346,8 @@ class AvitoAccount(models.Model):
         ordering = ["name"]
         indexes = [
             models.Index(fields=['workspace', 'is_active'], name='idx_avacc_ws_active'),
-            models.Index(fields=["workspace", "export_status"], name='idx_avacc_ws_export')
+            models.Index(fields=["workspace", "export_status"], name='idx_avacc_ws_export'),
+            models.Index(fields=["workspace", "sync_status"], name="idx_avacc_ws_sync"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -775,8 +797,10 @@ class AvitoListingDailyStats(models.Model):
     def __str__(self):
         return f"{self.listing.avito_id} / {self.date}"
 
+
 class AvitoOAuthToken(models.Model):
     """OAuth-состояние подключенного аккаунта Avito."""
+
     class AuthType(models.TextChoices):
         AUTHORIZATION_CODE = "authorization_code", "Authorization Code"
         CLIENT_CREDENTIALS = "client_credentials", "Client Credentials"
@@ -814,7 +838,7 @@ class AvitoOAuthToken(models.Model):
     class Meta:
         verbose_name = "OAuth-токен Avito"
         verbose_name_plural = "OAuth-токены Avito"
-        indexes= [
+        indexes = [
             models.Index(fields=["workspace", "expires_at"], name="idx_avtoken_ws_exp"),
             models.Index(fields=["workspace", "auth_type"], name="idx_avtoken_ws_auth"),
         ]

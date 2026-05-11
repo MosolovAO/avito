@@ -2,12 +2,16 @@ from celery import shared_task
 
 import logging
 
+from django.db import transaction
+from django.utils import timezone
+
 from .services.avito_import import import_avito_listings_for_account
 from .models import Product
 
 from .models import AvitoAccount
 from .services.ad_export import export_avito_account_publications_to_csv
 from .services.avito_autoload import link_publications_to_avito_ids_for_account
+from .services.ad_schedule import run_due_ad_generation_tasks as run_due_ad_generation_tasks_service
 from .services.avito_stats import import_avito_listing_daily_stats_for_account
 from .services.ad_cleanup import archive_stale_publications
 
@@ -85,15 +89,48 @@ def export_dirty_avito_accounts_csv_task(limit=20):
 
 @shared_task
 def import_avito_account_listings_task(avito_account_id, session=None):
-    avito_account = (
-        AvitoAccount.objects
-        .select_related("workspace")
-        .get(id=avito_account_id)
-    )
+    with transaction.atomic():
+        avito_account = (
+            AvitoAccount.objects
+            .select_related("workspace")
+            .get(id=avito_account_id)
+        )
+        if avito_account.sync_status == AvitoAccount.SyncStatus.SYNCING:
+            return {
+                "status": "synced",
+                "reason": "Import is already running for this account"
+            }
 
-    result = import_avito_listings_for_account(
-        avito_account,
-        session=session
+        avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
+        avito_account.sync_started_at = timezone.now()
+        avito_account.sync_error = None
+        avito_account.save(
+            update_fields=[
+                "sync_status",
+                "sync_started_at",
+                "sync_error",
+                "updated_at",
+            ]
+        )
+
+    try:
+        result = import_avito_listings_for_account(
+            avito_account,
+            session=session
+        )
+    except Exception as exc:
+        AvitoAccount.objects.filter(id=avito_account_id).update(
+            export_status=AvitoAccount.ExportStatus.ERROR,
+            export_error=str(exc),
+            updated_at=timezone.now()
+        )
+        raise
+
+    AvitoAccount.objects.filter(id=avito_account_id).update(
+        export_status=AvitoAccount.ExportStatus.DIRTY,
+        export_error=None,
+        last_sync_at=timezone.now(),
+        updated_at=timezone.now()
     )
 
     logger.info(
@@ -106,6 +143,7 @@ def import_avito_account_listings_task(avito_account_id, session=None):
     )
 
     return {
+        "status": "completed",
         "total_received": result.total_received,
         "created_listings": result.created_listings,
         "updated_listings": result.updated_listings,

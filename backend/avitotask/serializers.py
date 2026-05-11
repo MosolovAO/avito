@@ -2,7 +2,18 @@ from uuid import uuid4
 
 from django.db import transaction
 from rest_framework import serializers
-from .models import Project, Product, Product1, ProductOptions, ProductOptionAssignment, Category
+from .models import (
+    Project,
+    Product,
+    Product1,
+    ProductOptions,
+    ProductOptionAssignment,
+    Category,
+    AvitoAccount,
+    AvitoOAuthToken,
+    AvitoListing
+
+)
 
 DAY_KEYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 
@@ -289,7 +300,6 @@ class ProductSerializer(serializers.ModelSerializer):
         descriptions = instance.descriptions or {}
         if isinstance(descriptions, dict):
             data['descriptions'] = list(descriptions.values())
-            data['descriptions'] = list(descriptions.values())
 
         schedule = instance.schedule or {}
         days = [None] * 7
@@ -322,3 +332,142 @@ class Product1Serializer(serializers.ModelSerializer):
             'created_date', 'task_id', 'selected_option', 'project_name'
         ]
         read_only_fields = ['workspace', 'created_date']
+
+
+class AvitoAccountSerializer(serializers.ModelSerializer):
+    client_secret = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        write_only=True,
+        trim_whitespace=True,
+    )
+    has_client_secret = serializers.SerializerMethodField()
+    connection_status = serializers.SerializerMethodField()
+    connection_error = serializers.SerializerMethodField()
+    last_verified_at = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AvitoAccount
+        fields = [
+            "id",
+            "name",
+            "external_account_id",
+            "client_id",
+            "client_secret",
+            "has_client_secret",
+            "is_active",
+            "export_status",
+            "export_file_path",
+            "export_requested_at",
+            "export_started_at",
+            "last_exported_at",
+            "export_error",
+            "created_at",
+            "updated_at",
+            "connection_status",
+            "connection_error",
+            "last_verified_at",
+            "sync_status",
+            "sync_requested_at",
+            "sync_started_at",
+            "last_synced_at",
+            "sync_error",
+        ]
+        read_only_fields = [
+            "external_account_id",
+            "has_client_secret",
+            "export_status",
+            "export_file_path",
+            "export_requested_at",
+            "export_started_at",
+            "last_exported_at",
+            "export_error",
+            "created_at",
+            "updated_at",
+            "sync_status",
+            "sync_requested_at",
+            "sync_started_at",
+            "last_synced_at",
+            "sync_error",
+
+        ]
+
+    def get_has_client_secret(self, obj):
+        return bool(obj.client_secret)
+
+    def validate_name(self, value):
+        name = value.strip()
+
+        if not name:
+            raise serializers.ValidationError("Название проекта обязательно.")
+
+        return name
+
+    def validate_client_id(self, value):
+        return value.strip()
+
+    def update(self, instance, validated_data):
+        if validated_data.get("client_secret") == "":
+            validated_data.pop("client_secret")
+
+        return super().update(instance, validated_data)
+
+    def get_connection_status(self, obj):
+        if not obj.client_id or not obj.client_secret:
+            return "not_configured"
+
+        try:
+            token = obj.oauth_tokens
+        except AvitoOAuthToken.DoesNotExist:
+            return "not_connected"
+
+        if token.last_error:
+            return "error"
+
+        if obj.external_account_id:
+            return "connected"
+
+        return "not_connected"
+
+    def get_connection_error(self, obj):
+        try:
+            return obj.oauth_tokens.last_error
+        except AvitoOAuthToken.DoesNotExist:
+            return None
+
+    def get_last_verified_at(self, obj):
+        try:
+            return obj.oauth_tokens.last_verified_at
+        except AvitoOAuthToken.DoesNotExist:
+            return None
+
+
+class AvitoListingSerializer(serializers.ModelSerializer):
+    avito_account_name = serializers.CharField(
+        source="avito_account.name",
+        read_only=True
+    )
+    publication_row_id = serializers.CharField(
+        source="publication.row_id",
+        read_only=True,
+        allow_null=True
+    )
+
+    class Meta:
+        model = AvitoListing
+        fields = [
+            "id",
+            "avito_account",
+            "avito_account_name",
+            "publication",
+            "publication_row_id",
+            "avito_id",
+            "status",
+            "title",
+            "url",
+            "published_at",
+            "last_seen_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields

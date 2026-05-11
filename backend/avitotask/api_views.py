@@ -11,6 +11,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
+from rest_framework.pagination import PageNumberPagination
 
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
@@ -25,12 +26,24 @@ import random
 import string
 import json
 
-from .models import Product, Product1, ProductOptions, Project, ProductOptionAssignment, Category
+from .models import (
+    Product,
+    Product1,
+    ProductOptions,
+    Project,
+    ProductOptionAssignment,
+    Category,
+    AvitoAccount,
+    AvitoListing
+)
+
 from .serializers import (
     ProductSerializer,
     Product1Serializer,
     ProjectSerializer,
     ProductOptionsSerializer,
+    AvitoAccountSerializer,
+    AvitoListingSerializer
 )
 
 
@@ -160,6 +173,25 @@ class ProductOptionsViewSet(viewsets.ModelViewSet):
         if category_name:
             return queryset.filter(categories__category__iexact=category_name.strip()).distinct()
         return queryset.none()
+
+
+# backend/avitotask/api_views.py
+
+class AvitoAccountViewSet(WorkspaceScopedModelViewSet):
+    serializer_class = AvitoAccountSerializer
+    permission_classes = [IsAuthenticated]
+    read_permission = WorkspacePermission.VIEW_TASKS
+    write_permission = WorkspacePermission.MANAGE_AVITO_ACCOUNTS
+
+    def get_queryset(self):
+        return (
+            AvitoAccount.objects
+            .filter(workspace=self.get_workspace())
+            .order_by("name")
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(workspace=self.get_workspace())
 
 
 ALLOWED_IMAGE_CONTENT_TYPES = {'image/jpeg', 'image/png'}
@@ -317,3 +349,41 @@ def get_product_categories(request):
     categories = list(Category.objects.order_by('category').values_list('category', flat=True))
 
     return Response(categories)
+
+
+class AvitoListingPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class AvitoListingViewSet(WorkspaceScopedModelViewSet):
+    serializer_class = AvitoListingSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = AvitoListingPagination
+    http_method_names = ["get", "head", "options"]
+    read_permission = WorkspacePermission.VIEW_ADS
+
+    def get_queryset(self):
+        queryset = (
+            AvitoListing.objects
+            .filter(workspace=self.get_workspace())
+            .select_related("avito_account", "publication")
+            .order_by("-last_seen_at", "-created_at")
+        )
+
+        avito_account_id = self.request.query_params.get("avito_account_id")
+        status_value = self.request.query_params.get("status")
+        search = (self.request.query_params.get("search") or "").strip()
+
+        if avito_account_id:
+            queryset = queryset.filter(avito_account_id=avito_account_id)
+
+        if status_value:
+            queryset = queryset.filter(status=status_value)
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) |
+                Q(avito_id__icontains=search)
+            )
+        return queryset

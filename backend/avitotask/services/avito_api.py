@@ -1,5 +1,5 @@
 from datetime import timedelta
-
+import time
 import requests
 from django.conf import settings
 from django.db import transaction
@@ -21,22 +21,14 @@ class AvitoConfigurationError(AvitoApiError):
     pass
 
 
-DEFAULT_AVITO_OAUTH_SCOPES = (
-    "user:read",
-    "items:info",
-    "stats:read",
-    "autoload:reports",
-)
-
-AVITO_OAUTH_STATE_SALT = "avitotask.avito.oauth.state"
-AVITO_OAUTH_STATE_MAX_AGE_SECONDS = 15 * 60
-
-
 class AvitoApiClient:
     def __init__(self, session=None, base_url=None, timeout=None):
         self.session = session or requests.Session()
         self.base_url = (base_url or settings.AVITO_API_BASE_URL).rstrip("/")
         self.timeout = timeout
+        self.min_request_interval = settings.AVITO_API_MIN_REQUEST_INTERVAL_SECONDS
+        self.max_retries = settings.AVITO_API_MAX_RETRIEST
+        self.default_retry_after = settings.AVITO_API_DEFAULT_RETRY_SECONDS
 
     def get_current_user(self, token):
         return self.request("GET", "/core/v1/accounts/self", token=token)
@@ -64,35 +56,18 @@ class AvitoApiClient:
             }
 
         )
-    def exchange_authorization_code(self, avito_account, code):
-        response = self.request_token(
-            {
-                "grant_type": "authorization_code",
-                "client_id": get_avito_client_id(),
-                "client_secret": get_avito_client_secret(),
-                "code": code,
-            }
-        )
-        defaults = build_token_defaults(response)
-        defaults["auth_type"] = AvitoOAuthToken.AuthType.AUTHORIZATION_CODE
-
-        token, _ = AvitoOAuthToken.objects.update_or_create(
-            workspace=avito_account.workspace,
-            avito_account=avito_account,
-            defaults=defaults
-        )
-
-        return token
 
     def refresh_access_token(self, token):
         if not token.refresh_token:
             raise AvitoApiError("У Avito OAuth-токена нет refresh_token")
 
+        avito_account = token.avito_account
+
         response = self.request_token(
             {
                 "grant_type": "refresh_token",
-                "client_id": get_avito_client_id(),
-                "client_secret": get_avito_client_secret(),
+                "client_id": get_avito_account_client_id(avito_account),
+                "client_secret": get_avito_account_client_secret(avito_account),
                 "refresh_token": token.refresh_token,
             }
 
@@ -124,39 +99,85 @@ class AvitoApiClient:
         if token:
             headers["Authorization"] = f"Bearer {token.access_token}"
 
-        response = self.session.request(
-            method, url, headers=headers, timeout=self.timeout, **kwargs
-        )
+        for attempt in range(self.max_retries + 1):
+            if self.min_request_interval > 0:
+                time.sleep(self.min_request_interval)
 
-        if response.status_code == 401 and token and retry_on_unauthorized and token.refresh_token:
-            self.refresh_access_token(token)
-            return self.request(method, path, token=token, retry_on_unauthorized=False, **kwargs)
+            response = self.session.request(
+                method,
+                url,
+                headers=headers,
+                timeout=self.timeout,
+                **kwargs
+            )
 
-        if response.status_code >= 400:
-            raise build_api_error(response)
+            if (
+                    response.status_code == 401
+                    and token
+                    and retry_on_unauthorized
+                    and token.refresh_token
+            ):
+                self.refresh_access_token(token)
+                return self.request(
+                    method,
+                    path,
+                    token=token,
+                    retry_on_unauthorized=False,
+                    **kwargs
+                )
 
-        if not getattr(response, "text", ""):
-            return {}
+            if response.status_code == 429:
+                if attempt >= self.max_retries:
+                    raise build_api_error(response)
 
-        return response.json()
+                retry_after = response.headers.get("Retry-After")
+                delay = int(retry_after) if retry_after and retry_after.isdigit() else self.default_retry_after
+                time.sleep(delay)
+                continue
+
+            if response.status_code == 400:
+                raise build_api_error(response)
+
+            if not getattr(response, "text", ""):
+                return {}
+
+            return response.json()
+
+        raise AvitoApiError("Avito API временно недоступен после повторных попыток")
 
     def request_token(self, data):
         url = f"{self.base_url}/token"
-        response = self.session.request(
-            "POST",
-            url,
-            data=data,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            timeout=self.timeout,
-        )
 
-        if response.status_code >= 400:
-            raise build_api_error(response)
+        for attempt in range(self.max_retries + 1):
+            if self.min_request_interval > 0:
+                time.sleep(self.min_request_interval)
 
-        return response.json()
+            response = self.session.request(
+                "POST",
+                url,
+                data=data,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                timeout=self.timeout,
+            )
+
+            if response.status_code == 429:
+                if attempt >= self.max_retries:
+                    raise build_api_error(response)
+
+                retry_after = response.headers.get("Retry-After")
+                delay = int(retry_after) if retry_after and retry_after.isdigit() else self.default_retry_after
+                time.sleep(delay)
+                continue
+
+            elif response.status_code >= 400:
+                raise build_api_error(response)
+
+            return response.json()
+
+        raise AvitoApiError("Avito token endpoint временно недоступен после повторных попыток.")
 
 
 @transaction.atomic
@@ -223,72 +244,48 @@ def build_api_error(response):
     )
 
 
-def get_avito_client_id():
-    if not settings.AVITO_CLIENT_ID:
-        raise AvitoConfigurationError("Не задан AVITO_CLIENT_ID")
-    return settings.AVITO_CLIENT_ID
+def get_avito_account_client_id(avito_account):
+    client_id = (avito_account.client_id or "").strip()
 
-
-def get_avito_client_secret():
-    if not settings.AVITO_CLIENT_SECRET:
-        raise AvitoConfigurationError("Не задан AVITO_CLIENT_SECRET")
-    return settings.AVITO_CLIENT_SECRET
-
-
-def build_avito_oauth_state(avito_account):
-    return signing.dumps(
-        {
-            "workspace_id": avito_account.workspace_id,
-            "avito_account_id": avito_account.id,
-        },
-        salt=AVITO_OAUTH_STATE_SALT,
-    )
-
-
-def parse_avito_oauth_state(state):
-    try:
-        return signing.loads(
-            state,
-            salt=AVITO_OAUTH_STATE_SALT,
-            max_age=AVITO_OAUTH_STATE_MAX_AGE_SECONDS,
+    if not client_id:
+        raise AvitoConfigurationError(
+            "Сначала укажите Client ID для проекта."
         )
-    except signing.SignatureExpired as exc:
-        raise AvitoApiError("OAuth state устарел. Начните подключение Avito заново.") from exc
-    except signing.BadSignature as exc:
-        raise AvitoApiError("Некорректный OAuth state.") from exc
+
+    return client_id
 
 
-def build_avito_authorization_url(avito_account, scopes=None):
-    scopes = scopes or DEFAULT_AVITO_OAUTH_SCOPES
+def get_avito_account_client_secret(avito_account):
+    client_secret = (avito_account.client_secret or "").strip()
 
-    query = urlencode({
-        "response_type": "code",
-        "pro_users_flow": "true",
-        "client_id": get_avito_client_id(),
-        "scope": ",".join(scopes),
-        "state": build_avito_oauth_state(avito_account),
+    if not client_secret:
+        raise AvitoConfigurationError(
+            "Сначала укажите Client Secret для проекта."
+        )
+
+    return client_secret
+
+
+def connect_avito_account_with_client_credentials(avito_account, session=None):
+    client = AvitoApiClient(session=session)
+
+    response = client.request_token({
+        "grant_type": "client_credentials",
+        "client_id": get_avito_account_client_id(avito_account),
+        "client_secret": get_avito_account_client_secret(avito_account),
     })
 
-    return f"{settings.AVITO_OAUTH_AUTHORIZE_URL}?{query}"
+    defaults = build_token_defaults(response)
+    defaults["auth_type"] = AvitoOAuthToken.AuthType.CLIENT_CREDENTIALS
 
-
-@transaction.atomic
-def connect_avito_account_from_authorization_code(code, state, session=None):
-    state_payload = parse_avito_oauth_state(state)
-
-    try:
-        avito_account = AvitoAccount.objects.select_for_update().get(
-            id=state_payload["avito_account_id"],
-            workspace_id=state_payload["workspace_id"],
-        )
-    except AvitoAccount.DoesNotExist as exc:
-        raise AvitoApiError("AvitoAccount из OAuth state не найден") from exc
-
-    client = AvitoApiClient(session=session)
-    token = client.exchange_authorization_code(avito_account, code)
+    token, _ = AvitoOAuthToken.objects.update_or_create(
+        workspace=avito_account.workspace,
+        avito_account=avito_account,
+        defaults=defaults,
+    )
 
     return connect_avito_account_from_token(
         avito_account=avito_account,
         token=token,
-        session=session
+        session=session,
     )

@@ -35,6 +35,9 @@
 - старый HTML-интерфейс на Django templates;
 - DRF API для frontend;
 - WebSocket-заготовка для уведомлений через Django Channels.
+- регистрация, JWT-cookie авторизация, рабочие пространства и роли через приложение `accounts`;
+- подключение Avito-аккаунтов, OAuth, импорт объявлений/статистики и привязка публикаций к Avito ID;
+- новый сервисный слой генерации/экспорта объявлений в `avitotask/services/`.
 
 ## Технологический стек
 
@@ -43,6 +46,7 @@ Backend:
 - Python 3.12
 - Django 5.1.2
 - Django REST Framework 3.15.2
+- djangorestframework-simplejwt 5.5.1
 - Celery 5.4.0
 - django-celery-beat 2.7.0
 - Redis как broker/result backend Celery
@@ -72,18 +76,40 @@ backend/
 ├── entrypoint.sh
 ├── system/
 │   ├── settings.py      # Django settings, DRF, CORS, Celery, static/media
-│   ├── urls.py          # HTML routes, DRF router, websocket_urlpatterns
+│   ├── urls.py          # admin, DRF router, auth/workspace/Avito API routes, websocket_urlpatterns
 │   ├── asgi.py          # ProtocolTypeRouter: HTTP + WebSocket
 │   ├── wsgi.py
 │   └── celery.py        # Celery app and beat schedule
+├── accounts/
+│   ├── models.py        # custom User, Workspace, WorkspaceMembership, WorkspaceInvitation
+│   ├── api_views.py     # register/login/refresh/logout/me, workspace members and invites
+│   ├── serializers.py   # auth, user, workspace and invitation serializers
+│   ├── permissions.py   # workspace role permission matrix and checks
+│   ├── urls.py          # /api/auth/
+│   ├── workspace_urls.py
+│   ├── invitation_urls.py
+│   └── migrations/
 ├── avitotask/
-│   ├── models.py        # Product, Product1, Project, Category, options, images
+│   ├── models.py        # legacy Product/Product1 plus Avito accounts, generation tasks, creatives, publications, listings, stats
 │   ├── views.py         # legacy HTML views and CSV generation workflow
 │   ├── api_views.py     # DRF ViewSets and API function views
+│   ├── avito_api_views.py # Avito OAuth/import/link/stats API endpoints
+│   ├── avito_urls.py    # /api/avito/ routes
 │   ├── serializers.py   # DRF serializers
-│   ├── tasks.py         # Celery tasks for scheduled product generation
+│   ├── tasks.py         # Celery tasks for generation, export, Avito import/link/stats, cleanup
 │   ├── forms.py
 │   ├── utils.py
+│   ├── services/
+│   │   ├── ad_generation.py     # domain logic for generating creatives/publications
+│   │   ├── ad_schedule.py       # scheduling due generation tasks
+│   │   ├── ad_export.py         # Avito autoload CSV export
+│   │   ├── ad_export_state.py   # export dirty/clean/error state transitions
+│   │   ├── ad_editing.py        # publication/creative editing helpers
+│   │   ├── ad_cleanup.py        # archive stale publications
+│   │   ├── avito_api.py         # Avito API client, OAuth and token helpers
+│   │   ├── avito_import.py      # import Avito listings into local models
+│   │   ├── avito_autoload.py    # link local publications to Avito IDs
+│   │   └── avito_stats.py       # import daily listing stats
 │   └── migrations/
 ├── cworker/
 │   ├── models.py        # Post, Record, Notification
@@ -94,8 +120,8 @@ backend/
 │   ├── forms.py
 │   └── migrations/
 ├── templates/           # Django templates for legacy UI
-├── static/              # CSS/JS/assets plus generated Avito CSV/XLSX files
-└── media/               # uploaded product images
+├── static/              # CSS/JS/assets, SCSS and generated Avito CSV/XLSX files
+└── media/               # uploaded product images and local media files
 ```
 
 ## Архитектура и ответственность модулей
@@ -103,9 +129,18 @@ backend/
 `system` - конфигурационный Django-проект:
 
 - `settings.py` подключает приложения, DRF, CORS, Celery, static/media, PostgreSQL;
-- `urls.py` смешивает legacy HTML routes, DRF router и WebSocket routes;
+- `urls.py` собирает admin, DRF router, auth/workspace/invitation endpoints, Avito API endpoints и WebSocket routes;
 - `asgi.py` поднимает HTTP и WebSocket через Channels;
 - `celery.py` создает Celery app и задает beat schedule `schedule_price_updates_every_minute`.
+
+`accounts` - пользователи и мульти-кабинеты:
+
+- `User` - кастомный пользователь с email вместо username;
+- `Workspace` - рабочий кабинет/пространство, к которому привязываются доменные данные;
+- `WorkspaceMembership` - роль пользователя в workspace и статус доступа;
+- `WorkspaceInvitation` - приглашение пользователя в workspace по email/token;
+- `api_views.py` содержит регистрацию, cookie-based JWT login/refresh/logout, `/me`, управление участниками и приглашениями;
+- `permissions.py` хранит матрицу прав ролей. Для workspace-scoped API сначала проверяй membership и permission.
 
 `avitotask` - основное доменное приложение:
 
@@ -115,15 +150,26 @@ backend/
 - `Category` - категория объявления;
 - `ProductOptions` и `ProductOptionAssignment` - доступные опции и выбранные значения для продукта;
 - `ProductImage` - загружаемые изображения;
+- `AvitoAccount` - подключенный Avito-аккаунт внутри workspace;
+- `AdGenerationTask`, `AdBatch`, `AdCreative`, `AdPublication` - новый контур массовой генерации, партий, креативов и публикаций;
+- `AvitoListing`, `AvitoListingDailyStats`, `AvitoOAuthToken` - локальное хранение импортированных объявлений, статистики и OAuth-токенов;
 - `views.py` содержит основную legacy-логику генерации объявления и записи CSV;
-- `api_views.py` предоставляет DRF API;
-- `tasks.py` запускает периодическую генерацию через Celery.
+- `api_views.py` предоставляет основной DRF API и workspace-scoped ViewSet-ы;
+- `avito_api_views.py` содержит API для OAuth, импорта объявлений, привязки публикаций и импорта статистики;
+- `services/` содержит доменную бизнес-логику. Если задача касается генерации, расписания, CSV-экспорта или Avito API, сначала ищи нужную функцию там, а не в `views.py`;
+- `tasks.py` должен быть тонким Celery-слоем: получить id, вызвать сервис, зафиксировать результат/ошибку.
 
 `cworker` - вспомогательное/экспериментальное приложение:
 
 - `Post` и `Record` используются для простых периодических задач;
 - `Record.save()` создает/обновляет `django_celery_beat.PeriodicTask`;
 - `NotificationConsumer` принимает WebSocket-подключения для уведомлений.
+
+`templates` - legacy HTML-интерфейс. Для DRF/frontend задач обычно не нужен, если пользователь прямо не просит менять старые страницы.
+
+`static` - одновременно frontend-ассеты и место записи Avito CSV/XLSX. Не чистить и не переименовывать файлы без явного запроса.
+
+`media` - загруженные изображения и локальные медиа. Не удалять и не нормализовать автоматически.
 
 ## Важные особенности текущего кода
 
