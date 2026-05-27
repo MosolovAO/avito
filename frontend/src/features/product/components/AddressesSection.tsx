@@ -1,6 +1,6 @@
 // src/features/product/components/AddressesSection.tsx
 import React, {useState} from 'react'
-import {Button, Card, Form, Input, Space, Table, Typography} from 'antd'
+import {Button, Card, Form, Input, message, Space, Table, Typography} from 'antd'
 import {DeleteOutlined, PlusOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
 import type {ProductFormValues} from '../lib/productFormMapper'
@@ -23,18 +23,41 @@ export const AddressesSection: React.FC = () => {
 
     const [bulkInput, setBulkInput] = useState('')
 
-    const handleAddBulk = () => {
-        const nextAddresses = bulkInput
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean)
+    const normalizeAddress = (address: string): string =>
+        address.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU')
 
-        if (nextAddresses.length === 0) {
+    const handleAddBulk = () => {
+        const existingAddressKeys = new Set(addresses.map(normalizeAddress))
+        const uniqueAddresses: string[] = []
+        let skippedCount = 0
+
+        bulkInput
+            .split('\n')
+            .map((line) => line.trim().replace(/\s+/g, ' '))
+            .filter(Boolean)
+            .forEach((address) => {
+                const addressKey = normalizeAddress(address)
+
+                if (existingAddressKeys.has(addressKey)) {
+                    skippedCount += 1
+                    return
+                }
+
+                existingAddressKeys.add(addressKey)
+                uniqueAddresses.push(address)
+            })
+
+        if (uniqueAddresses.length === 0) {
+            message.warning('Все адреса уже добавлены')
             return
         }
 
-        form.setFieldValue('addresses', [...addresses, ...nextAddresses])
+        form.setFieldValue('addresses', [...addresses, ...uniqueAddresses])
         setBulkInput('')
+
+        if (skippedCount > 0) {
+            message.warning(`Пропущено дублей: ${skippedCount}`)
+        }
     }
 
     const handleRemove = (indexToRemove: number) => {

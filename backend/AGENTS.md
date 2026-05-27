@@ -62,7 +62,7 @@ Backend:
 
 - `Dockerfile` запускает `uvicorn system.asgi:application --host 0.0.0.0 --port 8000`
 - `entrypoint.sh` содержит запуск миграций, но в Dockerfile сейчас не подключен
-- настройки берутся из env: `SECRET_KEY`, `DEBUG`, `ALLOW_HOSTS`, `POSTGRES_*`, `DB_HOST`, `DB_PORT`, `CELERY_BROKER`, `CELERY_BACKEND`
+- настройки берутся из env: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `POSTGRES_*`, `DB_HOST`, `DB_PORT`, `CELERY_BROKER`, `CELERY_BACKEND`
 
 Локально в репозитории есть sqlite-файлы, медиа, CSV/XLSX выгрузки и сгенерированная статика. Не считать их чистой схемой production-данных и не удалять без явного запроса.
 

@@ -1,10 +1,13 @@
 from avitotask.models import AdCreative, AdPublication
 from avitotask.services.ad_generation import AdGenerationError, normalize_address
 
+from django.db import transaction
+
 from avitotask.services.ad_export_state import (
     mark_creative_publications_export_dirty,
     mark_publication_export_dirty,
 )
+from avitotask.services.ad_export_queue import queue_avito_account_csv_exports
 
 
 class AdEditingError(AdGenerationError):
@@ -169,3 +172,21 @@ def clear_overrides_for_creative_publications(*, creative, fields):
             publications_to_update,
             ["overrides", "updated_at"]
         )
+
+
+def delete_ad_creative(*, creative_id, workspace):
+    with transaction.atomic():
+        creative = AdCreative.objects.select_for_update().get(
+            id=creative_id,
+            workspace=workspace,
+        )
+
+        avito_account_ids = list(
+            AdPublication.objects
+            .filter(workspace=workspace, creative=creative)
+            .values_list("avito_account_id", flat=True)
+            .distinct()
+        )
+
+        creative.delete()
+        queue_avito_account_csv_exports(avito_account_ids)

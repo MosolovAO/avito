@@ -21,29 +21,14 @@ interface UpdateAvitoAccountVariables {
     data: UpdateAvitoAccountRequest;
 }
 
-export const useAvitoProjectsQuery = () => {
+export const useAvitoProjectsQuery = (options?: { refetchInterval?: number | false }) => {
     const {currentWorkspaceId} = useCurrentWorkspace();
 
     return useQuery({
         queryKey: avitoKeys.accounts(currentWorkspaceId),
         queryFn: () => getAvitoAccounts(requireWorkspaceId(currentWorkspaceId)),
         enabled: currentWorkspaceId !== null,
-        refetchInterval: (query) => {
-            const projects = query.state.data;
-
-            if (!projects) {
-                return false;
-            }
-
-            const hasRunningProcess = projects.some(
-                (project) =>
-                    project.sync_status === "queued" ||
-                    project.sync_status === "syncing" ||
-                    project.export_status === "exporting",
-            )
-
-            return hasRunningProcess ? 30_000 : false;
-        }
+        refetchInterval: options?.refetchInterval,
     });
 };
 

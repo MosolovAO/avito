@@ -1,15 +1,33 @@
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.utils import timezone
 
-from avitotask.models import AdGenerationTask
+from avitotask.models import AdGenerationTask, AdGenerationTaskRun
 from avitotask.services.ad_generation import AdGenerationError, generate_ads_from_task
 
 logger = logging.getLogger(__name__)
 
 VALID_INTERVAL_DAYS = {7, 14, 21, 28}
+
+DEFAULT_SCHEDULE_TIMEZONE = "Europe/Moscow"
+
+FREQUENCY_TO_INTERVAL_DAYS = {
+    1: 7,
+    2: 14,
+    3: 21,
+    4: 28,
+}
+
+INTERVAL_DAYS_TO_FREQUENCY = {
+    7: 1,
+    14: 2,
+    21: 3,
+    28: 4,
+}
 
 DAY_ALIASES = {
     "Пн": 0, "Понедельник": 0, "Monday": 0, "monday": 0,
@@ -21,77 +39,229 @@ DAY_ALIASES = {
     "Вс": 6, "Воскресенье": 6, "Sunday": 6, "sunday": 6,
 }
 
+STRICT_HH_MM_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
 
 class AdScheduleError(AdGenerationError):
     """Ошибка расписания задачи генерации."""
 
 
-@dataclass(frozen=True)
-class ScheduleSlot:
-    day_index: int
-    slot_time: time
+def normalize_schedule(schedule, *, publication_interval_days=None):
+    """
+    Возвращает расписание в едином формате:
+    {
+        "frequency": 1|2|3|4,
+        "days": ["10:00", None, None, None, None, None, None],
+    }
+
+    Поддержка старого формата {'Пн': '10:00'} нужна только на переходный период.
+    """
+    if not schedule:
+        raise AdScheduleError("У задачи нет расписания")
+
+    if isinstance(schedule, dict) and "frequency" in schedule and "days" in schedule:
+        frequency = schedule["frequency"]
+        days = schedule["days"]
+    elif isinstance(schedule, dict):
+        frequency = INTERVAL_DAYS_TO_FREQUENCY.get(int(publication_interval_days or 7))
+        days = [None] * 7
+
+        for raw_day, raw_time in schedule.items():
+            day_index = parse_day_index(raw_day)
+
+            if isinstance(raw_time, list):
+                filled_times = [value for value in raw_time if value]
+                if len(filled_times) > 1:
+                    raise AdScheduleError("В новом расписании поддерживается один слот времени на день")
+                raw_time = filled_times[0] if filled_times else None
+
+            days[day_index] = raw_time
+    else:
+        raise AdScheduleError("Некорректный формат расписания")
+
+    if frequency not in FREQUENCY_TO_INTERVAL_DAYS:
+        raise AdScheduleError("frequency должен быть 1, 2, 3 или 4")
+    if not isinstance(days, list) or len(days) != 7:
+        raise AdScheduleError("days должен быть массивом из 7 элементов")
+
+    normalized_days = []
+    for value in days:
+        if value in ("", None):
+            normalized_days.append(None)
+            continue
+
+        if not isinstance(value, str) or not STRICT_HH_MM_RE.match(value):
+            raise AdScheduleError("Время в расписании должно быть строго в формате HH:mm")
+
+        normalized_days.append(value)
+
+    if not any(normalized_days):
+        raise AdScheduleError("В расписании должен быть выбран хотя бы один день")
+
+    return {
+        "frequency": int(frequency),
+        "days": normalized_days,
+    }
 
 
-def initialize_task_schedule(task, *, from_dt=None):
-    from_dt = from_dt or timezone.now()
-    slots = parse_schedule_slots(task.schedule)
-    interval_days = get_interval_days(task)
+def parse_day_index(day_name):
+    if day_name not in DAY_ALIASES:
+        raise AdScheduleError(f"Неизвестный день недели: {day_name}")
 
-    first_slot = slots[0]
-    cycle_start = get_cycle_start_for_week(from_dt, first_slot)
-    cycle_datetimes = build_cycle_datetimes(cycle_start, slots)
+    return DAY_ALIASES[day_name]
 
-    future_slots = [slot_dt for slot_dt in cycle_datetimes if slot_dt > from_dt]
 
-    if not future_slots:
-        cycle_start = cycle_start + timedelta(days=7)
-        cycle_datetimes = build_cycle_datetimes(cycle_start, slots)
-        future_slots = [slot_dt for slot_dt in cycle_datetimes if slot_dt > from_dt]
+def get_schedule_timezone(timezone_name):
+    timezone_name = timezone_name or DEFAULT_SCHEDULE_TIMEZONE
 
-    if not future_slots:
-        raise AdScheduleError("Не удалось рассчитать следующую дату публикации.")
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        raise AdScheduleError(f"Неизвестный timezone расписания: {timezone_name}")
 
-    task.schedule_cycle_started_at = cycle_start
-    task.next_update_time = future_slots[0]
-    task.save(update_fields=["schedule_cycle_started_at", "next_update_time"])
+
+def parse_anchor_date(anchor_date):
+    if isinstance(anchor_date, date) and not isinstance(anchor_date, datetime):
+        return anchor_date
+    if isinstance(anchor_date, datetime):
+        return anchor_date.date()
+    if isinstance(anchor_date, str):
+        return date.fromisoformat(anchor_date)
+    raise AdScheduleError("schedule_anchor_date должен быть датой YYYY-MM-DD")
+
+
+def make_aware_in_schedule_timezone(value, tz):
+    if timezone.is_aware(value):
+        return value.astimezone(tz)
+    return value.replace(tzinfo=tz)
+
+
+def iso_week_start(value):
+    return value - timedelta(days=value.weekday())
+
+
+def is_valid_frequency_week(candidate_date, anchor_date, frequency):
+    weeks_diff = (iso_week_start(candidate_date) - iso_week_start(anchor_date)).days // 7
+    return weeks_diff >= 0 and weeks_diff % frequency == 0
+
+
+def calculate_next_run_at(schedule, anchor_date, now, timezone_name):
+    """
+    Считает ближайший будущий слот запуска.
+
+    frequency:
+    1 = каждую неделю
+    2 = раз в 2 ISO-недели от anchor
+    3 = раз в 3 ISO-недели от anchor
+    4 = раз в 4 ISO-недели от anchor
+    """
+    if not schedule:
+        return None
+
+    norzalized_schedule = normalize_schedule(schedule)
+    tz = get_schedule_timezone(timezone_name)
+    local_now = make_aware_in_schedule_timezone(now, tz)
+    anchor = parse_anchor_date(anchor_date)
+
+    frequency = norzalized_schedule["frequency"]
+    days = norzalized_schedule["days"]
+
+    for offset in range(0, 370):
+        candidate_date = local_now.date() + timedelta(days=offset)
+        day_time = days[candidate_date.weekday()]
+
+        if not day_time:
+            continue
+
+        if not is_valid_frequency_week(candidate_date, anchor, frequency):
+            continue
+
+        hour, minute = map(int, day_time.split(":"))
+        candidate = datetime.combine(
+            candidate_date,
+            time(hour=hour, minute=minute),
+            tzinfo=tz
+        )
+
+        if candidate > local_now:
+            return candidate
+
+    raise AdScheduleError("Не удалось рассчитать следующую дату запуска")
+
+
+def recalculate_task_next_update_time(task, *, now=None, save=True):
+    now = now or timezone.now()
+
+    if not task.is_active:
+        task.next_update_time = None
+
+        if save:
+            task.save(update_fields=["next_update_time", "updated_at"])
+
+        return None
+
+    normalized_schedule = normalize_schedule(
+        task.schedule,
+        publication_interval_days=task.publication_interval_days
+    )
+
+    if not task.schedule_anchor_date:
+        task.schedule_anchor_date = timezone.localtime(now).date()
+
+    task.schedule = normalized_schedule
+    task.publication_interval_days = FREQUENCY_TO_INTERVAL_DAYS[normalized_schedule["frequency"]]
+    task.next_update_time = calculate_next_run_at(
+        normalized_schedule,
+        task.schedule_anchor_date,
+        now,
+        task.schedule_timezone
+    )
+
+    if save:
+        task.save(update_fields=[
+            "schedule",
+            "publication_interval_days",
+            "schedule_anchor_date",
+            "next_update_time",
+            "updated_at"
+        ])
 
     return task.next_update_time
 
 
+def initialize_task_schedule(task, *, from_dt=None):
+    return recalculate_task_next_update_time(task, now=from_dt or timezone.now())
+
+
 def advance_task_schedule_after_run(task, *, run_at=None):
     run_at = run_at or timezone.now()
-    slots = parse_schedule_slots(task.schedule)
-    interval_days = get_interval_days(task)
 
-    if not task.schedule_cycle_started_at:
-        initialize_task_schedule(task, from_dt=run_at)
-        task.refresh_from_db()
-
-    schedule_dt = task.next_update_time or run_at
-    cycle_start = task.schedule_cycle_started_at
-
-    cycle_datetimes = build_cycle_datetimes(cycle_start, slots)
-    future_slots_in_cycle = [
-        slot_dt for slot_dt in cycle_datetimes
-        if slot_dt > schedule_dt
-    ]
-
-    if future_slots_in_cycle:
-        next_update_time = future_slots_in_cycle[0]
-        next_cycle_start = cycle_start
-    else:
-        next_cycle_start = cycle_start + timedelta(days=interval_days)
-        next_update_time = build_cycle_datetimes(next_cycle_start, slots)[0]
-
-    task.schedule_cycle_started_at = next_cycle_start
-    task.next_update_time = next_update_time
     task.last_run_at = run_at
-    task.save(update_fields=["schedule_cycle_started_at", "next_update_time", "last_run_at"])
+    task.last_successful_run_at = run_at
+    task.last_run_status = AdGenerationTask.LastRunStatus.SUCCESS
+    task.last_run_error = None
+    task.next_update_time = calculate_next_run_at(
+        task.schedule,
+        task.schedule_anchor_date,
+        run_at,
+        task.schedule_timezone
+    )
 
-    return next_update_time
+    task.save(update_fields=[
+        "last_run_at",
+        "last_successful_run_at",
+        "last_run_status",
+        "last_run_error",
+        "next_update_time",
+        "updated_at"
+    ])
+
+    return task.next_update_time
 
 
 def run_due_ad_generation_tasks(*, limit=50, now_dt=None):
+    from avitotask.services.ad_task_runner import run_autogeneration_task
+
     now_dt = now_dt or timezone.now()
 
     tasks = list(
@@ -108,17 +278,35 @@ def run_due_ad_generation_tasks(*, limit=50, now_dt=None):
     generated_count = 0
 
     for task in tasks:
+        scheduled_for = task.next_update_time
+
         try:
-            generate_ads_from_task(task.id, workspace=task.workspace)
+            if not is_schedule_due_at(task, now_dt):
+                recalculate_task_next_update_time(task, now=now_dt)
+                continue
+
+            result = run_autogeneration_task(
+                task.id,
+                triggered_by="schedule",
+                scheduled_for=scheduled_for,
+                workspace=task.workspace,
+                now=now_dt,
+            )
+
+            if result.created and result.run.status == AdGenerationTaskRun.Status.SUCCESS:
+                generated_count += 1
+
         except AdGenerationError:
             logger.exception("Failed to generate ads for task_id=%s", task.id)
-            advance_task_schedule_after_run(task, run_at=now_dt)
             continue
 
-        advance_task_schedule_after_run(task, run_at=now_dt)
-        generated_count += 1
-
     return generated_count
+
+
+@dataclass(frozen=True)
+class ScheduleSlot:
+    day_index: int
+    slot_time: time
 
 
 def parse_schedule_slots(schedule):
@@ -183,3 +371,32 @@ def build_cycle_datetimes(cycle_start, slots):
         cycle_datetimes.append(datetime.combine(slot_date, slot.slot_time))
 
     return sorted(cycle_datetimes)
+
+
+def is_schedule_due_at(task, now_dt):
+    if not task.next_update_time:
+        return False
+
+    scheduled_for = make_aware_in_schedule_timezone(
+        task.next_update_time,
+        get_schedule_timezone(task.schedule_timezone),
+    )
+    local_now = make_aware_in_schedule_timezone(
+        now_dt,
+        get_schedule_timezone(task.schedule_timezone),
+    )
+
+    if scheduled_for.replace(second=0, microsecond=0) != local_now.replace(second=0, microsecond=0):
+        return False
+
+    expected_next_run = calculate_next_run_at(
+        task.schedule,
+        task.schedule_anchor_date,
+        local_now - timedelta(minutes=1),
+        task.schedule_timezone,
+    )
+
+    return (
+            expected_next_run.replace(second=0, microsecond=0)
+            == scheduled_for.replace(second=0, microsecond=0)
+    )

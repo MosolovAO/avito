@@ -1,7 +1,7 @@
 x-backend-env: &backend-env
   DEBUG: "1"
   SECRET_KEY: django-insecure-change-this-in-production
-  ALLOW_HOSTS: localhost,127.0.0.1
+  ALLOWED_HOSTS: localhost,127.0.0.1
   POSTGRES_DB: avito
   POSTGRES_USER: avito_user
   POSTGRES_PASSWORD: avito_password

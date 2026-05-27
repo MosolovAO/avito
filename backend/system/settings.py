@@ -14,13 +14,39 @@ import os
 from datetime import timedelta
 from pathlib import Path
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
+
+
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name, default=""):
+    value = os.environ.get(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def required_env(name):
+    value = os.environ.get(name)
+    if not value:
+        raise ImproperlyConfigured(f"{name} is required")
+    return value
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
-DEBUG = os.environ.get("DEBUG")
-ALLOWED_HOSTS = os.environ.get("ALLOW_HOSTS", "localhost").split(',')
+SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-local-dev-only")
+DEBUG = env_bool("DEBUG", default=True)
+
+# Поддерживаем старый ALLOW_HOSTS временно, но лучше перейти на ALLOWED_HOSTS.
+ALLOWED_HOSTS = env_list(
+    "ALLOWED_HOSTS",
+    os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0"),
+)
 
 # Application definition
 
@@ -122,8 +148,7 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = 'ru-ru'
 
 USE_I18N = True
-
-USE_TZ = False
+USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'static'
@@ -153,7 +178,7 @@ TIME_ZONE = 'Europe/Moscow'
 #    "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}
 # }
 
-SITE_URL = 'http://localhost:8000'
+SITE_URL = os.environ.get("SITE_URL", "http://localhost:8000")
 
 # CORS settings
 CORS_ALLOWED_ORIGINS = [
@@ -222,3 +247,7 @@ EMAIL_BACKEND = os.environ.get(
     "django.core.mail.backends.console.EmailBackend",
 )
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@localhost")
+
+AVITO_SYNC_STALE_TIMEOUT_MINUTES = int(
+    os.environ.get("AVITO_SYNC_STALE_TIMEOUT_MINUTES", "30")
+)

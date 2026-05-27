@@ -4,7 +4,7 @@ from celery import Celery
 from celery.schedules import crontab, schedule
 
 # Установим модуль настроек Django для Celery
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'system.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'system.settings_local')
 
 # Создаем экземпляр приложения Celery
 app = Celery('system')
@@ -31,5 +31,10 @@ app.conf.beat_schedule = {
         'task': 'avitotask.tasks.archive_stale_publications_task',
         'schedule': crontab(hour=3, minute=30),
         'args': (60, 1000),
+    },
+    'sync_last_completed_avito_autoload_reports_hourly': {
+        'task': 'avitotask.tasks.sync_last_completed_avito_autoload_reports_task',
+        'schedule': crontab(minute=20),
+        'args': (20,),
     },
 }

@@ -3,7 +3,6 @@ import {message} from "antd";
 import {
     avitoKeys,
     importAvitoDailyStats,
-    importAvitoListings,
     linkAvitoPublications,
     connectAvitoAccountByCredentials
 } from "../../../shared/api/avito";
@@ -30,44 +29,6 @@ interface ImportAvitoDailyStatsVariables extends AvitoAccountActionVariables {
     payload: ImportAvitoDailyStatsRequest;
 }
 
-
-export const useImportAvitoListingsMutation = () => {
-    const queryClient = useQueryClient();
-    const {currentWorkspaceId} = useCurrentWorkspace()
-
-    return useMutation({
-        mutationFn: async ({avitoAccountId}: AvitoAccountActionVariables) => {
-            const workspaceId = requireWorkspaceId(currentWorkspaceId)
-
-            return importAvitoListings({
-                    workspaceId,
-                    avitoAccountId
-                }
-            )
-        },
-        onSuccess: async () => {
-            await Promise.all([
-                queryClient.invalidateQueries({
-                    queryKey: avitoKeys.accounts(currentWorkspaceId),
-                }),
-                queryClient.invalidateQueries({
-                    queryKey: avitoKeys.listings(currentWorkspaceId),
-                }),
-                queryClient.invalidateQueries({
-                    queryKey: avitoKeys.publications(currentWorkspaceId),
-                }),
-            ]);
-
-            message.success("Импорт объявлений поставлен в очередь")
-        },
-        onError: (error) => {
-            message.error(
-                getApiErrorMessage(error, "Не удалось запустить импорт объявлений")
-            )
-        }
-    })
-}
-
 export const useLinkAvitoPublicationsMutation = () => {
     const queryClient = useQueryClient();
     const {currentWorkspaceId} = useCurrentWorkspace()
@@ -92,6 +53,9 @@ export const useLinkAvitoPublicationsMutation = () => {
                 }),
                 queryClient.invalidateQueries({
                     queryKey: avitoKeys.publications(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.accounts(currentWorkspaceId),
                 }),
             ]);
 

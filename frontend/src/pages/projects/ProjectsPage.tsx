@@ -1,10 +1,9 @@
-import React, {useState} from "react";
+import React, {useEffect, useState} from "react";
 import {
     ApiOutlined,
+    CopyOutlined,
     DeleteOutlined,
     EditOutlined,
-    ImportOutlined,
-    LinkOutlined,
     PlusOutlined,
     ReloadOutlined,
 } from "@ant-design/icons";
@@ -14,6 +13,7 @@ import {
     DatePicker,
     Form,
     Input,
+    message,
     Modal,
     Popconfirm,
     Space,
@@ -31,11 +31,11 @@ import {
     useCreateAvitoProjectMutation,
     useDeleteAvitoProjectMutation,
     useImportAvitoDailyStatsMutation,
-    useImportAvitoListingsMutation,
     useLinkAvitoPublicationsMutation,
     useUpdateAvitoProjectMutation,
     useVerifyAvitoConnectionMutation,
 } from "../../features/avito";
+
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import {useConnectAvitoAccountMutation} from "../../features/avito/model/useAvitoActions.ts";
 
@@ -56,30 +56,19 @@ interface StatsFormValues {
 const exportStatusColor: Record<AvitoAccount["export_status"], string> = {
     clean: "success",
     dirty: "warning",
+    queued: "processing",
     exporting: "processing",
-    error: "error"
-}
+    error: "error",
+};
 
 const exportStatusLabel: Record<AvitoAccount["export_status"], string> = {
     clean: "CSV актуален",
     dirty: "Нужна пересборка",
+    queued: "CSV в очереди",
     exporting: "CSV формируется",
-    error: "Ошибка CSV"
-}
-
-const syncStatusColor: Record<AvitoAccount["sync_status"], string> = {
-    idle: "default",
-    queued: "processing",
-    syncing: "processing",
-    error: "error",
+    error: "Ошибка CSV",
 };
 
-const syncStatusLabel: Record<AvitoAccount["sync_status"], string> = {
-    idle: "Синхронизации нет",
-    queued: "Импорт в очереди",
-    syncing: "Импорт выполняется",
-    error: "Ошибка импорта",
-};
 
 const getConnectionTag = (project: AvitoAccount) => {
     if (project.connection_status === "not_configured") {
@@ -101,6 +90,12 @@ const getConnectionTag = (project: AvitoAccount) => {
     );
 };
 
+const getExportStatusTag = (project: AvitoAccount) => (
+    <Tag color={exportStatusColor[project.export_status]}>
+        {exportStatusLabel[project.export_status]}
+    </Tag>
+);
+
 export const ProjectsPage: React.FC = () => {
     const {currentWorkspace, canManageAvitoAccounts} = useCurrentWorkspace();
     const [projectForm] = Form.useForm<ProjectFormValues>()
@@ -119,11 +114,88 @@ export const ProjectsPage: React.FC = () => {
     const deleteProjectMutation = useDeleteAvitoProjectMutation();
 
     const connectAvitoMutation = useConnectAvitoAccountMutation();
-    const importListingsMutation = useImportAvitoListingsMutation();
     const linkPublicationsMutation = useLinkAvitoPublicationsMutation();
     const importStatsMutation = useImportAvitoDailyStatsMutation();
 
     const verifyConnectionMutation = useVerifyAvitoConnectionMutation();
+
+    const isSyncInProgress = (account: AvitoAccount) =>
+        account.sync_status === "queued" || account.sync_status === "syncing";
+
+    const handleLinkPublications = (avitoAccountId: number) => {
+        linkPublicationsMutation.mutate(
+            {avitoAccountId},
+            {
+                onSuccess: () => {
+                    void projectsQuery.refetch();
+                },
+            },
+        );
+    };
+
+    const hasActiveSync = (projectsQuery.data ?? []).some(isSyncInProgress);
+
+    useEffect(() => {
+        if (!hasActiveSync) {
+            return;
+        }
+
+        const intervalId = window.setInterval(() => {
+            void projectsQuery.refetch();
+        }, 3000);
+
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [hasActiveSync, projectsQuery]);
+
+    const formatDateTime = (value: string | null): string => {
+        if (!value) {
+            return "не было";
+        }
+
+        const date = new Date(value);
+
+        if (Number.isNaN(date.getTime())) {
+            return value;
+        }
+
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        const hours = String(date.getHours()).padStart(2, "0");
+        const minutes = String(date.getMinutes()).padStart(2, "0");
+
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
+    };
+
+    const getSyncStatusText = (account: AvitoAccount) => {
+        if (account.sync_status === "queued") {
+            return "Синхронизация поставлена в очередь";
+        }
+
+        if (account.sync_status === "syncing") {
+            return "Синхронизация отчета автозагрузки выполняется";
+        }
+
+        if (account.sync_status === "error") {
+            return "Ошибка синхронизации";
+        }
+
+        if (account.last_synced_at) {
+            return `Последняя синхронизация: ${formatDateTime(account.last_synced_at)}`;
+        }
+
+        return "Синхронизация еще не выполнялась";
+    };
+
+    const getSyncStatusColor = (status?: string) => {
+        if (status === "queued") return "processing";
+        if (status === "syncing") return "processing";
+        if (status === "error") return "error";
+
+        return "default";
+    };
     const openCreateModal = () => {
         setEditingProject(null);
         projectForm.setFieldsValue({
@@ -203,21 +275,39 @@ export const ProjectsPage: React.FC = () => {
         closeStatsModal()
     }
 
+
+    const copyFeedUrl = async (project: AvitoAccount) => {
+        if (!project.feed_url) {
+            message.warning("Ссылка автозагрузки еще не сформирована");
+            return;
+        }
+
+        await navigator.clipboard.writeText(project.feed_url);
+        message.success("Ссылка автозагрузки скопирована");
+    };
+
     const columns: TableProps<AvitoAccount>["columns"] = [
         {
             title: "Проект",
             dataIndex: "name",
             key: "name",
+            width: 240,
             render: (_, project) => (
                 <Space orientation="vertical" size={0}>
                     <Text strong>{project.name}</Text>
-                    <Text type="secondary">ID: {project.id}</Text>
+
+                    {project.external_account_id && (
+                        <Text type="secondary" style={{fontSize: 12}}>
+                            Avito ID: {project.external_account_id}
+                        </Text>
+                    )}
                 </Space>
             ),
         },
         {
             title: "Avito API",
             key: "avito",
+            width: 320,
             render: (_, project) => (
                 <Space orientation="vertical" size={4}>
                     {getConnectionTag(project)}
@@ -228,7 +318,7 @@ export const ProjectsPage: React.FC = () => {
 
                     {project.last_verified_at && (
                         <Text type="secondary">
-                            Проверено: {project.last_verified_at}
+                            Проверено: {formatDateTime(project.last_verified_at)}
                         </Text>
                     )}
 
@@ -239,36 +329,36 @@ export const ProjectsPage: React.FC = () => {
             ),
         },
         {
-            title: "Статус",
-            key: "status",
+            title: "Автозагрузка",
+            key: "autoload",
+            width: 420,
             render: (_, project) => (
-                <Space orientation="vertical" size={4}>
-                    <Tag color={project.is_active ? "success" : "default"}>
-                        {project.is_active ? "Активен" : "Отключен"}
-                    </Tag>
-                    <Tag color={exportStatusColor[project.export_status]}>
-                        {exportStatusLabel[project.export_status]}
-                    </Tag>
-                    <Tag color={syncStatusColor[project.sync_status]}>
-                        {syncStatusLabel[project.sync_status]}
-                    </Tag>
-                </Space>
-            ),
-        },
-        {
-            title: "CSV",
-            key: "csv",
-            render: (_, project) => (
-                <Space orientation="vertical" size={0}>
-                    <Text type="secondary">
-                        Последний экспорт: {project.last_exported_at ?? "не было"}
-                    </Text>
+                <Space direction="vertical" size={6} style={{width: "100%"}}>
+                    {getExportStatusTag(project)}
+
+                    <Space.Compact style={{width: "100%"}}>
+                        <Input
+                            readOnly
+                            value={project.feed_url ?? ""}
+                            placeholder="Ссылка автозагрузки не сформирована"
+                        />
+
+                        <Tooltip title="Скопировать ссылку для кабинета Avito">
+                            <Button
+                                icon={<CopyOutlined/>}
+                                disabled={!project.feed_url}
+                                onClick={() => copyFeedUrl(project)}
+                            />
+                        </Tooltip>
+                    </Space.Compact>
+
                     {project.export_error && (
                         <Text type="danger">{project.export_error}</Text>
                     )}
                 </Space>
             ),
         },
+
         {
             title: "Действия",
             key: "actions",
@@ -278,8 +368,7 @@ export const ProjectsPage: React.FC = () => {
                 const hasAvitoCredentials = Boolean(
                     project.client_id && project.has_client_secret,
                 );
-                const isSyncRunning =
-                    project.sync_status === "queued" || project.sync_status === "syncing";
+
                 return (
                     <Space wrap size="small">
                         <Tooltip title="Редактировать проект">
@@ -323,31 +412,41 @@ export const ProjectsPage: React.FC = () => {
                             </Button>
                         </Tooltip>
 
-                        <Tooltip title="Импортировать текущие объявления из Avito">
-                            <Button
-                                icon={<ImportOutlined/>}
-                                disabled={!canManageAvitoAccounts || !hasConnectedAvito || isSyncRunning}
-                                loading={importListingsMutation.isPending || isSyncRunning}
-                                onClick={() =>
-                                    importListingsMutation.mutate({
-                                        avitoAccountId: project.id,
-                                    })
-                                }
-                            />
-                        </Tooltip>
+                        <Space direction="vertical" size={4}>
+                            <Space size={8} wrap>
+                                <Button
+                                    onClick={() => handleLinkPublications(project.id)}
+                                    loading={project.sync_status === "queued" || project.sync_status === "syncing"}
+                                    disabled={project.sync_status === "queued" || project.sync_status === "syncing"}
+                                >
+                                    Обновить связи с Avito
+                                </Button>
 
-                        <Tooltip title="Связать все публикации проекта с Avito ID">
-                            <Button
-                                icon={<LinkOutlined/>}
-                                disabled={!canManageAvitoAccounts || !hasConnectedAvito}
-                                loading={linkPublicationsMutation.isPending}
-                                onClick={() =>
-                                    linkPublicationsMutation.mutate({
-                                        avitoAccountId: project.id,
-                                    })
-                                }
-                            />
-                        </Tooltip>
+                                <Tag color={getSyncStatusColor(project.sync_status)}>
+                                    {getSyncStatusText(project)}
+                                </Tag>
+                            </Space>
+
+                            {(project.sync_status === "queued" || project.sync_status === "syncing") && (
+                                <Text type="secondary" style={{fontSize: 12}}>
+                                    Можно продолжать работу, результат обновится после завершения задачи.
+                                </Text>
+                            )}
+
+                            {project.sync_error && (
+                                <Text type="danger" style={{fontSize: 12}}>
+                                    {project.sync_error}
+                                </Text>
+                            )}
+
+                            {project.last_synced_at && (
+                                <Text type="secondary" style={{fontSize: 12}}>
+                                    Строк отчета: {project.last_sync_total_received ?? 0} · Создано связей:{" "}
+                                    {project.last_sync_created_listings ?? 0} · Обновлено объявлений:{" "}
+                                    {project.last_sync_updated_listings ?? 0}
+                                </Text>
+                            )}
+                        </Space>
 
                         <Tooltip title="Импортировать статистику">
                             <Button
@@ -372,6 +471,7 @@ export const ProjectsPage: React.FC = () => {
                             />
                         </Popconfirm>
                     </Space>
+
                 );
             },
         },

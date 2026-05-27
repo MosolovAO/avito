@@ -4,15 +4,6 @@ export interface Product {
     name: string
     url: string
     price: number
-    listingfee: string
-    email: string,
-    contactphone: string,
-    managername: string,
-    avitostatus: string,
-    companyname: string,
-    contactmethod: string,
-    adtype: string,
-    availability: string,
     activate: boolean
     price_min: number
     price_max: number
@@ -20,16 +11,52 @@ export interface Product {
     titles: string[]
     main_images: string[]
     additional_images: string[]
-    descriptions: Record<string, string>
+    main_image_asset_ids: number[]
+    additional_image_asset_ids: number[]
+    descriptions: Record<string, string> | string[]
     addresses: string[]
     category: string
-    schedule: Record<string, string>
+    schedule: ProductSchedule
+    schedule_anchor_date: string
+    schedule_timezone: string
     next_update_time: string | null
-    projects: { id: number; project_name: string }[]
+    last_run_at: string | null
+    last_successful_run_at: string | null
+    last_run_status: 'idle' | 'running' | 'success' | 'error'
+    last_run_error: string | null
     price_randomization_enabled: boolean
     options: ProductSelectionOption[]
+    avito_account_ids?: number[]
+    avito_accounts?: Array<{
+        id: number
+        name: string
+        export_status: string
+    }>
+    base_data?: ProductBaseData
 
+    // legacy/form fields, пока оставляем для постепенного вычищения
+    listingfee?: string
+    email?: string
+    contactphone?: string
+    managername?: string
+    avitostatus?: string
+    companyname?: string
+    contactmethod?: string
+    adtype?: string
+    availability?: string
+    projects?: { id: number; project_name: string }[]
 }
+
+export interface ProductSchedule {
+    frequency: 1 | 2 | 3 | 4
+    days: Array<string | null>
+}
+
+export interface ProductImageAssetValue {
+    id: number
+    url: string
+}
+
 
 // Тип Product1 (созданное объявление)
 export interface Product1 {
@@ -63,38 +90,52 @@ export interface ProductOption {
     categories: number[]
 }
 
-export type ProductImageValue = File | string
+export type ProductImageValue = File | ProductImageAssetValue | string
 
 // Типы для формы добавления/редактирования продукта
 export interface ProductFormData {
+    name: string
     titles: string[]
     price_randomization_enabled: boolean
     main_images: string[]
     additional_images: string[]
+    main_image_asset_ids: number[]
+    additional_image_asset_ids: number[]
     descriptions: string[]
     addresses: string[]
     category: string
-    listingfee: string
-    email: string
-    contactphone: string
-    managername: string
-    avitostatus: string
-    companyname: string
-    contactmethod: string
-    adtype: string
-    availability: string
+    avito_account_ids: number[]
+    base_data?: ProductBaseData
+    listingfee?: string
+    email?: string
+    contactphone?: string
+    managername?: string
+    avitostatus?: string
+    companyname?: string
+    contactmethod?: string
+    adtype?: string
+    availability?: string
     price: number
     price_min: number
     price_max: number
     price_step: number
-    projects: number[]
+    projects?: number[]
     options: ProductSelectionOption[]
-    schedule: {
-        frequency?: number
-        days?: string[]
-    }
-
+    schedule: ProductSchedule
 }
+
+export interface ProductBaseData {
+    ListingFee?: string
+    EMail?: string
+    ContactPhone?: string
+    ManagerName?: string
+    AvitoStatus?: string
+    CompanyName?: string
+    ContactMethod?: string
+    AdType?: string
+    Availability?: string
+}
+
 
 /**
  * Тип изображения продукта
@@ -111,6 +152,7 @@ export interface ProductImage {
  * Ответ сервера после загрузки изображения
  */
 export interface UploadImageResponse {
+    id: number
     url: string
 }
 

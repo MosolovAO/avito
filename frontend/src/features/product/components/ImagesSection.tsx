@@ -2,7 +2,7 @@
 import React, {useEffect, useRef, useState} from 'react'
 import {Button, Card, Col, Divider, Form, message, Row, Space} from 'antd'
 import {MinusOutlined, UploadOutlined} from '@ant-design/icons'
-import type {ProductImageValue} from '../../../entities/product/types'
+import type {ProductImageAssetValue, ProductImageValue} from '../../../entities/product/types'
 import type {ProductFormValues} from '../lib/productFormMapper'
 
 type ImageFieldName = 'main_images' | 'additional_images'
@@ -39,10 +39,30 @@ const validateFile = (file: File): string | null => {
     return null
 }
 
+const isImageAsset = (value: ProductImageValue): value is ProductImageAssetValue =>
+    typeof value === 'object' && value !== null && 'id' in value && 'url' in value
+
+const getImageUrl = (image: ProductImageValue): string => {
+    if (isFile(image)) {
+        return URL.createObjectURL(image)
+    }
+
+    if (isImageAsset(image)) {
+        return image.url
+    }
+
+    return image
+}
+
+
 const getImageFiles = (files: FileList | null): File[] =>
     Array.from(files ?? []).filter((file) => file.type.startsWith('image/'))
 
 const getPreviewId = (image: ProductImageValue, index: number): string => {
+    if (isImageAsset(image)) {
+        return `asset-${image.id}-${index}`
+    }
+
     if (!isFile(image)) {
         return `remote-${index}-${image}`
     }
@@ -55,7 +75,7 @@ const createPreview = (image: ProductImageValue, index: number): FilePreview => 
     if (!isFile(image)) {
         return {
             source: image,
-            url: image,
+            url: getImageUrl(image),
             id: getPreviewId(image, index),
             revokeUrl: false,
         }
@@ -63,7 +83,7 @@ const createPreview = (image: ProductImageValue, index: number): FilePreview => 
 
     return {
         source: image,
-        url: URL.createObjectURL(image),
+        url: getImageUrl(image),
         id: getPreviewId(image, index),
         revokeUrl: true,
     }

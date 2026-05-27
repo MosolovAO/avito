@@ -8,28 +8,46 @@ from cworker.consumers import NotificationConsumer
 
 from avitotask.api_views import (
     ProductViewSet,
-    Product1ViewSet,
-    ProjectViewSet,
     ProductOptionsViewSet,
+    AdPublicationViewSet,
     AvitoAccountViewSet,
     AvitoListingViewSet,
     get_product_categories,
     upload_product_image,
+    AdBatchViewSet,
+    AdCreativeViewSet,
+    ManualMassPostingView,
+    toggle_product_active,
+    product_random
 )
 
 router = DefaultRouter()
 router.register(r'products', ProductViewSet, basename='product-api')
-router.register(r'product1', Product1ViewSet, basename='product1-api')
-router.register(r'projects', ProjectViewSet, basename='project-api')
 router.register(r'options', ProductOptionsViewSet, basename='options-api')
 router.register(r'avito-accounts', AvitoAccountViewSet, basename='avito-account-api')
 router.register(r'avito-listings', AvitoListingViewSet, basename='avito-listing-api')
+router.register(r'ad-publications', AdPublicationViewSet, basename='ad-publication-api')
+router.register(r'ad-batches', AdBatchViewSet, basename='ad-batch-api')
+router.register(r'ad-creatives', AdCreativeViewSet, basename='ad-creative-api')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
 
     path('api/categories/', get_product_categories, name='categories-api'),
+    path(
+        'api/manual-mass-posting/',
+        ManualMassPostingView.as_view(),
+        name='manual-mass-posting-api',
+    ),
     path('api/product-images/upload/', upload_product_image, name='product-image-upload-api'),
+    path('api/toggle-product-active/<int:product_id>/', toggle_product_active, name='toggle-product-active-api', ),
+
+    path(
+        'api/product-random/<int:product_id>/',
+        product_random,
+        name='product-random-api',
+    ),
+
     path('api/', include(router.urls)),
 
     path('api/auth/', include('accounts.urls')),

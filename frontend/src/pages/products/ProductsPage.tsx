@@ -14,17 +14,25 @@ export const ProductsPage: React.FC = () => {
     const {data: products = [], isLoading} = useQuery<Product[]>({
         queryKey: ['products'],
         queryFn: getProducts,
+        refetchInterval: 60_000,
     })
 
-    const {toggleActive, delete: deleteProduct, generate} = useProductActions()
+    const {
+        toggleActive,
+        delete: deleteProduct,
+        generate,
+        isToggleLoading,
+        toggleActiveTaskId,
+    } = useProductActions()
+
 
     const handleAdd = () => {
-        navigate('/products/add')
+        navigate('/products/add/')
 
     }
 
     const handleEdit = (id: number) => {
-        navigate(`/products/${id}/edit`)
+        navigate(`/products/${id}/edit/`)
     }
 
     const handleToggleActive = (id: number, action: 'activate' | 'deactivate') => {
@@ -45,6 +53,8 @@ export const ProductsPage: React.FC = () => {
             onEdit={handleEdit}
             onToggleActive={handleToggleActive}
             onGenerate={handleGenerate}
+            isToggleActiveLoading={isToggleLoading}
+            toggleActiveTaskId={toggleActiveTaskId}
         />
     )
 }

@@ -1,8 +1,17 @@
 import React from 'react'
 import {Form, Button, Space, Row, Col, message} from 'antd'
 import type {ProductFormData} from '../../entities/product'
-import type {Project} from "../../entities/project";
 import {resolveProductImages} from './lib/resolveProductImages'
+import type {AvitoAccount} from '../../entities/avito/types'
+
+interface ProductFormProps {
+    avitoAccounts: AvitoAccount[]
+    categories: string[]
+    initialData?: Partial<ProductFormData>
+    onSubmit: (data: ProductFormData) => Promise<void>
+    onCancel: () => void
+    loading?: boolean
+}
 
 import {
     BasicInfoSection,
@@ -26,17 +35,8 @@ import {
 import {useProductOptions} from './model/useProductOptions'
 
 
-interface ProductFormProps {
-    projects: Project[]
-    categories: string[]
-    initialData?: Partial<ProductFormData>
-    onSubmit: (data: ProductFormData) => Promise<void>
-    onCancel: () => void
-    loading?: boolean
-}
-
 export const ProductForm: React.FC<ProductFormProps> = ({
-                                                            projects,
+                                                            avitoAccounts,
                                                             initialData,
                                                             categories,
                                                             onSubmit,
@@ -53,6 +53,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
     const category = normalizeCategory(watchedCategory ?? initialValues.category)
 
     const submitLoading = loading || isSubmitting
+
 
     const {
         data: options = [],
@@ -84,8 +85,8 @@ export const ProductForm: React.FC<ProductFormProps> = ({
 
             const values = form.getFieldsValue(true) as ProductFormValues
 
-            let mainImages: string[]
-            let additionalImages: string[]
+            let mainImages: Awaited<ReturnType<typeof resolveProductImages>>
+            let additionalImages: Awaited<ReturnType<typeof resolveProductImages>>
 
             try {
                 [mainImages, additionalImages] = await Promise.all([
@@ -97,10 +98,13 @@ export const ProductForm: React.FC<ProductFormProps> = ({
                 return
             }
 
+
             try {
                 await onSubmit(buildProductFormData(values, {
-                    mainImages,
-                    additionalImages,
+                    mainImages: mainImages.urls,
+                    additionalImages: additionalImages.urls,
+                    mainImageAssetIds: mainImages.assetIds,
+                    additionalImageAssetIds: additionalImages.assetIds,
                 }))
             } catch {
                 // Ошибку create/update показывает родительская mutation.onError.
@@ -120,7 +124,7 @@ export const ProductForm: React.FC<ProductFormProps> = ({
             onValuesChange={handleValuesChange}
         >
             {/*Основная информация*/}
-            <BasicInfoSection projects={projects} categories={categories}/>
+            <BasicInfoSection avitoAccounts={avitoAccounts} categories={categories}/>
 
             {/* Заголовки */}
             <TitlesSection/>

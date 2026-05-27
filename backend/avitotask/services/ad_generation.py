@@ -5,6 +5,9 @@ import re
 import string
 from dataclasses import dataclass
 
+from datetime import timedelta
+from django.utils import timezone
+
 from django.db import transaction
 from django.template import Context, Template
 
@@ -17,6 +20,8 @@ from avitotask.models import (
 )
 
 MAX_CREATIVE_GENERATION_ATTEMPTS = 50
+RECENT_CREATIVE_LOOKBACK_DAYS = 30
+DUPLICATE_CREATIVE_MATCH_THRESHOLD = 2
 
 
 class AdGenerationError(Exception):
@@ -31,6 +36,9 @@ class CreativeCandidate:
     base_data: dict
     option_data: dict
     identity_hash: str
+    dedupe_title: str
+    dedupe_description: str
+    dedupe_images_hash: str
 
 
 @dataclass(frozen=True)
@@ -53,7 +61,7 @@ def process_dynamic_text(template_text):
     return re.sub(r'\[([^\]]+)\]', replace_choices, template_text or "")
 
 
-def generate_ads_from_task(task_id, *, workspace, user=None):
+def generate_ads_from_task(task_id, *, workspace, user=None, require_active=True):
     """
     Генерирует базовый креатив из AdGenerationTask.
 
@@ -63,7 +71,7 @@ def generate_ads_from_task(task_id, *, workspace, user=None):
     """
 
     task = get_generation_task(task_id=task_id, workspace=workspace)
-    validate_task_for_generation(task)
+    validate_task_for_generation(task, require_active=require_active)
 
     with transaction.atomic():
         batch = AdBatch.objects.create(
@@ -87,6 +95,9 @@ def generate_ads_from_task(task_id, *, workspace, user=None):
             base_data=candidate.base_data,
             option_data=candidate.option_data,
             identity_hash=candidate.identity_hash,
+            dedupe_title=candidate.dedupe_title,
+            dedupe_description=candidate.dedupe_description,
+            dedupe_images_hash=candidate.dedupe_images_hash,
         )
         publications = create_publications_for_creative(
             task=task,
@@ -134,6 +145,15 @@ def create_manual_mass_posting(
     base_data = dict(base_data or {})
     option_data = dict(option_data or {})
 
+    dedupe_data = build_creative_dedupe_data(
+        title=title,
+        description=description,
+        image_urls=image_urls,
+    )
+    duplicate = find_recent_similar_creative(workspace=workspace, **dedupe_data)
+    if duplicate is not None:
+        raise AdGenerationError(f"Похожий креатив уже существует: #{duplicate.id}")
+
     with transaction.atomic():
         batch = AdBatch.objects.create(
             workspace=workspace,
@@ -160,6 +180,9 @@ def create_manual_mass_posting(
                 base_data=base_data,
                 option_data=option_data,
             ),
+            dedupe_title=dedupe_data["dedupe_title"],
+            dedupe_description=dedupe_data["dedupe_description"],
+            dedupe_images_hash=dedupe_data["dedupe_images_hash"],
         )
 
         publications = create_manual_publications_for_creative(
@@ -168,6 +191,7 @@ def create_manual_mass_posting(
             addresses=addresses,
             batch=batch,
             creative=creative,
+
         )
 
         mark_avito_accounts_export_dirty(avito_accounts)
@@ -201,20 +225,22 @@ def get_generation_task(task_id, *, workspace):
         .select_related("workspace", "category")
         .prefetch_related(
             "avito_accounts",
-            "adgenerationtaskoptionassignment_set__option"
+            "adgenerationtaskoptionassignment_set__option",
+            "main_image_assets",
+            "additional_image_assets",
         )
         .get(id=task_id, workspace=workspace)
     )
 
 
-def validate_task_for_generation(task):
-    if not task.is_active:
+def validate_task_for_generation(task, *, require_active=True):
+    if require_active and not task.is_active:
         raise AdGenerationError("Задача генерации не активна")
     if not task.titles:
         raise AdGenerationError("У задачи нет заголовков")
     if not task.descriptions:
         raise AdGenerationError("У задачи нет описаний")
-    if not task.main_images:
+    if not task.main_image_assets.exists():
         raise AdGenerationError("У задачи нет основных изображений")
     if not task.addresses:
         raise AdGenerationError("У задачи нет адресов")
@@ -223,31 +249,21 @@ def validate_task_for_generation(task):
 
 
 def build_unique_creative_candidate(task):
-    """
-    Быстро подбирает еще не созданный креатив.
-
-    Вместо бесконечного while True делаем ограниченное число попыток.
-    Проверка дубля идет по identity_hash, который уже индексирован в БД.
-    """
-    used_hashes = set(
-        AdCreative.objects.filter(
-            workspace=task.workspace,
-            task=task,
-            identity_hash__isnull=False,
-        )
-        .exclude(identity_hash="")
-        .values_list("identity_hash", flat=True)
-    )
-
     for _ in range(MAX_CREATIVE_GENERATION_ATTEMPTS):
         candidate = build_creative_candidate(task)
 
-        if candidate.identity_hash not in used_hashes:
+        duplicate = find_recent_similar_creative(
+            workspace=task.workspace,
+            dedupe_title=candidate.dedupe_title,
+            dedupe_description=candidate.dedupe_description,
+            dedupe_images_hash=candidate.dedupe_images_hash,
+        )
+        if duplicate is None:
             return candidate
 
     raise AdGenerationError(
-        "Не удалось подобрать уникальное объявление. "
-        "Возможные комбинации для этой задачи уже исчерпаны или слишком часто повторяются."
+        "Не удалось подобрать уникальный креатив. "
+        "За последние 30 дней уже есть похожие креативы."
     )
 
 
@@ -281,6 +297,12 @@ def build_creative_candidate(task):
         option_data=option_data,
     )
 
+    dedupe_data = build_creative_dedupe_data(
+        title=title,
+        description=description_for_hash,
+        image_urls=image_urls,
+    )
+
     return CreativeCandidate(
         title=title,
         description=rendered_description,
@@ -288,6 +310,9 @@ def build_creative_candidate(task):
         base_data=base_data,
         option_data=option_data,
         identity_hash=identity_hash,
+        dedupe_title=dedupe_data["dedupe_title"],
+        dedupe_description=dedupe_data["dedupe_description"],
+        dedupe_images_hash=dedupe_data["dedupe_images_hash"],
     )
 
 
@@ -306,14 +331,22 @@ def choose_description(task):
 
 
 def choose_image_urls(task):
-    main_images = random.choice(task.main_images)
+    main_assets = list(task.main_image_assets.all())
+    if not main_assets:
+        raise AdGenerationError("У задачи нет основных изображений")
 
-    additional_images = task.additional_images or []
-    if len(additional_images) <= 9:
-        selected_additional = list(additional_images)
+    main_asset = random.choice(main_assets)
+
+    additional_assets = list(task.additional_image_assets.all())
+    if len(additional_assets) <= 9:
+        selected_additional = additional_assets
     else:
-        selected_additional = random.sample(additional_images, 9)
-    return [main_images, *selected_additional]
+        selected_additional = random.sample(additional_assets, 9)
+
+    return [
+        main_asset.url,
+        *[asset.url for asset in selected_additional],
+    ]
 
 
 def render_description(*, processed_template, title, sku):
@@ -438,3 +471,49 @@ def build_identity_hash(*, title, description, image_urls, base_data, option_dat
 
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def build_creative_dedupe_data(*, title, description, image_urls):
+    return {
+        "dedupe_title": normalize_text_for_dedupe(title),
+        "dedupe_description": normalize_text_for_dedupe(description),
+        "dedupe_images_hash": build_images_hash(image_urls),
+    }
+
+
+def normalize_text_for_dedupe(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def build_images_hash(image_urls):
+    normalized_urls = sorted(
+        str(url).strip()
+        for url in image_urls
+        if str(url).strip()
+    )
+    serialized = json.dumps(normalized_urls, ensure_ascii=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def find_recent_similar_creative(*, workspace, dedupe_title, dedupe_description, dedupe_images_hash):
+    cutoff = timezone.now() - timedelta(days=RECENT_CREATIVE_LOOKBACK_DAYS)
+
+    creatives = AdCreative.objects.filter(
+        workspace=workspace,
+        source__in=[AdCreative.Source.AUTO, AdCreative.Source.MANUAL],
+        created_at__gte=cutoff,
+    ).only("id", "dedupe_title", "dedupe_description", "dedupe_images_hash")
+
+    for creative in creatives.iterator():
+        matches = 0
+        if creative.dedupe_title == dedupe_title:
+            matches += 1
+        if creative.dedupe_description == dedupe_description:
+            matches += 1
+        if creative.dedupe_images_hash == dedupe_images_hash:
+            matches += 1
+
+        if matches >= DUPLICATE_CREATIVE_MATCH_THRESHOLD:
+            return creative
+
+    return None

@@ -1,13 +1,28 @@
 import calendar
 import os
-import random
+from uuid import uuid4
+
+import secrets
+
 from datetime import timedelta, datetime
 from django.db import models
-from django.utils.timezone import now
 
-from system import settings
+from django.utils import timezone as django_timezone
+
 from django.db.models import JSONField, Q
 from django.core.serializers.json import DjangoJSONEncoder
+
+from django.core.exceptions import ValidationError
+from django.db.models.functions import Lower, Trim
+
+
+def ad_image_asset_upload_to(instance, filename):
+    extension = os.path.splitext(filename)[1].lower()
+    return f"ad-images/workspace-{instance.workspace_id}/{uuid4().hex}{extension}"
+
+
+def generate_avito_account_feed_token():
+    return secrets.token_urlsafe(32)
 
 
 class MyJSONEncoder(DjangoJSONEncoder):
@@ -69,189 +84,6 @@ class Category(models.Model):
         return self.category
 
 
-# Проекты на аккаунте
-class Project(models.Model):
-    workspace = models.ForeignKey(
-        'accounts.Workspace',
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-    )
-    project_name = models.CharField(max_length=100, null=True, blank=True, )
-
-    def __str__(self):
-        return self.project_name
-
-
-# Уже созданные товары
-class Product1(models.Model):
-    """Уже сгенерированное объявление."""
-    workspace = models.ForeignKey(
-        'accounts.Workspace',
-        on_delete=models.CASCADE,
-        related_name='generated_products',
-        null=True,
-        blank=True,
-    )
-    title = models.CharField(max_length=255, db_index=True, help_text="Заголовок продукта")
-    urls = models.JSONField(default=list, blank=True, help_text="Список URL фото продукта")
-    description = models.TextField(help_text="Описание продукта")
-    created_date = models.DateField(auto_now_add=True, help_text="Дата добавления записи")
-    task_id = models.IntegerField(null=True, blank=True, default=0)
-    selected_option = MyJSONField(default=dict, blank=True, null=True)
-    project_name = MyJSONField(default=list, blank=True, null=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=['task_id', 'created_date'], name='idx_product1_task_date'),
-            models.Index(fields=['workspace', 'task_id', 'created_date'], name='idx_product1_ws_task_date'),
-        ]
-
-
-# Создание задачи для автоматического создания товаров
-class Product(models.Model):
-    """Задача генерации объявлений."""
-    workspace = models.ForeignKey(
-        'accounts.Workspace',
-        on_delete=models.CASCADE,
-        related_name='products',
-        null=True,
-        blank=True,
-    )
-    name = models.CharField(max_length=255)
-    url = models.URLField()
-    price = models.IntegerField(null=True, blank=True, default=0)
-    activate = models.BooleanField(default=True, null=True, help_text="Активна ли задача для выполнения")
-    price_min = models.IntegerField(null=True, blank=True, default=0)
-    price_max = models.IntegerField(null=True, blank=True, default=0)
-    price_step = models.IntegerField(null=True, blank=True, default=0)
-    possible_combinations = models.IntegerField(null=True, blank=True, default=0)
-    price_randomization_enabled = models.BooleanField(
-        default=False,
-        help_text="Включена ли рандомизация цены"
-    )
-    schedule = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="Расписание обновлений в формате {'Monday': '13:00', 'Saturday': '14:00'}"
-    )
-    next_update_time = models.DateTimeField(
-        null=True, blank=True,
-        help_text="Точное время следующего обновления цены"
-    )
-    last_updated = models.DateTimeField(auto_now=True)
-    titles = models.JSONField(default=list, blank=True, help_text="Список заголовков для продукта")
-
-    main_images = models.JSONField(default=list, blank=True, null=True, help_text="Основные изображения задачи")
-    additional_images = models.JSONField(default=list, blank=True, null=True,
-                                         help_text="Дополнительные изображения задачи")
-    descriptions = models.JSONField(default=dict, blank=True, null=True, help_text="Описание задачи")
-    addresses = models.JSONField(default=list, blank=True, null=True, help_text="Адреса продукта")
-    options = models.ManyToManyField(
-        'ProductOptions',
-        through='ProductOptionAssignment',
-        related_name='products',
-        blank=True
-    )
-    selected_options = models.JSONField(default=dict, blank=True, help_text="Сохраненные опции и значения")
-    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name='products',
-                                 help_text="Категория товара")
-    listingfee = models.CharField(max_length=10, blank=True, null=True)
-    email = models.CharField(max_length=50, blank=True, null=True)
-    contactphone = models.CharField(max_length=12, blank=True, null=True)
-    managername = models.CharField(max_length=20, blank=True, null=True)
-    avitostatus = models.CharField(max_length=10, blank=True, null=True)
-    companyname = models.CharField(max_length=50, blank=True, null=True)
-    contactmethod = models.CharField(max_length=50, blank=True, null=True)
-    adtype = models.CharField(max_length=30, blank=True, null=True)
-    availability = models.CharField(max_length=100, blank=True, null=True)
-    projects = models.ManyToManyField(Project, related_name="projects")
-
-    def update_next_update_time(self):
-        """
-        Обновляет `self.next_update_time` в соответствии с расписанием, хранящимся в `self.schedule`.
-        """
-        if not self.schedule:
-            return
-
-        now = datetime.now()
-        current_day_index = now.weekday()  # Monday=0, Sunday=6
-
-        # Конвертируем расписание в английские дни и время
-        converted_schedule = {
-            RUS_TO_ENG_DAYS[rus_day]: datetime.strptime(time_str, '%H:%M').time()
-            for rus_day, time_str in self.schedule.items()
-        }
-
-        # Сортируем расписание по ближайшим дням относительно текущего, затем по времени
-        sorted_schedule = sorted(
-            converted_schedule.items(),
-            key=lambda item: (
-                (DAY_NAME_TO_INDEX[item[0]] - current_day_index) % 7,  # Приоритет по близости к текущему дню
-                item[1]
-            )
-        )
-
-        next_scheduled_datetime = None
-        for day_name, schedule_time in sorted_schedule:
-            day_index = DAY_NAME_TO_INDEX[day_name]
-            days_diff = (day_index - current_day_index) % 7
-            potential_date = now + timedelta(days=days_diff)
-            potential_datetime = datetime.combine(potential_date.date(), schedule_time)
-
-            if potential_datetime > now:
-                next_scheduled_datetime = potential_datetime
-                break
-
-        # Если не найдено, берем первый элемент следующей недели
-        if next_scheduled_datetime is None:
-            first_day_name, first_time = sorted_schedule[0]
-            days_diff = (DAY_NAME_TO_INDEX[first_day_name] - current_day_index) % 7 + 7
-            next_date = now + timedelta(days=days_diff)
-            next_scheduled_datetime = datetime.combine(next_date.date(), first_time)
-
-        self.next_update_time = next_scheduled_datetime
-        self.save()
-
-    def update_selected_options(self):
-        assignments = self.productoptionassignment_set.select_related('option').all()
-        self.selected_options = {
-            assignment.option.option_title_en: assignment.selected_value
-            for assignment in assignments
-        }
-        self.save(update_fields=['selected_options'])
-
-    def __str__(self):
-        return self.name
-
-    def random_title(self):
-        return random.choice(self.titles)
-
-    def random_description(self):
-        return random.choice(list(self.descriptions.values()))
-
-    def random_main_image(self):
-        return random.choice(self.main_images)
-
-    def random_additional_image(self, count=9):
-        if len(self.additional_images) <= count:
-            # Если в списке меньше или равно `count` элементов, возвращаем весь список
-            return self.additional_images
-            # Выбираем `count` уникальных элементов случайным образом
-        return random.sample(self.additional_images, count)
-
-    def title_count(self):
-        return len(self.titles)
-
-
-class ProductImage(models.Model):
-    product = models.ForeignKey(Product, related_name='images', on_delete=models.CASCADE)
-    image = models.ImageField(upload_to=product_image_upload_to)
-
-    def __str__(self):
-        return f"Image for {self.product.name}: {self.image.url}"
-
-
 class ProductOptions(models.Model):
     option_title_ru = models.CharField(max_length=255, help_text="Название опции (например, Цвет, Размер)")
     option_title_en = models.CharField(max_length=150, help_text="Параметр для автозагрузки")
@@ -268,22 +100,30 @@ class ProductOptions(models.Model):
         verbose_name = "Опция товара"
         verbose_name_plural = "Опции товаров"
         ordering = ['option_title_ru']
+        constraints = [
+            models.UniqueConstraint(
+                Lower(Trim("option_title_en")),
+                name="uniq_product_options_option_title_en_ci_trim",
+            ),
+        ]
 
-    # option_value = models.JSONField(default=list, blank=True, null=True,
-    #                                help_text="Список значений опции (например, ['Красный', 'Синий', 'Зелёный'])")
+    def clean(self):
+        super().clean()
+
+        self.option_title_ru = self.option_title_ru.strip()
+        self.option_title_en = self.option_title_en.strip()
+
+        duplicate_exists = ProductOptions.objects.filter(
+            option_title_en__iexact=self.option_title_en,
+        ).exclude(pk=self.pk).exists()
+
+        if duplicate_exists:
+            raise ValueError({
+                "option_title_en": "Опция с таким параметром автозагрузки уже существует."
+            })
 
     def __str__(self):
         return self.option_title_ru
-
-
-class ProductOptionAssignment(models.Model):
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    option = models.ForeignKey(ProductOptions, on_delete=models.CASCADE)
-    selected_value = models.JSONField(default=list, blank=True,
-                                      help_text="Значения, введенные пользователем для этой опции")
-
-    class Meta:
-        unique_together = [('product', 'option')]
 
 
 # Новые таблицы в базе данных (Рефакторинг)
@@ -299,6 +139,7 @@ class AvitoAccount(models.Model):
     class ExportStatus(models.TextChoices):
         CLEAN = "clean", "CSV актуален"
         DIRTY = "dirty", "CSV требует пересборки"
+        QUEUED = "queued", "CSV в очереди"
         EXPORTING = "exporting", "CSV пересобирается"
         ERROR = "error", "Ошибка пересборки CSV"
 
@@ -331,6 +172,11 @@ class AvitoAccount(models.Model):
     )
     sync_requested_at = models.DateTimeField(null=True, blank=True)
     sync_started_at = models.DateTimeField(null=True, blank=True)
+
+    last_sync_total_received = models.PositiveIntegerField(default=0)
+    last_sync_created_listings = models.PositiveIntegerField(default=0)
+    last_sync_updated_listings = models.PositiveIntegerField(default=0)
+
     last_synced_at = models.DateTimeField(null=True, blank=True)
     sync_error = models.TextField(null=True, blank=True)
 
@@ -339,6 +185,14 @@ class AvitoAccount(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    feed_token = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Публичный токен для CSV-фида автозагрузки Avito.",
+    )
 
     class Meta:
         verbose_name = "Аккаунт Авито"
@@ -361,8 +215,57 @@ class AvitoAccount(models.Model):
             ),
         ]
 
+    @classmethod
+    def generate_unique_feed_token(cls):
+        token = generate_avito_account_feed_token()
+
+        while cls.objects.filter(feed_token=token).exists():
+            token = generate_avito_account_feed_token()
+
+        return token
+
+    def save(self, *args, **kwargs):
+        if not self.feed_token:
+            self.feed_token = self.generate_unique_feed_token()
+
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
+
+
+class AdImageAsset(models.Model):
+    workspace = models.ForeignKey(
+        "accounts.Workspace",
+        on_delete=models.CASCADE,
+        related_name="ad_image_assets",
+    )
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_ad_image_assets",
+    )
+
+    image = models.ImageField(upload_to=ad_image_asset_upload_to)
+    url = models.URLField(max_length=1000, blank=True)
+    original_filename = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
+    checksum = models.CharField(max_length=64, blank=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["workspace", "-created_at"], name="idx_adimg_ws_created"),
+            models.Index(fields=["workspace", "checksum"], name="idx_adimg_ws_checksum"),
+        ]
+
+    def __str__(self):
+        return self.original_filename or str(self.id)
 
 
 class AdGenerationTask(models.Model):
@@ -373,6 +276,12 @@ class AdGenerationTask(models.Model):
         EVERY_14_DAYS = 14, "Каждые 14 дней"
         EVERY_21_DAYS = 21, "Каждые 21 день"
         EVERY_28_DAYS = 28, "Каждые 28 дней"
+
+    class LastRunStatus(models.TextChoices):
+        IDLE = "idle", "Ожидает"
+        RUNNING = "running", "Выполняется"
+        SUCCESS = "success", "Успешно"
+        ERROR = "error", "Ошибка"
 
     workspace = models.ForeignKey(
         'accounts.Workspace',
@@ -399,8 +308,16 @@ class AdGenerationTask(models.Model):
 
     titles = MyJSONField(default=list, blank=True)
     descriptions = MyJSONField(default=dict, blank=True)
-    main_images = MyJSONField(default=list, blank=True)
-    additional_images = MyJSONField(default=list, blank=True)
+    main_image_assets = models.ManyToManyField(
+        AdImageAsset,
+        related_name="main_image_generation_tasks",
+        blank=True,
+    )
+    additional_image_assets = models.ManyToManyField(
+        AdImageAsset,
+        related_name="additional_image_generation_tasks",
+        blank=True,
+    )
     addresses = MyJSONField(default=list, blank=True)
 
     base_data = MyJSONField(
@@ -431,10 +348,26 @@ class AdGenerationTask(models.Model):
         default=IntervalDays.EVERY_7_DAYS,
     )
 
-    schedule_cycle_started_at = models.DateTimeField(null=True, blank=True)
+    schedule_anchor_date = models.DateField(
+        default=django_timezone.localdate,
+        help_text="Дата-якорь для расчета недельных интервалов 1/2/3/4.",
+    )
+    schedule_timezone = models.CharField(
+        max_length=64,
+        default="Europe/Moscow",
+        help_text="Timezone расписания задачи, например Europe/Moscow.",
+    )
+
     next_update_time = models.DateTimeField(null=True, blank=True)
     last_run_at = models.DateTimeField(null=True, blank=True)
+    last_successful_run_at = models.DateTimeField(null=True, blank=True)
+    last_run_status = models.CharField(
+        max_length=20,
+        choices=LastRunStatus.choices,
+        default=LastRunStatus.IDLE,
+    )
 
+    last_run_error = models.TextField(null=True, blank=True)
     options = models.ManyToManyField(
         ProductOptions,
         through="AdGenerationTaskOptionAssignment",
@@ -456,6 +389,81 @@ class AdGenerationTask(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class AdGenerationTaskRun(models.Model):
+    """Один запуск задачи автогенерации: ручной или по расписанию."""
+
+    class TriggeredBy(models.TextChoices):
+        MANUAL = "manual", "Ручной запуск"
+        SCHEDULE = "schedule", "Запуск по расписанию"
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "Выполняется"
+        SUCCESS = "success", "Успешно"
+        ERROR = "error", "Ошибка"
+
+    workspace = models.ForeignKey(
+        'accounts.Workspace',
+        on_delete=models.CASCADE,
+        related_name='ad_generation_task_runs',
+    )
+    task = models.ForeignKey(
+        AdGenerationTask,
+        on_delete=models.CASCADE,
+        related_name='runs',
+    )
+
+    triggered_by = models.CharField(max_length=20, choices=TriggeredBy.choices)
+    scheduled_for = models.DateTimeField(null=True, blank=True)
+
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.RUNNING,
+    )
+
+    batch = models.ForeignKey(
+        'AdBatch',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_runs',
+    )
+    creative = models.ForeignKey(
+        'AdCreative',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_runs',
+    )
+
+    publications_count = models.PositiveIntegerField(default=0)
+    csv_export_ids = MyJSONField(default=list, blank=True)
+    error = models.TextField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Запуск задачи генерации"
+        verbose_name_plural = "Запуски задач генерации"
+        ordering = ['-started_at']
+        indexes = [
+            models.Index(fields=["workspace", "-started_at"], name="idx_adtaskrun_ws_started"),
+            models.Index(fields=["task", "-started_at"], name="idx_adtaskrun_task_started"),
+            models.Index(fields=["task", "status"], name="idx_adtaskrun_task_status"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["task", "scheduled_for"],
+                condition=Q(scheduled_for__isnull=False),
+                name="uniq_adtaskrun_task_scheduled",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.task_id} / {self.triggered_by} / {self.status}"
 
 
 class AdGenerationTaskOptionAssignment(models.Model):
@@ -482,6 +490,7 @@ class AdBatch(models.Model):
         AUTO = "auto", "Автогенерация"
         MANUAL = "manual", "Ручной масс-постинг"
         IMPORT = "import", "Импорт из Avito"
+        AVITO_EXCEL = "avito_excel", "Импорт из XLSX Avito"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Черновик"
@@ -534,13 +543,68 @@ class AdBatch(models.Model):
         return f"{self.get_source_display()} #{self.id}"
 
 
+class AvitoExcelImport(models.Model):
+    class Status(models.TextChoices):
+        PREVIEWED = "previewed", "Проверен"
+        PROCESSING = "processing", "Обрабатывается"
+        COMPLETED = "completed", "Завершен"
+        FAILED = "failed", "Ошибка"
+
+    workspace = models.ForeignKey(
+        "accounts.Workspace",
+        on_delete=models.CASCADE,
+        related_name="avito_excel_imports",
+    )
+    avito_account = models.ForeignKey(
+        AvitoAccount,
+        on_delete=models.CASCADE,
+        related_name="excel_imports",
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="avito_excel_imports",
+    )
+
+    source_file = models.FileField(upload_to="avito-excel-imports/%Y/%m/%d/")
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PROCESSING,
+    )
+
+    total_rows = models.PositiveIntegerField(default=0)
+    created_creatives = models.PositiveIntegerField(default=0)
+    created_publications = models.PositiveIntegerField(default=0)
+    updated_publications = models.PositiveIntegerField(default=0)
+    created_listings = models.PositiveIntegerField(default=0)
+    updated_listings = models.PositiveIntegerField(default=0)
+
+    report = MyJSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Импорт XLSX Avito"
+        verbose_name_plural = "Импорты XLSX Avito"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["workspace", "avito_account", "-created_at"], name="idx_avxls_ws_acc_created"),
+            models.Index(fields=["workspace", "status"], name="idx_avxls_ws_status"),
+        ]
+
+
 class AdCreative(models.Model):
     """Уникальный вариант объявления без привязки к конкретному адресу."""
 
     class Source(models.TextChoices):
         AUTO = "auto", "Автогенерация"
         MANUAL = "manual", "Ручное создание"
-        IMPORT = "import", "Импорт из Avito"
 
     workspace = models.ForeignKey(
         'accounts.Workspace',
@@ -584,6 +648,10 @@ class AdCreative(models.Model):
         help_text="Хэш набора title/description/images/options для быстрой проверки дублей.",
     )
 
+    dedupe_title = models.CharField(max_length=255, blank=True, db_index=True)
+    dedupe_description = models.TextField(blank=True)
+    dedupe_images_hash = models.CharField(max_length=64, blank=True, db_index=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -596,13 +664,6 @@ class AdCreative(models.Model):
             models.Index(fields=["workspace", "batch"], name="idx_adcreative_ws_batch"),
             models.Index(fields=["workspace", "identity_hash"], name="idx_adcreative_ws_hash"),
         ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=['workspace', 'task', 'identity_hash'],
-                condition=Q(identity_hash__isnull=False) & ~Q(identity_hash=""),
-                name='uniq_adcreative_hash',
-            )
-        ]
 
     def __str__(self):
         return self.title
@@ -614,7 +675,7 @@ class AdPublication(models.Model):
     class Source(models.TextChoices):
         AUTO = "auto", "Автогенерация"
         MANUAL = "manual", "Ручной масс-постинг"
-        IMPORT = "import", "Импорт из Avito"
+        AVITO_EXCEL = "avito_excel", "Импорт из XLSX Avito"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Черновик"
@@ -702,6 +763,22 @@ class AdPublication(models.Model):
 
 class AvitoListing(models.Model):
     """Реальное объявление на Avito, полученное после публикации или импорта по API."""
+
+    class DesiredStatus(models.TextChoices):
+        PUBLISH = "publish", "Публиковать"
+        PAUSE = "pause", "Приостановить"
+        ARCHIVE = "archive", "Архивировать"
+
+    class Source(models.TextChoices):
+        API = "api", "Импорт из Avito API"
+        AVITO_EXCEL = "avito_excel", "Импорт из XLSX Avito"
+        SERVICE = "service", "Создано сервисом"
+
+    class ManagementStatus(models.TextChoices):
+        OBSERVED = "observed", "Только наблюдаем"
+        MANAGED = "managed", "Управляется сервисом"
+        OUT_OF_SYNC = "out_of_sync", "Есть расхождения"
+
     workspace = models.ForeignKey(
         'accounts.Workspace',
         on_delete=models.CASCADE,
@@ -720,10 +797,61 @@ class AvitoListing(models.Model):
         related_name='avito_listing',
     )
 
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.API,
+    )
+    management_status = models.CharField(
+        max_length=20,
+        choices=ManagementStatus.choices,
+        default=ManagementStatus.OBSERVED,
+    )
+
+    desired_status = models.CharField(
+        max_length=20,
+        choices=DesiredStatus.choices,
+        default=DesiredStatus.PUBLISH,
+        help_text="Желаемое состояние объявления в следующем файле автозагрузки.",
+    )
+
     avito_id = models.CharField(max_length=100)
+    row_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Id строки автозагрузки из XLSX/CSV.",
+    )
     status = models.CharField(max_length=50, blank=True, null=True)
     title = models.CharField(max_length=255, blank=True, null=True)
+    description = models.TextField(blank=True)
     url = models.URLField(blank=True, null=True)
+    address = models.TextField(blank=True)
+    sheet_name = models.CharField(max_length=255, blank=True)
+    category_path = models.TextField(blank=True)
+
+    image_urls = MyJSONField(default=list, blank=True)
+
+    base_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Нормализованные базовые поля объявления по option_title_en.",
+    )
+    option_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Нормализованные параметры Avito по option_title_en.",
+    )
+    raw_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Исходная строка XLSX с русскими названиями колонок.",
+    )
+    unmapped_data = MyJSONField(
+        default=dict,
+        blank=True,
+        help_text="Колонки XLSX, для которых не найден ProductOptions.",
+    )
 
     imported_payload = MyJSONField(default=dict, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
@@ -741,7 +869,15 @@ class AvitoListing(models.Model):
             models.Index(fields=["workspace", "avito_account", "avito_id"], name="idx_avlisting_acc_id"),
             models.Index(fields=["publication"], name="idx_avlisting_pub"),
             models.Index(fields=["workspace", "-last_seen_at"], name="idx_avlisting_ws_seen"),
-            models.Index(fields=["workspace", "status"], name="idx_avlisting_ws_status")
+            models.Index(fields=["workspace", "status"], name="idx_avlisting_ws_status"),
+            models.Index(fields=["workspace", "avito_account", "source"], name="idx_avlisting_acc_source"),
+            models.Index(fields=["workspace", "avito_account", "management_status"], name="idx_avlisting_acc_mgmt"),
+            models.Index(fields=["workspace", "avito_account", "row_id"], name="idx_avlisting_acc_row"),
+            models.Index(fields=["workspace", "avito_account", "desired_status"], name="idx_avlisting_acc_desired"),
+            models.Index(
+                fields=["workspace", "avito_account", "-last_seen_at", "-created_at"],
+                name="idx_avlisting_acc_seen",
+            ),
         ]
 
         constraints = [

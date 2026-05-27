@@ -12,7 +12,7 @@ import os
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'system.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'system.settings_local')
 
 django_application = get_asgi_application()
 

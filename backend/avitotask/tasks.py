@@ -6,7 +6,6 @@ from django.db import transaction
 from django.utils import timezone
 
 from .services.avito_import import import_avito_listings_for_account
-from .models import Product
 
 from .models import AvitoAccount
 from .services.ad_export import export_avito_account_publications_to_csv
@@ -14,18 +13,22 @@ from .services.avito_autoload import link_publications_to_avito_ids_for_account
 from .services.ad_schedule import run_due_ad_generation_tasks as run_due_ad_generation_tasks_service
 from .services.avito_stats import import_avito_listing_daily_stats_for_account
 from .services.ad_cleanup import archive_stale_publications
+from .services.ad_export_state import mark_avito_account_exporting
+from .services.avito_autoload_report_fetch import sync_last_completed_autoload_report_for_account
+from .services.avito_sync_state import is_avito_account_sync_stale
 
 logger = logging.getLogger(__name__)
 
 
 @shared_task
 def update_product_price(product_id):
-    try:
-        product = Product.objects.get(id=product_id)
-        print(f"Готово!{product.name}, {product.last_updated}")
-        product.save()
-    except Exception as e:
-        print(f"Ошибка обновления цены для продукта {product_id}: {e}")
+    logger.warning(
+        "Legacy update_product_price task is disabled. Product is no longer an active task model."
+    )
+    return {
+        "status": "disabled",
+        "replacement": "AdGenerationTask",
+    }
 
 
 @shared_task
@@ -46,21 +49,47 @@ def print_hello():
 
 @shared_task
 def export_avito_account_csv_task(avito_account_id):
-    avito_account = (
-        AvitoAccount.objects
-        .select_related("workspace")
-        .get(id=avito_account_id)
-    )
+    with transaction.atomic():
+        avito_account = (
+            AvitoAccount.objects
+            .select_related("workspace")
+            .select_for_update(of=("self",))
+            .get(id=avito_account_id)
+        )
 
-    file_path = export_avito_account_publications_to_csv(
-        workspace=avito_account.workspace,
-        avito_account=avito_account
-    )
+        if avito_account.export_status == AvitoAccount.ExportStatus.EXPORTING:
+            return {
+                "status": "skipped",
+                "reason": "already_exporting",
+            }
+
+        if avito_account.export_status == AvitoAccount.ExportStatus.CLEAN:
+            return {
+                "status": "skipped",
+                "reason": "already_clean",
+                "file_path": avito_account.export_file_path,
+            }
+
+        mark_avito_account_exporting(avito_account)
+
+    avito_account.refresh_from_db()
+
+    try:
+        file_path = export_avito_account_publications_to_csv(
+            workspace=avito_account.workspace,
+            avito_account=avito_account,
+        )
+    except Exception as exc:
+        AvitoAccount.objects.filter(id=avito_account_id).update(
+            export_status=AvitoAccount.ExportStatus.ERROR,
+            export_error=str(exc),
+        )
+        raise
 
     logger.info(
         "Exported Avito CSV for account_id=%s to %s",
         avito_account.id,
-        file_path
+        file_path,
     )
 
     return str(file_path)
@@ -73,7 +102,10 @@ def export_dirty_avito_accounts_csv_task(limit=20):
         .select_related("workspace")
         .filter(
             is_active=True,
-            export_status=AvitoAccount.ExportStatus.DIRTY
+            export_status__in=[
+                AvitoAccount.ExportStatus.DIRTY,
+                AvitoAccount.ExportStatus.QUEUED,
+            ]
         )
         .order_by("export_requested_at", "id")[:limit]
     )
@@ -93,11 +125,12 @@ def import_avito_account_listings_task(avito_account_id, session=None):
         avito_account = (
             AvitoAccount.objects
             .select_related("workspace")
+            .select_for_update()
             .get(id=avito_account_id)
         )
         if avito_account.sync_status == AvitoAccount.SyncStatus.SYNCING:
             return {
-                "status": "synced",
+                "status": "skipped",
                 "reason": "Import is already running for this account"
             }
 
@@ -116,21 +149,24 @@ def import_avito_account_listings_task(avito_account_id, session=None):
     try:
         result = import_avito_listings_for_account(
             avito_account,
-            session=session
+            session=session,
         )
     except Exception as exc:
         AvitoAccount.objects.filter(id=avito_account_id).update(
-            export_status=AvitoAccount.ExportStatus.ERROR,
-            export_error=str(exc),
-            updated_at=timezone.now()
+            sync_status=AvitoAccount.SyncStatus.ERROR,
+            sync_error=str(exc),
+            updated_at=timezone.now(),
         )
         raise
 
     AvitoAccount.objects.filter(id=avito_account_id).update(
-        export_status=AvitoAccount.ExportStatus.DIRTY,
-        export_error=None,
-        last_sync_at=timezone.now(),
-        updated_at=timezone.now()
+        sync_status=AvitoAccount.SyncStatus.IDLE,
+        sync_error=None,
+        last_synced_at=timezone.now(),
+        last_sync_total_received=result.total_received,
+        last_sync_created_listings=result.created_listings,
+        last_sync_updated_listings=result.updated_listings,
+        updated_at=timezone.now(),
     )
 
     logger.info(
@@ -139,7 +175,6 @@ def import_avito_account_listings_task(avito_account_id, session=None):
         result.total_received,
         result.created_listings,
         result.updated_listings,
-        result.created_publications,
     )
 
     return {
@@ -147,7 +182,7 @@ def import_avito_account_listings_task(avito_account_id, session=None):
         "total_received": result.total_received,
         "created_listings": result.created_listings,
         "updated_listings": result.updated_listings,
-        "created_publications": result.created_publications,
+        "out_of_sync_listings": result.out_of_sync_listings,
         "batch_id": result.batch.id if result.batch else None,
     }
 
@@ -246,3 +281,109 @@ def archive_stale_publications_task(older_than_days=60, limit=1000):
 @shared_task
 def run_due_ad_generation_tasks(limit=50):
     return run_due_ad_generation_tasks_service(limit=limit)
+
+
+@shared_task
+def sync_last_completed_avito_autoload_report_task(avito_account_id, session=None):
+    with transaction.atomic():
+        avito_account = (
+            AvitoAccount.objects
+            .select_related("workspace")
+            .select_for_update(of=("self",))
+            .get(id=avito_account_id)
+        )
+
+        if (
+                avito_account.sync_status == AvitoAccount.SyncStatus.SYNCING
+                and not is_avito_account_sync_stale(avito_account)
+        ):
+            return {
+                "status": "skipped",
+                "reason": "already_syncing",
+            }
+
+        avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
+        avito_account.sync_started_at = timezone.now()
+        avito_account.sync_error = None
+        avito_account.save(
+            update_fields=[
+                "sync_status",
+                "sync_started_at",
+                "sync_error",
+                "updated_at",
+            ]
+        )
+
+    avito_account.refresh_from_db()
+
+    try:
+        result = sync_last_completed_autoload_report_for_account(
+            avito_account=avito_account,
+            session=session,
+        )
+    except Exception as exc:
+        AvitoAccount.objects.filter(id=avito_account_id).update(
+            sync_status=AvitoAccount.SyncStatus.ERROR,
+            sync_error=str(exc),
+            updated_at=timezone.now(),
+        )
+        raise
+
+    sync_result = result.sync_result
+
+    AvitoAccount.objects.filter(id=avito_account_id).update(
+        sync_status=AvitoAccount.SyncStatus.IDLE,
+        sync_error=None,
+        last_synced_at=timezone.now(),
+        last_sync_total_received=sync_result.total_rows,
+        last_sync_created_listings=sync_result.created_listings,
+        last_sync_updated_listings=sync_result.updated_listings,
+        updated_at=timezone.now(),
+    )
+
+    logger.info(
+        "Synced last completed Avito autoload report for account_id=%s report_id=%s rows=%s linked=%s created=%s updated=%s",
+        avito_account_id,
+        result.report_id,
+        sync_result.total_rows,
+        sync_result.linked_publications,
+        sync_result.created_listings,
+        sync_result.updated_listings,
+    )
+
+    return {
+        "status": "completed",
+        "report_id": result.report_id,
+        "report_status": result.report_status,
+        "total_items_received": result.total_items_received,
+        "total_rows": sync_result.total_rows,
+        "accepted_rows": sync_result.accepted_rows,
+        "rejected_rows": sync_result.rejected_rows,
+        "linked_publications": sync_result.linked_publications,
+        "created_listings": sync_result.created_listings,
+        "updated_listings": sync_result.updated_listings,
+        "missing_row_id": sync_result.missing_row_id,
+        "missing_publications": sync_result.missing_publications,
+        "conflicts": sync_result.conflicts,
+        "errors": sync_result.errors,
+    }
+
+
+@shared_task
+def sync_last_completed_avito_autoload_reports_task(limit=20):
+    avito_accounts = (
+        AvitoAccount.objects
+        .filter(is_active=True)
+        .exclude(sync_status=AvitoAccount.SyncStatus.SYNCING)
+        .order_by("last_synced_at", "id")[:limit]
+    )
+
+    queued = 0
+
+    for avito_account in avito_accounts:
+        sync_last_completed_avito_autoload_report_task.delay(avito_account.id)
+        queued += 1
+
+    return {
+        "queued": queued,
+    }

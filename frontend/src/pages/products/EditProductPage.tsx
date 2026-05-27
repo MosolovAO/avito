@@ -3,9 +3,9 @@ import {useNavigate, useParams} from "react-router-dom";
 import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Typography, Card, message, Spin} from 'antd'
 import {ProductForm} from '../../features/product/ProductForm'
-import {getProjects, getProduct, updateProduct, getProductCategories} from '../../shared/api/products'
+import {getProduct, updateProduct, getProductCategories} from '../../shared/api/products'
 import type {ProductFormData, Product} from '../../entities/product'
-
+import {useAvitoProjectsQuery} from '../../features/avito'
 
 const {Title} = Typography
 
@@ -20,27 +20,30 @@ const normalizeDescriptions = (description: Product['descriptions']): string[] =
 
 // Подготовка данных для формы
 const mapProductToFormData = (product: Product): Partial<ProductFormData> => ({
+    name: product.name,
     price_randomization_enabled: product.price_randomization_enabled,
     titles: product.titles,
     main_images: product.main_images,
     additional_images: product.additional_images,
+    main_image_asset_ids: product.main_image_asset_ids,
+    additional_image_asset_ids: product.additional_image_asset_ids,
     descriptions: normalizeDescriptions(product.descriptions),
     addresses: product.addresses,
     category: product.category,
-    listingfee: product.listingfee,
-    email: product.email,
-    contactphone: product.contactphone,
-    managername: product.managername,
-    avitostatus: product.avitostatus,
-    companyname: product.companyname,
-    contactmethod: product.contactmethod,
-    adtype: product.adtype,
-    availability: product.availability,
+    listingfee: product.base_data?.ListingFee,
+    email: product.base_data?.EMail,
+    contactphone: product.base_data?.ContactPhone,
+    managername: product.base_data?.ManagerName,
+    avitostatus: product.base_data?.AvitoStatus,
+    companyname: product.base_data?.CompanyName,
+    contactmethod: product.base_data?.ContactMethod,
+    adtype: product.base_data?.AdType,
+    availability: product.base_data?.Availability,
     price: product.price,
     price_min: product.price_min,
     price_max: product.price_max,
     price_step: product.price_step,
-    projects: product.projects?.map((project) => project.id) ?? [],
+    avito_account_ids: product.avito_account_ids ?? product.avito_accounts?.map((account) => account.id) ?? [],
     options: product.options ?? [],
     schedule: product.schedule ?? {},
 })
@@ -64,13 +67,8 @@ export const EditProductPage: React.FC = () => {
         select: mapProductToFormData
     })
 
-    // Загрузка проектов
-    const {data: projects = [], isLoading: projectsLoading} = useQuery({
-        queryKey: ['projects'],
-        queryFn: getProjects,
-        staleTime: 5 * 60 * 1000,
-    })
-
+    const avitoAccountsQuery = useAvitoProjectsQuery()
+    const avitoAccounts = avitoAccountsQuery.data ?? []
 
     // Мутация для обновления продукта
     const updateMutation = useMutation({
@@ -94,7 +92,12 @@ export const EditProductPage: React.FC = () => {
         navigate('/products')
     }
 
-    const isLoading = productLoading || projectsLoading || !productData || categoriesLoading
+    const isLoading = (
+        productLoading ||
+        avitoAccountsQuery.isLoading ||
+        !productData ||
+        categoriesLoading
+    )
 
     if (isLoading) {
         return (
@@ -105,11 +108,11 @@ export const EditProductPage: React.FC = () => {
     }
 
     return (
-        <div style={{padding: '24px'}}>
+        <div style={{padding: ''}}>
             <Title level={2}>Редактировать продукт</Title>
             <Card>
                 <ProductForm
-                    projects={projects}
+                    avitoAccounts={avitoAccounts}
                     categories={categories}
                     initialData={productData || undefined}
                     onSubmit={handleSubmit}

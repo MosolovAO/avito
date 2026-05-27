@@ -9,6 +9,8 @@ from urllib.parse import urlencode
 from avitotask.models import AvitoAccount, AvitoOAuthToken
 from django.core import signing
 
+from avitotask.models import AvitoAccount
+
 
 class AvitoApiError(Exception):
     def __init__(self, message, status_code=None, payload=None):
@@ -27,14 +29,46 @@ class AvitoApiClient:
         self.base_url = (base_url or settings.AVITO_API_BASE_URL).rstrip("/")
         self.timeout = timeout
         self.min_request_interval = settings.AVITO_API_MIN_REQUEST_INTERVAL_SECONDS
-        self.max_retries = settings.AVITO_API_MAX_RETRIEST
-        self.default_retry_after = settings.AVITO_API_DEFAULT_RETRY_SECONDS
+        self.max_retries = settings.AVITO_API_MAX_RETRIES
+        self.default_retry_after = settings.AVITO_API_DEFAULT_RETRY_AFTER_SECONDS
 
     def get_current_user(self, token):
         return self.request("GET", "/core/v1/accounts/self", token=token)
 
-    def get_items(self, token):
-        return self.request("GET", "/core/v1/items", token=token)
+    def get_items(self, token, page=1, per_page=100):
+        return self.request(
+            "GET",
+            "/core/v1/items",
+            token=token,
+            params={
+                "page": page,
+                "per_page": per_page,
+            },
+        )
+
+    def iter_items(self, token, per_page=100, max_pages=100):
+        page = 1
+
+        while page <= max_pages:
+            payload = self.get_items(token, page=page, per_page=per_page)
+            resources = payload.get("resources") or []
+
+            yield payload, resources
+
+            if not resources:
+                break
+
+            next_page = resolve_next_items_page(
+                payload=payload,
+                current_page=page,
+                resources_count=len(resources),
+                per_page=per_page,
+            )
+
+            if next_page is None:
+                break
+
+            page = next_page
 
     def get_avito_ids_by_ad_ids(self, token, ad_ids):
         return self.request(
@@ -42,6 +76,24 @@ class AvitoApiClient:
             "/autoload/v2/items/avito_ids",
             token=token,
             params={"query": ",".join(ad_ids)},
+        )
+
+    def get_last_completed_autoload_report(self, token):
+        return self.request(
+            "GET",
+            "/autoload/v3/reports/last_completed_report",
+            token=token,
+        )
+
+    def get_autoload_report_items(self, token, report_id, page=1, per_page=100):
+        return self.request(
+            "GET",
+            f"/autoload/v2/reports/{report_id}/items",
+            token=token,
+            params={
+                "page": page,
+                "per_page": per_page,
+            },
         )
 
     def get_item_stats(self, token, item_ids, user_id, date_from, date_to):
@@ -58,20 +110,24 @@ class AvitoApiClient:
         )
 
     def refresh_access_token(self, token):
-        if not token.refresh_token:
-            raise AvitoApiError("У Avito OAuth-токена нет refresh_token")
-
         avito_account = token.avito_account
 
-        response = self.request_token(
-            {
+        if token.auth_type == AvitoOAuthToken.AuthType.CLIENT_CREDENTIALS:
+            response = self.request_token({
+                "grant_type": "client_credentials",
+                "client_id": get_avito_account_client_id(avito_account),
+                "client_secret": get_avito_account_client_secret(avito_account),
+            })
+        else:
+            if not token.refresh_token:
+                raise AvitoApiError("У Avito OAuth-токена нет refresh_token")
+
+            response = self.request_token({
                 "grant_type": "refresh_token",
                 "client_id": get_avito_account_client_id(avito_account),
                 "client_secret": get_avito_account_client_secret(avito_account),
                 "refresh_token": token.refresh_token,
-            }
-
-        )
+            })
 
         for field, value in build_token_defaults(response).items():
             setattr(token, field, value)
@@ -86,7 +142,7 @@ class AvitoApiClient:
             "expires_at",
             "last_refreshed_at",
             "last_error",
-            "updated_at"
+            "updated_at",
         ])
 
         return token
@@ -115,7 +171,6 @@ class AvitoApiClient:
                     response.status_code == 401
                     and token
                     and retry_on_unauthorized
-                    and token.refresh_token
             ):
                 self.refresh_access_token(token)
                 return self.request(
@@ -180,6 +235,35 @@ class AvitoApiClient:
         raise AvitoApiError("Avito token endpoint временно недоступен после повторных попыток.")
 
 
+def extract_avito_user_id(user_info):
+    if not isinstance(user_info, dict):
+        return ""
+
+    direct_keys = ("id", "user_id", "account_id")
+
+    for key in direct_keys:
+        value = user_info.get(key)
+
+        if value:
+            return str(value)
+
+    nested_keys = ("result", "account", "user", "data")
+
+    for nested_key in nested_keys:
+        nested_value = user_info.get(nested_key)
+
+        if not isinstance(nested_value, dict):
+            continue
+
+        for key in direct_keys:
+            value = nested_value.get(key)
+
+            if value:
+                return str(value)
+
+    return ""
+
+
 @transaction.atomic
 def connect_avito_account_from_token(avito_account, token, session=None):
     if token.avito_account_id != avito_account.id:
@@ -191,11 +275,19 @@ def connect_avito_account_from_token(avito_account, token, session=None):
     client = AvitoApiClient(session=session)
     user_info = client.get_current_user(token)
 
-    avito_user_id = user_info.get("id")
-    if not avito_user_id:
-        raise AvitoApiError("Avito API не вернул id пользователя", payload=user_info)
+    avito_user_id = extract_avito_user_id(user_info)
 
-    avito_account.external_account_id = str(avito_user_id)
+    if not avito_user_id:
+        token.user_info = user_info
+        token.last_error = "Avito API не вернул id пользователя"
+        token.save(update_fields=["user_info", "last_error", "updated_at"])
+
+        raise AvitoApiError(
+            "Avito API не вернул id пользователя",
+            payload=user_info,
+        )
+
+    avito_account.external_account_id = avito_user_id
     avito_account.save(update_fields=["external_account_id", "updated_at"])
 
     token.user_info = user_info
@@ -289,3 +381,36 @@ def connect_avito_account_with_client_credentials(avito_account, session=None):
         token=token,
         session=session,
     )
+
+
+def resolve_next_items_page(payload, current_page, resources_count, per_page):
+    meta = payload.get("meta") or payload.get("pagination") or {}
+
+    page = meta.get("page") or meta.get("current_page") or current_page
+    pages = (
+            meta.get("pages")
+            or meta.get("total_pages")
+            or meta.get("page_count")
+    )
+
+    if pages is not None:
+        try:
+            page_number = int(page)
+            pages_number = int(pages)
+        except (TypeError, ValueError):
+            return None
+
+        if page_number < pages_number:
+            return page_number + 1
+
+        return None
+
+    if payload.get("next"):
+        return current_page + 1
+
+    # Avito может не отдавать total_pages/next. Если страница заполнена полностью,
+    # пробуем следующую. max_pages защищает от бесконечного цикла.
+    if resources_count >= per_page:
+        return current_page + 1
+
+    return None

@@ -5,7 +5,19 @@ from avitotask.avito_api_views import (
     AvitoAccountImportListingsView,
     AvitoAccountLinkPublicationsView,
     AvitoAccountVerifyConnectionView,
-    AvitoAccountConnectByCredentialsView
+    AvitoAccountConnectByCredentialsView,
+    AvitoAccountDownloadCsvView,
+    AvitoAccountRequestCsvExportView,
+    AvitoAccountExcelImportApplyView,
+    AvitoAccountExcelImportPreviewView,
+    AvitoAccountBulkListingDesiredStatusView,
+    AvitoAccountListingLifecycleReportView,
+    AvitoAccountBulkListingManagementStatusView,
+    AvitoAccountListingUnmappedSummaryView,
+    AvitoAccountListingRemapImportFieldsView,
+    AvitoAccountAutoloadReportSyncView,
+    AvitoAccountAdsListView,
+    AvitoAccountPublicCsvFeedView,
 )
 
 urlpatterns = [
@@ -34,4 +46,66 @@ urlpatterns = [
         AvitoAccountConnectByCredentialsView.as_view(),
         name="avito-account-connect-by-credentials",
     ),
+    path(
+        "accounts/<int:avito_account_id>/csv/export/",
+        AvitoAccountRequestCsvExportView.as_view(),
+        name="avito-account-request-csv-export",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/csv/download/",
+        AvitoAccountDownloadCsvView.as_view(),
+        name="avito-account-download-csv",
+    ),
+
+    path(
+        "accounts/<int:avito_account_id>/excel-import/preview/",
+        AvitoAccountExcelImportPreviewView.as_view(),
+        name="avito-account-excel-import-preview",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/excel-import/apply/",
+        AvitoAccountExcelImportApplyView.as_view(),
+        name="avito-account-excel-import-apply",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/listings/bulk-desired-status/",
+        AvitoAccountBulkListingDesiredStatusView.as_view(),
+        name="avito-account-listings-bulk-desired-status",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/listings/lifecycle-report/",
+        AvitoAccountListingLifecycleReportView.as_view(),
+        name="avito-account-listing-lifecycle-report",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/listings/bulk-management-status/",
+        AvitoAccountBulkListingManagementStatusView.as_view(),
+        name="avito-account-listings-bulk-management-status",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/listings/unmapped-summary/",
+        AvitoAccountListingUnmappedSummaryView.as_view(),
+        name="avito-account-listing-unmapped-summary",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/listings/remap-import-fields/",
+        AvitoAccountListingRemapImportFieldsView.as_view(),
+        name="avito-account-listing-remap-import-fields",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/autoload-report/sync/",
+        AvitoAccountAutoloadReportSyncView.as_view(),
+        name="avito-account-autoload-report-sync",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/ads/",
+        AvitoAccountAdsListView.as_view(),
+        name="avito-account-ads-list",
+    ),
+    path(
+        "feeds/<str:feed_token>/autoload.csv",
+        AvitoAccountPublicCsvFeedView.as_view(),
+        name="avito-account-public-csv-feed",
+    ),
+
 ]

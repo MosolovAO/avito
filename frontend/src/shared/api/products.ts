@@ -1,5 +1,12 @@
 import api from "./axios.ts";
 import type {Product, Product1, ProductOption, ProductFormData, UploadImageResponse} from "../../entities/product";
+import type {Project} from "../../entities/project";
+
+export interface GenerateProductResponse {
+    creative_id: number
+    publications_count: number
+    csv_export_status?: "queued" | "exporting" | "clean" | "dirty" | "error"
+}
 
 
 // Получение всех продуктов
@@ -53,7 +60,7 @@ export const toggleProductActive = async (id: number, action: 'activate' | 'deac
     status: string;
     active: boolean
 }> => {
-    const response = await api.post(`/api/toggle-product-active/${id}`, {action})
+    const response = await api.post(`/api/toggle-product-active/${id}/`, {action})
     return response.data
 }
 
@@ -65,8 +72,8 @@ export const getProduct1List = async (): Promise<Product1[]> => {
 
 
 // Генерация случайного объявления
-export const generateRandomProduct = async (id: number): Promise<any> => {
-    const response = await api.post(`/api/product-random/${id}`)
+export const generateRandomProduct = async (id: number): Promise<GenerateProductResponse> => {
+    const response = await api.post<GenerateProductResponse>(`/api/product-random/${id}/`)
     return response.data
 }
 

@@ -6,8 +6,9 @@ from pathlib import Path
 from django.conf import settings
 from django.utils.text import slugify
 
-from avitotask.models import AdPublication
-
+from avitotask.models import AdPublication, AvitoListing, ProductOptions
+from datetime import timedelta
+from django.utils import timezone
 from avitotask.services.ad_export_state import (
     mark_avito_account_export_clean,
     mark_avito_account_export_error,
@@ -16,6 +17,82 @@ from avitotask.services.ad_export_state import (
 
 IMAGE_URLS_SEPARATOR = " | "
 CSV_DELIMITER = ";"
+MULTI_VALUE_SEPARATOR = ", "
+PUBLICATION_LIFETIME_DAYS = 30
+AVITO_EXPORT_BASE_COLUMNS = [
+    "Id",
+    "DateEnd",
+    "AvitoId",
+    "Title",
+    "ImageUrls",
+    "Description",
+    "Category",
+    "Condition",
+    "Price",
+    "ListingFee",
+    "EMail",
+    "ContactPhone",
+    "ManagerName",
+    "AvitoStatus",
+    "CompanyName",
+    "ContactMethod",
+    "AdType",
+    "Availability",
+    "Address",
+]
+
+
+def get_publication_avito_id(publication):
+    listing = getattr(publication, "avito_listing", None)
+
+    if not listing:
+        return ""
+
+    return listing.avito_id or ""
+
+
+def get_backend_approved_csv_columns():
+    option_columns = list(
+        ProductOptions.objects
+        .exclude(option_title_en__isnull=True)
+        .exclude(option_title_en="")
+        .order_by("option_title_en")
+        .values_list("option_title_en", flat=True)
+        .distinct()
+    )
+
+    return merge_fieldnames(AVITO_EXPORT_BASE_COLUMNS, option_columns)
+
+
+def normalize_export_value(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, list):
+        return MULTI_VALUE_SEPARATOR.join(
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        )
+
+    if isinstance(value, dict):
+        return ""
+
+    return str(value)
+
+
+def filter_row_to_approved_columns(row, approved_columns):
+    return {
+        column: normalize_export_value(row.get(column, ""))
+        for column in approved_columns
+    }
+
+
+def build_publication_date_end(publication):
+    created_at = publication.created_at or timezone.now()
+    date_end = created_at + timedelta(days=PUBLICATION_LIFETIME_DAYS)
+
+    return timezone.localtime(date_end).isoformat(timespec="seconds")
 
 
 def build_publication_export_row(publication):
@@ -31,6 +108,7 @@ def build_publication_export_row(publication):
 
     row = {
         "Id": publication.row_id,
+        "AvitoId": get_publication_avito_id(publication),
         "Title": creative.title,
         "Description": creative.description,
         "ImageUrls": IMAGE_URLS_SEPARATOR.join(creative.image_urls or []),
@@ -41,7 +119,52 @@ def build_publication_export_row(publication):
     row.update(creative.option_data or {})
     row.update(publication.overrides or {})
 
+    if not row.get("DateEnd"):
+        row["DateEnd"] = build_publication_date_end(publication)
+
     return row
+
+
+def build_listing_export_row(listing):
+    """
+    Собирает строку автозагрузки для объявления, импортированного из XLSX Avito.
+
+    Такие объявления не имеют AdPublication/AdCreative. Источник истины -
+    сам AvitoListing.
+    """
+
+    row = {
+        "Id": listing.row_id,
+        "AvitoId": listing.avito_id,
+        "Title": listing.title,
+        "Description": listing.description,
+        "ImageUrls": IMAGE_URLS_SEPARATOR.join(listing.image_urls or []),
+        "Address": listing.address,
+        "AvitoStatus": listing.status,
+    }
+
+    row.update(listing.base_data or {})
+    row.update(listing.option_data or {})
+
+    return row
+
+
+def get_export_fieldnames(rows):
+    """
+    Возвращает колонки экспорта.
+
+    Базовый список берется из backend-справочника, но импортированные XLSX
+    объявления могут содержать уже нормализованные технические поля, которых
+    пока нет в ProductOptions. Их нельзя молча терять.
+    """
+
+    fieldnames = get_backend_approved_csv_columns()
+
+    row_keys = []
+    for row in rows:
+        row_keys.extend(row.keys())
+
+    return merge_fieldnames(fieldnames, row_keys)
 
 
 def export_avito_account_publications_to_csv(*,
@@ -60,14 +183,24 @@ def export_avito_account_publications_to_csv(*,
         workspace=workspace,
         avito_account=avito_account,
     )
+    managed_imported_listings = get_managed_imported_listings_for_export(
+        workspace=workspace,
+        avito_account=avito_account,
+    )
 
-    rows = []
-    fieldnames = []
+    raw_rows = []
 
     for publication in publications:
-        row = build_publication_export_row(publication)
-        rows.append(row)
-        fieldnames = merge_fieldnames(fieldnames, row.keys())
+        raw_rows.append(build_publication_export_row(publication))
+
+    for listing in managed_imported_listings:
+        raw_rows.append(build_listing_export_row(listing))
+
+    fieldnames = get_export_fieldnames(raw_rows)
+    rows = [
+        filter_row_to_approved_columns(row, fieldnames)
+        for row in raw_rows
+    ]
 
     file_path = output_dir / build_export_file_name(avito_account)
     try:
@@ -84,11 +217,26 @@ def export_avito_account_publications_to_csv(*,
 def get_publications_for_export(*, workspace, avito_account):
     return (
         AdPublication.objects
-        .select_related("creative", "avito_account")
+        .select_related("creative", "avito_account", "avito_listing")
         .filter(
             workspace=workspace,
             avito_account=avito_account,
             status=AdPublication.Status.ACTIVE
+        )
+        .order_by("created_at", "id")
+    )
+
+
+def get_managed_imported_listings_for_export(*, workspace, avito_account):
+    return (
+        AvitoListing.objects
+        .filter(
+            workspace=workspace,
+            avito_account=avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            publication__isnull=True,
         )
         .order_by("created_at", "id")
     )

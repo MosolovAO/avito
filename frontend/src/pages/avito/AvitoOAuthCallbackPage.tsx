@@ -1,7 +1,7 @@
 import React, {useEffect, useRef} from "react";
 import {Button, Result, Spin, Typography} from "antd";
 import {useNavigate, useSearchParams} from "react-router-dom";
-import {useCompleteAvitoOAuthMutation} from "../../features/avito";
+
 
 const {Paragraph, Text} = Typography
 

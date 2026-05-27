@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.0.11-alpine
+    restart: unless-stopped
+
+  django:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 2
+    env_file:
+      - .env.production
+    volumes:
+      - ./backend/media:/usr/src/app/media
+      - ./backend/static:/usr/src/app/static
+    ports:
+      - "80:8000"
+    depends_on:
+      - db
+      - redis
+
+  celery:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: celery --app=system worker -l info
+    env_file:
+      - .env.production
+    volumes:
+      - ./backend/media:/usr/src/app/media
+      - ./backend/static:/usr/src/app/static
+    depends_on:
+      - django
+      - redis
+      - db
+
+  celery-beat:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: celery --app=system beat -l info
+    env_file:
+      - .env.production
+    depends_on:
+      - django
+      - redis
+      - db
+
+volumes:
+  postgres_data:

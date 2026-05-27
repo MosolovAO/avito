@@ -15,6 +15,19 @@ def mark_avito_accounts_export_dirty(avito_accounts):
     )
 
 
+def mark_avito_accounts_export_queued(avito_accounts):
+    accounts_ids = normalize_account_ids(avito_accounts)
+
+    if not accounts_ids:
+        return
+
+    AvitoAccount.objects.filter(id__in=accounts_ids).update(
+        export_status=AvitoAccount.ExportStatus.QUEUED,
+        export_requested_at=timezone.now(),
+        export_error="",
+    )
+
+
 def mark_publication_export_dirty(publication):
     mark_avito_accounts_export_dirty([publication.avito_account_id])
 

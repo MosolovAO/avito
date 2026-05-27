@@ -1,30 +1,37 @@
 from uuid import uuid4
+from django.urls import reverse
 
 from django.db import transaction
 from rest_framework import serializers
 from .models import (
-    Project,
-    Product,
-    Product1,
     ProductOptions,
-    ProductOptionAssignment,
     Category,
     AvitoAccount,
     AvitoOAuthToken,
-    AvitoListing
+    AvitoListing,
+    AdPublication,
+    AdBatch,
+    AdCreative,
+    AdGenerationTask,
+    AdGenerationTaskOptionAssignment,
+    AdImageAsset
+)
 
+from avitotask.services.ad_schedule import (
+    AdScheduleError,
+    FREQUENCY_TO_INTERVAL_DAYS,
+    INTERVAL_DAYS_TO_FREQUENCY,
+    normalize_schedule,
+    recalculate_task_next_update_time,
+)
+
+from avitotask.services.avito_excel_import import (
+    AvitoExcelImportError,
+    import_avito_excel_file,
+    preview_avito_excel_file,
 )
 
 DAY_KEYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
-
-
-class ProjectSerializer(serializers.ModelSerializer):
-    """Serializer for the Project model."""
-
-    class Meta:
-        model = Project
-        fields = ['id', 'workspace', 'project_name']
-        read_only_fields = ['workspace']
 
 
 class ProductOptionsSerializer(serializers.ModelSerializer):
@@ -46,6 +53,33 @@ class ProductOptionsSerializer(serializers.ModelSerializer):
             'allow_multiple_options',
             'categories',
         ]
+
+    def validate_option_title_en(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError("Параметр автозагрузки не может быть пустым.")
+
+        duplicate_exists = ProductOptions.objects.filter(
+            option_title_en__iexact=value,
+        ).exclude(
+            pk=self.instance.pk if self.instance else None,
+        ).exists()
+
+        if duplicate_exists:
+            raise serializers.ValidationError(
+                "Опция с таким параметром автозагрузки уже существует."
+            )
+
+        return value
+
+    def validate_option_title_ru(self, value):
+        value = value.strip()
+
+        if not value:
+            raise serializers.ValidationError("Название опции не может быть пустым.")
+
+        return value
 
 
 class ProductOptionInputSerializer(serializers.Serializer):
@@ -82,51 +116,116 @@ class ProductOptionInputSerializer(serializers.Serializer):
         return attrs
 
 
-class ProductOptionAssignmentSerializer(serializers.Serializer):
-    """Serializer for the ProductOptionAssignment model."""
-    option = ProductOptionsSerializer(read_only=True)
-    value = serializers.ListField(source='selected_values', child=serializers.CharField(), read_only=True)
-
-    class Meta:
-        model = ProductOptionAssignment
-        fields = ['id', 'option', 'option_id', 'value']
-
-
 class ProductSerializer(serializers.ModelSerializer):
-    """"Serializer для создания, редактирования и чтения Product через DRF API."""
-    name = serializers.CharField(required=False, allow_blank=True)
-    url = serializers.URLField(required=False, allow_blank=True)
+    """
+    API serializer для frontend-совместимого /api/products/,
+    но модель внутри уже AdGenerationTask.
+    """
+    main_images = serializers.SerializerMethodField()
+    additional_images = serializers.SerializerMethodField()
 
-    projects = serializers.PrimaryKeyRelatedField(
-        queryset=Project.objects.all(),
+    main_image_asset_ids = serializers.PrimaryKeyRelatedField(
+        source="main_image_assets",
+        queryset=AdImageAsset.objects.all(),
         many=True,
         required=False,
     )
+    additional_image_asset_ids = serializers.PrimaryKeyRelatedField(
+        source="additional_image_assets",
+        queryset=AdImageAsset.objects.all(),
+        many=True,
+        required=False,
+    )
+    activate = serializers.BooleanField(source="is_active", required=False)
     category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     descriptions = serializers.JSONField(required=False)
     options = ProductOptionInputSerializer(many=True, write_only=True, required=False)
 
+    avito_account_ids = serializers.PrimaryKeyRelatedField(
+        source="avito_accounts",
+        queryset=AvitoAccount.objects.all(),
+        many=True,
+        required=False,
+        write_only=True,
+    )
+
+    avito_accounts = serializers.SerializerMethodField()
+
     class Meta:
-        model = Product
+        model = AdGenerationTask
         fields = [
-            'id', 'workspace', 'name', 'url', 'price', 'price_randomization_enabled', 'activate',
-            'price_min', 'price_max', 'price_step',
-            'possible_combinations', 'schedule', 'next_update_time',
-            'titles', 'main_images', 'additional_images',
-            'descriptions', 'addresses', 'selected_options',
-            'category', 'listingfee', 'email', 'contactphone',
-            'managername', 'avitostatus', 'companyname',
-            'contactmethod', 'adtype', 'availability',
-            'projects', 'options',
+            "id",
+            "workspace",
+            "name",
+            "url",
+            "price",
+            "price_randomization_enabled",
+            "price_min",
+            "price_max",
+            "price_step",
+            "activate",
+            "schedule",
+            "schedule_anchor_date",
+            "schedule_timezone",
+            "next_update_time",
+            "last_run_at",
+            "last_successful_run_at",
+            "last_run_status",
+            "last_run_error",
+            "titles",
+            "main_images",
+            "additional_images",
+            "descriptions",
+            "addresses",
+            "selected_options",
+            "category",
+            "base_data",
+            "avito_account_ids",
+            "avito_accounts",
+            "options",
+            "main_image_asset_ids",
+            "additional_image_asset_ids",
+
         ]
-        read_only_fields = ['workspace', 'possible_combinations', 'next_update_time', 'selected_options']
+        read_only_fields = [
+            "workspace",
+            "next_update_time",
+            "last_run_at",
+            "last_successful_run_at",
+            "last_run_status",
+            "last_run_error",
+            "selected_options",
+        ]
+
+    def get_main_images(self, instance):
+        return [asset.url for asset in instance.main_image_assets.all()]
+
+    def get_additional_images(self, instance):
+        return [asset.url for asset in instance.additional_image_assets.all()]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         workspace = self.context.get("workspace")
+
         if workspace is not None:
-            self.fields["projects"].queryset = Project.objects.filter(workspace=workspace)
+            self.fields["main_image_asset_ids"].queryset = AdImageAsset.objects.filter(workspace=workspace)
+            self.fields["additional_image_asset_ids"].queryset = AdImageAsset.objects.filter(workspace=workspace)
+
+        if workspace is not None:
+            self.fields["avito_account_ids"].queryset = AvitoAccount.objects.filter(
+                workspace=workspace,
+            )
+
+    def get_avito_accounts(self, instance):
+        return [
+            {
+                "id": account.id,
+                "name": account.name,
+                "export_status": account.export_status,
+            }
+            for account in instance.avito_accounts.all()
+        ]
 
     def _normalize_descriptions(self, value):
         """Приводит descriptions к формату модели Product.descriptions."""
@@ -145,6 +244,32 @@ class ProductSerializer(serializers.ModelSerializer):
 
         raise serializers.ValidationError('descriptions должен быть списком или объектом.')
 
+    def _resolve_category(self, value):
+        if not value:
+            return None
+        category_name = str(value).strip()
+        category, _ = Category.objects.get_or_create(category=category_name)
+        return category
+
+    def _replace_options(self, task, options_data):
+        AdGenerationTaskOptionAssignment.objects.filter(task=task).delete()
+
+        assignments = [
+            AdGenerationTaskOptionAssignment(
+                task=task,
+                option=item["option"],
+                selected_value=item["value"],
+            )
+            for item in options_data
+        ]
+        AdGenerationTaskOptionAssignment.objects.bulk_create(assignments)
+
+        task.selected_options = {
+            item["option"].option_title_en: item["value"]
+            for item in options_data
+        }
+        task.save(update_fields=["selected_options"])
+
     def _normalize_schedule(self, value):
         """Приводит расписание из frontend-формата к backend-формату."""
         if not value:
@@ -159,39 +284,20 @@ class ProductSerializer(serializers.ModelSerializer):
             }
         return value
 
-    def _resolve_category(self, value):
-        if not value:
-            return None
-        category_name = str(value).strip()
-        category, _ = Category.objects.get_or_create(category=category_name)
-        return category
-
-    def _replace_options(self, product, options_data):
-        ProductOptionAssignment.objects.filter(product=product).delete()
-
-        assignments = [
-            ProductOptionAssignment(
-                product=product,
-                option=item['option'],
-                selected_value=item['value']
+    def _normalize_schedule_for_task(self, schedule, publication_interval_days):
+        try:
+            return normalize_schedule(
+                schedule,
+                publication_interval_days=publication_interval_days,
             )
-            for item in options_data
-        ]
-        ProductOptionAssignment.objects.bulk_create(assignments)
+        except AdScheduleError as exc:
+            raise serializers.ValidationError({"schedule": str(exc)})
 
-        product.selected_options = {
-            item['option'].option_title_en: item['value']
-            for item in options_data
-        }
-
-        product.save(update_fields=['selected_options'])
-
-    def _refresh_next_update_time(self, product):
-        if product.schedule:
-            product.update_next_update_time()
-        else:
-            product.next_update_time = None
-            product.save(update_fields=['next_update_time'])
+    def _refresh_next_update_time(self, task):
+        try:
+            recalculate_task_next_update_time(task)
+        except AdScheduleError as exc:
+            raise serializers.ValidationError({"schedule": str(exc)})
 
     def _valid_image_urls(self, value, field_name):
         if value is None:
@@ -221,60 +327,99 @@ class ProductSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data):
-        """Создает Product и связанные данные."""
-        projects = validated_data.pop('projects', [])
-        options_data = validated_data.pop('options', [])
-        category_value = validated_data.pop('category', None)
+        avito_accounts = validated_data.pop("avito_accounts", [])
+        options_data = validated_data.pop("options", [])
+        category_value = validated_data.pop("category", None)
+        main_image_assets = validated_data.pop("main_image_assets", [])
+        additional_image_assets = validated_data.pop("additional_image_assets", [])
 
-        if not validated_data.get('price_randomization_enabled', False):
-            validated_data['price_min'] = 0
-            validated_data['price_max'] = 0
-            validated_data['price_step'] = 0
+        if not validated_data.get("price_randomization_enabled", False):
+            validated_data["price_min"] = 0
+            validated_data["price_max"] = 0
+            validated_data["price_step"] = 0
 
-        validated_data['name'] = validated_data.get('name') or f'Задача {uuid4().hex[:8]}'
-        validated_data['url'] = validated_data.get('url') or ''
-        validated_data['category'] = self._resolve_category(category_value)
-        validated_data['descriptions'] = self._normalize_descriptions(validated_data.get('descriptions', []))
-        validated_data['schedule'] = self._normalize_schedule(validated_data.get('schedule', {}))
+        validated_data["name"] = validated_data.get("name") or f"Задача {uuid4().hex[:8]}"
+        validated_data["url"] = validated_data.get("url") or ""
+        validated_data["category"] = self._resolve_category(category_value)
+        validated_data["descriptions"] = self._normalize_descriptions(
+            validated_data.get("descriptions", [])
+        )
 
-        product = Product.objects.create(**validated_data)
-        product.projects.set(projects)
+        schedule = validated_data.get("schedule")
+        normalized_schedule = self._normalize_schedule_for_task(
+            schedule,
+            validated_data.get("publication_interval_days", 7),
+        )
+        validated_data["schedule"] = normalized_schedule
+        validated_data["publication_interval_days"] = FREQUENCY_TO_INTERVAL_DAYS[
+            normalized_schedule["frequency"]
+        ]
 
-        self._replace_options(product, options_data)
-        self._refresh_next_update_time(product)
+        task = AdGenerationTask.objects.create(**validated_data)
+        task.avito_accounts.set(avito_accounts)
+        task.main_image_assets.set(main_image_assets)
+        task.additional_image_assets.set(additional_image_assets)
 
-        return product
+        self._replace_options(task, options_data)
+        self._refresh_next_update_time(task)
+
+        return task
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        """Обновляет Product и связанные many-to-many/through данные."""
-        projects = validated_data.pop('projects', None)
-        options_data = validated_data.pop('options', None)
+        avito_accounts = validated_data.pop("avito_accounts", None)
+        options_data = validated_data.pop("options", None)
+        main_image_assets = validated_data.pop("main_image_assets", None)
+        additional_image_assets = validated_data.pop("additional_image_assets", None)
 
-        if 'category' in validated_data:
-            validated_data['category'] = self._resolve_category(validated_data.get('category'))
+        if "category" in validated_data:
+            validated_data["category"] = self._resolve_category(validated_data.get("category"))
 
-        if 'descriptions' in validated_data:
-            validated_data['descriptions'] = self._normalize_descriptions(validated_data.get('descriptions', []))
-        if 'schedule' in validated_data:
-            validated_data['schedule'] = self._normalize_schedule(validated_data.get('schedule', {}))
+        if "descriptions" in validated_data:
+            validated_data["descriptions"] = self._normalize_descriptions(
+                validated_data.get("descriptions", [])
+            )
 
-        if validated_data.get('price_randomization_enabled') is False:
-            validated_data['price_min'] = 0
-            validated_data['price_max'] = 0
-            validated_data['price_step'] = 0
+        if "schedule" in validated_data:
+            normalized_schedule = self._normalize_schedule_for_task(
+                validated_data["schedule"],
+                instance.publication_interval_days,
+            )
+            validated_data["schedule"] = normalized_schedule
+            validated_data["publication_interval_days"] = FREQUENCY_TO_INTERVAL_DAYS[
+                normalized_schedule["frequency"]
+            ]
+
+        if validated_data.get("price_randomization_enabled") is False:
+            validated_data["price_min"] = 0
+            validated_data["price_max"] = 0
+            validated_data["price_step"] = 0
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
         instance.save()
 
-        if projects is not None:
-            instance.projects.set(projects)
+        if main_image_assets is not None:
+            instance.main_image_assets.set(main_image_assets)
+
+        if additional_image_assets is not None:
+            instance.additional_image_assets.set(additional_image_assets)
+
+        if avito_accounts is not None:
+            instance.avito_accounts.set(avito_accounts)
 
         if options_data is not None:
             self._replace_options(instance, options_data)
-        if 'schedule' in validated_data:
+
+        schedule_recalculation_fields = {
+            "schedule",
+            "schedule_anchor_date",
+            "schedule_timezone",
+            "is_active",
+        }
+
+        if schedule_recalculation_fields.intersection(validated_data.keys()):
             self._refresh_next_update_time(instance)
 
         return instance
@@ -287,51 +432,41 @@ class ProductSerializer(serializers.ModelSerializer):
             return value if isinstance(value, list) else [str(value)]
 
         if isinstance(value, list):
-            return value[0] if value else ''
+            return value[0] if value else ""
 
         return str(value)
 
     def to_representation(self, instance):
-        """Преобразует Product из backend-формата в формат, удобный React-форме."""
         data = super().to_representation(instance)
-        data['projects'] = ProjectSerializer(instance.projects.all(), many=True).data
-        data['category'] = instance.category.category if instance.category else ''
+        data["category"] = instance.category.category if instance.category else ""
 
         descriptions = instance.descriptions or {}
         if isinstance(descriptions, dict):
-            data['descriptions'] = list(descriptions.values())
+            data["descriptions"] = list(descriptions.values())
 
-        schedule = instance.schedule or {}
-        days = [None] * 7
-        for index, day_key in enumerate(DAY_KEYS):
-            days[index] = schedule.get(day_key)
-
-        data['schedule'] = {
-            'frequency': 1,
-            'days': days,
-        }
-        data['options'] = [
-            {
-                'option_id': assignment.option_id,
-                'value': self._to_form_option_value(assignment),
+        try:
+            data["schedule"] = normalize_schedule(
+                instance.schedule,
+                publication_interval_days=instance.publication_interval_days,
+            )
+        except AdScheduleError:
+            data["schedule"] = {
+                "frequency": INTERVAL_DAYS_TO_FREQUENCY.get(
+                    instance.publication_interval_days,
+                    1,
+                ),
+                "days": [None, None, None, None, None, None, None],
             }
 
-            for assignment in instance.productoptionassignment_set.select_related('option')
+        data["options"] = [
+            {
+                "option_id": assignment.option_id,
+                "value": self._to_form_option_value(assignment),
+            }
+            for assignment in instance.adgenerationtaskoptionassignment_set.select_related("option")
         ]
 
         return data
-
-
-class Product1Serializer(serializers.ModelSerializer):
-    """Serializer для Product1 (созданные объявления)"""
-
-    class Meta:
-        model = Product1
-        fields = [
-            'id', 'workspace', 'title', 'urls', 'description',
-            'created_date', 'task_id', 'selected_option', 'project_name'
-        ]
-        read_only_fields = ['workspace', 'created_date']
 
 
 class AvitoAccountSerializer(serializers.ModelSerializer):
@@ -341,6 +476,7 @@ class AvitoAccountSerializer(serializers.ModelSerializer):
         write_only=True,
         trim_whitespace=True,
     )
+    feed_url = serializers.SerializerMethodField()
     has_client_secret = serializers.SerializerMethodField()
     connection_status = serializers.SerializerMethodField()
     connection_error = serializers.SerializerMethodField()
@@ -372,6 +508,10 @@ class AvitoAccountSerializer(serializers.ModelSerializer):
             "sync_started_at",
             "last_synced_at",
             "sync_error",
+            "last_sync_total_received",
+            "last_sync_created_listings",
+            "last_sync_updated_listings",
+            "feed_url",
         ]
         read_only_fields = [
             "external_account_id",
@@ -389,8 +529,27 @@ class AvitoAccountSerializer(serializers.ModelSerializer):
             "sync_started_at",
             "last_synced_at",
             "sync_error",
-
+            "last_sync_total_received",
+            "last_sync_created_listings",
+            "last_sync_updated_listings",
+            "feed_url",
         ]
+
+    def get_feed_url(self, obj):
+        if not obj.feed_token:
+            return None
+
+        path = reverse(
+            "avito-account-public-csv-feed",
+            kwargs={"feed_token": obj.feed_token},
+        )
+
+        request = self.context.get("request")
+
+        if request:
+            return request.build_absolute_uri(path)
+
+        return path
 
     def get_has_client_secret(self, obj):
         return bool(obj.client_secret)
@@ -461,13 +620,316 @@ class AvitoListingSerializer(serializers.ModelSerializer):
             "avito_account_name",
             "publication",
             "publication_row_id",
+
+            "source",
+            "management_status",
+            "desired_status",
             "avito_id",
+            "row_id",
             "status",
             "title",
+            "description",
+            "address",
             "url",
+
+            "sheet_name",
+            "category_path",
+            "image_urls",
+            "base_data",
+            "option_data",
+            "unmapped_data",
+
             "published_at",
             "last_seen_at",
             "created_at",
             "updated_at",
         ]
+        read_only_fields = [
+            "id",
+            "avito_account",
+            "avito_account_name",
+            "publication",
+            "publication_row_id",
+            "source",
+            "avito_id",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class AvitoListingUpdateSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    description = serializers.CharField(required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    status = serializers.CharField(required=False, allow_blank=True)
+    image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        required=False,
+    )
+    desired_status = serializers.ChoiceField(
+        choices=AvitoListing.DesiredStatus.choices,
+        required=False,
+    )
+    base_data = serializers.DictField(required=False)
+    option_data = serializers.DictField(required=False)
+    management_status = serializers.ChoiceField(
+        choices=AvitoListing.ManagementStatus.choices,
+        required=False,
+    )
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Нет данных для обновления объявления.")
+
+        return attrs
+
+
+class AvitoListingBulkDesiredStatusSerializer(serializers.Serializer):
+    listing_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        allow_empty=False,
+    )
+    desired_status = serializers.ChoiceField(
+        choices=AvitoListing.DesiredStatus.choices,
+    )
+
+
+class AvitoListingBulkManagementStatusSerializer(serializers.Serializer):
+    listing_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        allow_empty=False,
+    )
+    management_status = serializers.ChoiceField(
+        choices=AvitoListing.ManagementStatus.choices,
+    )
+
+
+class AdPublicationSerializer(serializers.ModelSerializer):
+    avito_account_name = serializers.CharField(
+        source="avito_account.name",
+        read_only=True
+    )
+    creative_title = serializers.CharField(
+        source="creative.title",
+        read_only=True
+    )
+    avito_listing_id = serializers.IntegerField(
+        source="avito_listing.id",
+        read_only=True,
+        allow_null=True,
+    )
+    avito_id = serializers.CharField(
+        source="avito_listing.avito_id",
+        read_only=True,
+        allow_null=True,
+    )
+    avito_listing_url = serializers.URLField(
+        source="avito_listing.url",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = AdPublication
+        fields = [
+            "id",
+            "avito_account",
+            "avito_account_name",
+            "creative",
+            "creative_title",
+            "task",
+            "batch",
+            "source",
+            "status",
+            "row_id",
+            "address",
+            "overrides",
+            "avito_listing_id",
+            "avito_id",
+            "avito_listing_url",
+            "published_at",
+            "last_exported_at",
+            "archived_at",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = fields
+
+
+class AdBatchSerializer(serializers.ModelSerializer):
+    task_name = serializers.CharField(
+        source="task.name",
+        read_only=True,
+        allow_null=True
+    )
+    created_by_email = serializers.EmailField(
+        source="created_by.email",
+        read_only=True,
+        allow_null=True
+    )
+
+    class Meta:
+        model = AdBatch
+        fields = [
+            "id",
+            "task",
+            "task_name",
+            "source",
+            "status",
+            "created_by",
+            "created_by_email",
+            "total_creatives",
+            "total_publications",
+            "error_message",
+            "created_at",
+            "completed_at",
+        ]
+        read_only_fields = fields
+
+
+class AdCreativeSerializer(serializers.ModelSerializer):
+    task_name = serializers.CharField(
+        source="task.name",
+        read_only=True,
+        allow_null=True
+    )
+    batch_source = serializers.CharField(
+        source="batch.source",
+        read_only=True,
+        allow_null=True
+    )
+
+    publications_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = AdCreative
+        fields = [
+            "id",
+            "task",
+            "task_name",
+            "batch",
+            "batch_source",
+            "source",
+            "title",
+            "description",
+            "image_urls",
+            "base_data",
+            "option_data",
+            "identity_hash",
+            "publications_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "task",
+            "task_name",
+            "batch",
+            "batch_source",
+            "source",
+            "identity_hash",
+            "publications_count",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class AdCreativeUpdateSerializer(serializers.Serializer):
+    title = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    description = serializers.CharField(required=False, allow_blank=False)
+    image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        required=False
+    )
+    base_data = serializers.DictField(required=False)
+    option_data = serializers.DictField(required=False)
+    clear_publication_override_fields = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        allow_null=True
+    )
+
+    def validate(self, attrs):
+        editable_fields = {
+            "title",
+            "description",
+            "image_urls",
+            "base_data",
+            "option_data",
+            "clear_publication_override_fields",
+        }
+
+        if not any(field in attrs for field in editable_fields):
+            raise serializers.ValidationError("Нет данных для обновления креатива")
+
+        return attrs
+
+
+class AdPublicationUpdateSerializer(serializers.Serializer):
+    address = serializers.CharField(required=False, allow_blank=False)
+    status = serializers.ChoiceField(
+        choices=AdPublication.Status.choices,
+        required=False,
+    )
+    overrides = serializers.DictField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("Нет данных для обновления публикации.")
+
+        return attrs
+
+
+class ManualMassPostingSerializer(serializers.Serializer):
+    avito_account_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        allow_empty=False,
+    )
+    addresses = serializers.ListField(
+        child=serializers.CharField(),
+        allow_empty=False,
+    )
+    title = serializers.CharField(allow_blank=False, max_length=255)
+    description = serializers.CharField(allow_blank=False)
+    image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        required=False,
+        allow_empty=True,
+    )
+    base_data = serializers.DictField(required=False)
+    option_data = serializers.DictField(required=False)
+
+    def validate_avito_account_ids(self, value):
+        unique_ids = list(dict.fromkeys(value))
+
+        if len(unique_ids) != len(value):
+            raise serializers.ValidationError(
+                "Список avito_account_ids содержит дубли."
+            )
+
+        return unique_ids
+
+
+def serialize_avito_excel_preview(result, rows_limit=20):
+    return {
+        "total_sheets": result.total_sheets,
+        "total_rows": result.total_rows,
+        "rows_with_errors": result.rows_with_errors,
+        "categories": result.categories,
+        "unmapped_columns": result.unmapped_columns,
+        "rows": [
+            {
+                "sheet_name": row.sheet_name,
+                "category_path": row.category_path,
+                "row_number": row.row_number,
+                "row_id": row.row_id,
+                "avito_id": row.avito_id,
+                "title": row.title,
+                "status": row.status,
+                "mapped_data": row.mapped_data,
+                "unmapped_data": row.unmapped_data,
+                "errors": row.errors,
+            }
+            for row in result.rows[:rows_limit]
+        ],
+    }

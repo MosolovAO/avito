@@ -51,13 +51,30 @@ export const getApiErrorMessage = (
         const message = stringifyBackendValue(knownValue);
         return message || fallback;
     }
+    const knownErrorFields = new Set([
+        "detail",
+        "error",
+        "avito",
+        "non_field_errors",
+    ]);
 
-    const firstFieldError = Object.values(data).find(
-        (value): value is BackendErrorValue =>
-            typeof value === "string" ||
-            Array.isArray(value) ||
-            (typeof value === "object" && value !== null),
+    const isBackendErrorValue = (value: unknown): value is BackendErrorValue =>
+        typeof value === "string" ||
+        Array.isArray(value) ||
+        (typeof value === "object" && value !== null);
+
+    const firstFieldError = Object.entries(data).find(
+        ([field, value]) => !knownErrorFields.has(field) && isBackendErrorValue(value),
     );
 
-    return firstFieldError ? stringifyBackendValue(firstFieldError) : fallback;
+    if (firstFieldError) {
+        const [field, value] = firstFieldError;
+
+        if (isBackendErrorValue(value)) {
+            const message = stringifyBackendValue(value);
+            return message ? `${field}: ${message}` : fallback;
+        }
+    }
+
+    return fallback;
 };

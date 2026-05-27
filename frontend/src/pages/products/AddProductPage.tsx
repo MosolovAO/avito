@@ -3,8 +3,11 @@ import {useMutation, useQuery, useQueryClient} from '@tanstack/react-query'
 import {Typography, Card, message, Spin} from 'antd'
 import {useNavigate} from 'react-router-dom'
 import {ProductForm} from '../../features/product/ProductForm'
-import {getProjects, createProduct, getProductCategories} from '../../shared/api/products'
+import {createProduct, getProductCategories} from '../../shared/api/products'
 import type {ProductFormData} from '../../entities/product'
+import {useAvitoProjectsQuery} from '../../features/avito'
+import { getApiErrorMessage } from '../../shared/api/errors'
+
 
 const {Title} = Typography
 
@@ -18,11 +21,8 @@ export const AddProductPage: React.FC = () => {
         staleTime: 5 * 60 * 1000,
     })
 
-    // Загрущка проектов
-    const {data: projects = [], isLoading: projectsLoading} = useQuery({
-        queryKey: ['projects'],
-        queryFn: getProjects,
-    })
+    const avitoAccountsQuery = useAvitoProjectsQuery()
+    const avitoAccounts = avitoAccountsQuery.data ?? []
 
     // Мутация для создания продукта
     const createMutation = useMutation({
@@ -33,7 +33,7 @@ export const AddProductPage: React.FC = () => {
             navigate('/products')
         },
         onError: (error: any) => {
-            message.error(error.response?.data?.error || 'Ошибка создания продукта')
+            message.error(getApiErrorMessage(error, 'Ошибка создания продукта'))
         }
     })
 
@@ -45,7 +45,7 @@ export const AddProductPage: React.FC = () => {
         navigate('/products')
     }
 
-    const isLoading = projectsLoading || categoriesLoading || createMutation.isPending
+    const isLoading = avitoAccountsQuery.isLoading || categoriesLoading || createMutation.isPending
 
     if (isLoading) {
         return (
@@ -59,7 +59,7 @@ export const AddProductPage: React.FC = () => {
             <Title level={2}>Добавить продукт</Title>
             <Card>
                 <ProductForm
-                    projects={projects}
+                    avitoAccounts={avitoAccounts}
                     categories={categories}
                     onSubmit={handleSubmit}
                     onCancel={handleCancel}

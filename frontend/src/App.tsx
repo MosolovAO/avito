@@ -12,8 +12,15 @@ import {ChatsPage} from "./pages/chats";
 import {BotsPage} from "./pages/bots";
 import {WorkspaceUsersPage} from "./pages/workspace";
 import {InvitePage} from "./pages/invites";
-
-
+import {AvitoAdsPage, AvitoListingsPage} from "./pages/avito";
+import {ManualMassPostingPage} from "./pages/manualMassPosting";
+import {
+    AdBatchesPage,
+    AdCreativesPage,
+    EditAdCreativePage,
+    EditAdPublicationPage,
+    AdPublicationsPage,
+} from "./pages/ads";
 // src/App.tsx
 import {Outlet} from "react-router-dom";
 import {ProtectedRoute} from "./routes/ProtectedRoute";
@@ -71,7 +78,16 @@ const App: React.FC = () => {
                     <Route path="/projects/add" element={<AddProjectPage/>}/>
                     <Route path="/projects/:id/edit" element={<EditProjectPage/>}/>
 
+                    <Route path="/ads" element={<AvitoAdsPage/>}/>
+                    <Route path="/ads/publications" element={<AdPublicationsPage/>}/>
+                    <Route path="/ads/batches" element={<AdBatchesPage/>}/>
+                    <Route path="/ads/creatives" element={<AdCreativesPage/>}/>
+                    <Route path="/ads/creatives/:id/edit" element={<EditAdCreativePage/>}/>
+                    <Route path="/ads/publications/:id/edit" element={<EditAdPublicationPage/>}/>
 
+                    <Route path="/manual-mass-posting/new" element={<ManualMassPostingPage />} />
+
+                    <Route path="/avito/listings" element={<AvitoListingsPage/>}/>
 
 
                     <Route path="/workspace/users" element={<WorkspaceUsersPage/>}/>

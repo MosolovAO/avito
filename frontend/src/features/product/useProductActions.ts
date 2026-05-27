@@ -5,6 +5,7 @@ import {
     deleteProduct,
     generateRandomProduct
 } from "../../shared/api/products.ts";
+import {getApiErrorMessage} from "../../shared/api/errors";
 
 /**
  * Хук для действий с продуктами (активация, удаление, генерация)
@@ -42,10 +43,11 @@ export const useProductActions = () => {
     const generateMutation = useMutation({
         mutationFn: (id: number) => generateRandomProduct(id),
         onSuccess: () => {
+            queryClient.invalidateQueries({queryKey: ['products']})
             message.success('Объявление сгенерировано')
         },
-        onError: () => {
-            message.error('Ошибка генерации')
+        onError: (error) => {
+            message.error(getApiErrorMessage(error, 'Ошибка генерации'))
         }
     })
 
@@ -54,6 +56,7 @@ export const useProductActions = () => {
         delete: deleteMutation.mutate,
         generate: generateMutation.mutate,
         isToggleLoading: toggleActiveMutation.isPending,
+        toggleActiveTaskId: toggleActiveMutation.variables?.id ?? null,
         isDeleteLoading: deleteMutation.isPending,
         isGenerateLoading: generateMutation.isPending,
     }
