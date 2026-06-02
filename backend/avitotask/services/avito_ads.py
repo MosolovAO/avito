@@ -43,10 +43,10 @@ def list_avito_account_ads(
     """
     Единый список объявлений для общей страницы.
 
-    Оптимизация:
-    - count считаем в БД;
-    - сериализуем не все записи, а только кандидатов для нужной страницы;
-    - итоговую сортировку двух источников оставляем в Python.
+    Логика entity_type:
+    - avito_listing: только объявления, импортированные/ведомые как Avito;
+    - ad_publication: публикации нашего сервиса, включая уже связанные с AvitoId;
+    - пустой фильтр: оба типа без дублей.
     """
 
     if avito_account.workspace_id != workspace.id:
@@ -62,13 +62,33 @@ def list_avito_account_ads(
     items = []
     total_count = 0
 
-    if filters.entity_type in ("", ENTITY_TYPE_AVITO_LISTING):
-        listings_queryset = (
-            get_filtered_listings(
-                workspace=workspace,
-                avito_account=avito_account,
-                filters=filters,
+    include_listings = filters.entity_type in (
+        "",
+        ENTITY_TYPE_AVITO_LISTING,
+        ENTITY_TYPE_AD_PUBLICATION,
+    )
+
+    if include_listings:
+        listings_queryset = get_filtered_listings(
+            workspace=workspace,
+            avito_account=avito_account,
+            filters=filters,
+        )
+
+        if filters.entity_type == ENTITY_TYPE_AVITO_LISTING:
+            listings_queryset = listings_queryset.exclude(
+                source=AvitoListing.Source.SERVICE,
+                publication__isnull=False,
             )
+
+        if filters.entity_type == ENTITY_TYPE_AD_PUBLICATION:
+            listings_queryset = listings_queryset.filter(
+                source=AvitoListing.Source.SERVICE,
+                publication__isnull=False,
+            )
+
+        listings_queryset = (
+            listings_queryset
             .annotate(sort_value=Coalesce("last_seen_at", "updated_at", "created_at"))
             .order_by("-sort_value")
         )
@@ -208,7 +228,47 @@ def get_filtered_unlinked_publications(
     return queryset
 
 
+def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
+    publication = listing.publication
+    autoload_error = extract_listing_autoload_error(listing)
+
+    return {
+        "entity_type": ENTITY_TYPE_AD_PUBLICATION,
+        "id": publication.id,
+        "avito_account": listing.avito_account_id,
+        "avito_account_name": listing.avito_account.name,
+        "publication": publication.id,
+        "publication_row_id": publication.row_id,
+        "source": publication.source,
+        "status": publication.status,
+        "desired_status": listing.desired_status,
+        "management_status": listing.management_status,
+        "row_id": publication.row_id,
+        "avito_id": listing.avito_id,
+        "title": listing.title,
+        "description": listing.description,
+        "address": listing.address,
+        "url": listing.url,
+        "image_urls": listing.image_urls,
+        "base_data": listing.base_data,
+        "option_data": listing.option_data,
+        "unmapped_data": listing.unmapped_data,
+        "has_publication": True,
+        "has_avito_id": bool(listing.avito_id),
+        "has_errors": bool(autoload_error),
+        "autoload_error": autoload_error,
+        "published_at": listing.published_at or publication.published_at,
+        "last_seen_at": listing.last_seen_at,
+        "created_at": publication.created_at,
+        "updated_at": max(publication.updated_at, listing.updated_at),
+        "sort_at": listing.last_seen_at or listing.updated_at or publication.updated_at,
+    }
+
+
 def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
+    if listing.publication_id and listing.source == AvitoListing.Source.SERVICE:
+        return serialize_linked_publication_listing_for_ads_page(listing)
+
     autoload_error = extract_listing_autoload_error(listing)
 
     return {

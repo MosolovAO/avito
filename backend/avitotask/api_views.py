@@ -14,7 +14,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.fields import DateTimeField
 
 from django.shortcuts import get_object_or_404
-from django.db.models import Q, Count
+from django.db.models import Q, Count, Prefetch
 
 from django.core.files.storage import default_storage
 
@@ -44,6 +44,7 @@ from .serializers import (
     AdPublicationUpdateSerializer,
     AdBatchSerializer,
     AdCreativeSerializer,
+    AdCreativeEditSerializer,
     AdCreativeUpdateSerializer,
     ManualMassPostingSerializer,
 
@@ -111,6 +112,7 @@ def get_request_workspace(request, required_permission=None):
 class WorkspaceScopedModelViewSet(viewsets.ModelViewSet):
     request: Request
     action: str
+    _workspace = None
 
     read_permission = None
     write_permission = None
@@ -122,10 +124,13 @@ class WorkspaceScopedModelViewSet(viewsets.ModelViewSet):
         return self.write_permission
 
     def get_workspace(self):
-        return get_request_workspace(
-            self.request,
-            required_permission=self.get_required_workspace_permission(),
-        )
+        if self._workspace is None:
+            self._workspace = get_request_workspace(
+                self.request,
+                required_permission=self.get_required_workspace_permission(),
+            )
+
+        return self._workspace
 
     def get_serializer_context(self) -> dict[str, Any]:
         context = super().get_serializer_context()
@@ -562,19 +567,49 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
     read_permission = WorkspacePermission.VIEW_ADS
     write_permission = WorkspacePermission.MANAGE_ADS
 
+    def get_serializer_class(self):
+        if self.action in {"retrieve", "partial_update"}:
+            return AdCreativeEditSerializer
+
+        return AdCreativeSerializer
+
     def get_queryset(self):
+        if self.action in {"retrieve", "partial_update", "destroy"}:
+            return (
+                AdCreative.objects
+                .filter(workspace=self.get_workspace())
+                .exclude(source="import")
+                .only(
+                    "id",
+                    "workspace_id",
+                    "title",
+                    "description",
+                    "image_urls",
+                    "base_data",
+                    "option_data",
+                    "updated_at",
+                )
+            )
+
         queryset = (
             AdCreative.objects
             .filter(workspace=self.get_workspace())
             .exclude(source="import")
             .select_related("task", "batch")
-            .annotate(publications_count=Count("publications"))
+            .prefetch_related(
+                Prefetch(
+                    "publications",
+                    queryset=AdPublication.objects.select_related("avito_account"),
+                )
+            )
+            .annotate(publications_count=Count("publications", distinct=True))
             .order_by("-created_at")
         )
 
         source_value = self.request.query_params.get("source")
         task_id = self.request.query_params.get("task")
         batch_id = self.request.query_params.get("batch")
+        avito_account_id = self.request.query_params.get("avito_account")
         search = (self.request.query_params.get("search") or "").strip()
 
         if source_value:
@@ -589,10 +624,13 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
         if batch_id:
             queryset = queryset.filter(batch_id=batch_id)
 
+        if avito_account_id:
+            queryset = queryset.filter(publications__avito_account_id=avito_account_id)
+
         if search:
             queryset = queryset.filter(title__icontains=search)
 
-        return queryset
+        return queryset.distinct()
 
     def partial_update(self, request, *args, **kwargs):
         creative = self.get_object()
@@ -600,16 +638,15 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         try:
-            update_creative = update_ad_creative(
+            updated_creative = update_ad_creative(
                 creative_id=creative.id,
                 workspace=self.get_workspace(),
-                **serializer.validated_data
+                **serializer.validated_data,
             )
-
         except AdEditingError as exc:
             raise ValidationError({"detail": str(exc)})
 
-        output_serializer = self.get_serializer(update_creative)
+        output_serializer = self.get_serializer(updated_creative)
         return Response(output_serializer.data)
 
     def destroy(self, request, *args, **kwargs):

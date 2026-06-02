@@ -17,6 +17,7 @@ import type {
     AdBatch,
     AdBatchesQueryParams,
     AdCreative,
+    AdCreativeEdit,
     AdCreativesQueryParams,
     UpdateAdCreativeRequest,
     UpdateAdPublicationRequest,
@@ -307,16 +308,17 @@ export const getAdCreatives = async (
 
 export const getAdCreative = async (
     workspaceId: number,
-    creativeId: number
-): Promise<AdCreative> => {
-    const response = await api.get<AdCreative>(
+    creativeId: number,
+): Promise<AdCreativeEdit> => {
+    const response = await api.get<AdCreativeEdit>(
         `/api/ad-creatives/${creativeId}/`,
         {
-            headers: getWorkspaceHeaders(workspaceId)
-        }
-    )
-    return response.data
-}
+            headers: getWorkspaceHeaders(workspaceId),
+        },
+    );
+
+    return response.data;
+};
 
 export const updateAdCreative = async (
     workspaceId: number,

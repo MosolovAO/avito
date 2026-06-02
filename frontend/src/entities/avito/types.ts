@@ -41,6 +41,11 @@ export interface ProductSchedule {
     days: Array<string | null>
 }
 
+export interface AdCreativeProject {
+    id: number;
+    name: string;
+}
+
 export type ProductImageValue = File | ProductImageAssetValue | string
 
 
@@ -384,6 +389,15 @@ export interface AdBatchesQueryParams {
 
 export type AdCreativeSource = "auto" | "manual";
 
+export interface AdCreativeEdit {
+    id: number;
+    title: string;
+    description: string;
+    image_urls: string[];
+    base_data: JsonObject;
+    option_data: JsonObject;
+    updated_at: string;
+}
 export interface AdCreative {
     id: number;
     task: number | null;
@@ -398,17 +412,9 @@ export interface AdCreative {
     option_data: JsonObject;
     identity_hash: string | null;
     publications_count: number;
+    projects: AdCreativeProject[];
     created_at: string;
     updated_at: string;
-}
-
-export interface AdCreativesQueryParams {
-    page?: number;
-    page_size?: number;
-    source?: AdCreativeSource;
-    task?: number;
-    batch?: number;
-    search?: string;
 }
 
 export interface UpdateAdCreativeRequest {
@@ -418,6 +424,26 @@ export interface UpdateAdCreativeRequest {
     base_data?: JsonObject;
     option_data?: JsonObject;
     clear_publication_override_fields?: string[];
+    expected_updated_at?: string;
+}
+
+export interface AdCreativesQueryParams {
+    page?: number;
+    page_size?: number;
+    source?: AdCreativeSource;
+    task?: number;
+    batch?: number;
+    search?: string;
+    avito_account?: number;
+}
+
+export interface AdCreativesQueryParams {
+    page?: number;
+    page_size?: number;
+    source?: AdCreativeSource;
+    task?: number;
+    batch?: number;
+    search?: string;
 }
 
 export interface UpdateAdPublicationRequest {

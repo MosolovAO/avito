@@ -190,6 +190,21 @@ class AvitoApiClient:
                 time.sleep(delay)
                 continue
 
+            if (
+                    response.status_code in (401, 403)
+                    and token
+                    and retry_on_unauthorized
+            ):
+                self.refresh_access_token(token)
+
+                return self.request(
+                    method,
+                    path,
+                    token=token,
+                    retry_on_unauthorized=False,
+                    **kwargs,
+                )
+
             if response.status_code == 400:
                 raise build_api_error(response)
 

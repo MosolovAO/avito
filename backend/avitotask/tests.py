@@ -53,12 +53,16 @@ from avitotask.models import (
     AvitoAccount,
     AvitoOAuthToken,
     ProductOptions,
+    AdGenerationTaskOptionAssignment,
     AdGenerationTaskRun,
     AdImageAsset,
 )
 from avitotask.services.ad_generation import (
     create_manual_mass_posting,
-    generate_ads_from_task, AdGenerationError, build_creative_dedupe_data,
+    generate_ads_from_task,
+    AdGenerationError,
+    build_creative_dedupe_data,
+    build_option_data,
 )
 from avitotask.services.ad_task_runner import run_autogeneration_task
 from avitotask.services.avito_excel_import import (
@@ -364,7 +368,7 @@ class AvitoExcelImportFlowTests(TestCase):
         ]
 
         self.assertEqual(len(linked_publication_rows), 1)
-        self.assertEqual(linked_publication_rows[0]["entity_type"], "avito_listing")
+        self.assertEqual(linked_publication_rows[0]["entity_type"], "ad_publication")
         self.assertEqual(linked_publication_rows[0]["avito_id"], "9999999999")
 
         self.assertEqual(len(unlinked_publication_rows), 1)
@@ -418,8 +422,8 @@ class AvitoExcelImportFlowTests(TestCase):
             all(item["entity_type"] == "ad_publication" for item in results)
         )
         self.assertEqual(
-            [item["publication"] for item in results],
-            [unlinked_publication.id],
+            {item["publication"] for item in results},
+            {linked_publication.id, unlinked_publication.id},
         )
 
     def test_ads_api_filters_items_without_avito_id(self):
@@ -1288,6 +1292,54 @@ class AdScheduleCalculationTests(TestCase):
 
 
 class AdGenerationServiceTests(TestCase):
+
+    def test_build_option_data_normalizes_single_and_multiple_option_values(self):
+        user = User.objects.create_user(email="option-data-normalize@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Option data normalize workspace",
+            slug="option-data-normalize-workspace",
+            owner=user,
+        )
+
+        task = AdGenerationTask.objects.create(
+            workspace=workspace,
+            name="Option data normalize task",
+            titles=["Title"],
+            descriptions=["Description"],
+            addresses=["Address"],
+            base_data={"Category": "Ремонт и строительство"},
+            price=100,
+        )
+
+        single_option = ProductOptions.objects.create(
+            option_title_ru="Бренд",
+            option_title_en="Brand",
+            allow_multiple_options=False,
+        )
+        multiple_option = ProductOptions.objects.create(
+            option_title_ru="Цвет",
+            option_title_en="Color",
+            allow_multiple_options=True,
+        )
+
+        AdGenerationTaskOptionAssignment.objects.create(
+            task=task,
+            option=single_option,
+            selected_value=["Poritep"],
+        )
+        AdGenerationTaskOptionAssignment.objects.create(
+            task=task,
+            option=multiple_option,
+            selected_value=["Белый", "Серый"],
+        )
+
+        option_data = build_option_data(task)
+
+        self.assertEqual(option_data, {
+            "Brand": "Poritep",
+            "Color": ["Белый", "Серый"],
+        })
+
     def create_image_asset(self, *, workspace, url, uploaded_by=None):
         original_filename = url.rstrip("/").rsplit("/", 1)[-1] or "image.jpg"
 
@@ -3634,6 +3686,127 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(result.creative.image_urls, ["https://example.com/fresh.jpg"])
         self.assertEqual(AdCreative.objects.filter(workspace=workspace).count(), 2)
         self.assertEqual(AdPublication.objects.filter(workspace=workspace).count(), 1)
+
+    def test_ad_creatives_api_returns_unique_projects_for_each_creative(self):
+        user = User.objects.create_user(email="creative-projects@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Creative projects workspace",
+            slug="creative-projects-workspace",
+            owner=user,
+        )
+        client = self.create_api_client_for_workspace(user=user, workspace=workspace)
+
+        first_account = AvitoAccount.objects.create(workspace=workspace, name="First project")
+        second_account = AvitoAccount.objects.create(workspace=workspace, name="Second project")
+
+        creative = AdCreative.objects.create(
+            workspace=workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Creative with projects",
+            description="Description",
+            image_urls=[],
+            base_data={},
+            option_data={},
+        )
+
+        AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=first_account,
+            creative=creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.DRAFT,
+            address="First address",
+        )
+        AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=first_account,
+            creative=creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.DRAFT,
+            address="Second address",
+        )
+        AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=second_account,
+            creative=creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.DRAFT,
+            address="Third address",
+        )
+
+        response = client.get(
+            reverse("ad-creative-api-list"),
+            HTTP_X_WORKSPACE_ID=str(workspace.id),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["projects"], [
+            {"id": first_account.id, "name": "First project"},
+            {"id": second_account.id, "name": "Second project"},
+        ])
+        self.assertEqual(response.data["results"][0]["publications_count"], 3)
+
+    def test_ad_creatives_api_filters_by_avito_account(self):
+        user = User.objects.create_user(email="creative-project-filter@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Creative project filter workspace",
+            slug="creative-project-filter-workspace",
+            owner=user,
+        )
+        client = self.create_api_client_for_workspace(user=user, workspace=workspace)
+
+        first_account = AvitoAccount.objects.create(workspace=workspace, name="First project")
+        second_account = AvitoAccount.objects.create(workspace=workspace, name="Second project")
+
+        first_creative = AdCreative.objects.create(
+            workspace=workspace,
+            source=AdCreative.Source.MANUAL,
+            title="First creative",
+            description="Description",
+            image_urls=[],
+            base_data={},
+            option_data={},
+        )
+        second_creative = AdCreative.objects.create(
+            workspace=workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Second creative",
+            description="Description",
+            image_urls=[],
+            base_data={},
+            option_data={},
+        )
+
+        AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=first_account,
+            creative=first_creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.DRAFT,
+            address="First address",
+        )
+        AdPublication.objects.create(
+            workspace=workspace,
+            avito_account=second_account,
+            creative=second_creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.DRAFT,
+            address="Second address",
+        )
+
+        response = client.get(
+            reverse("ad-creative-api-list"),
+            {"avito_account": first_account.id},
+            HTTP_X_WORKSPACE_ID=str(workspace.id),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["id"], first_creative.id)
+        self.assertEqual(response.data["results"][0]["projects"], [
+            {"id": first_account.id, "name": "First project"},
+        ])
 
     def test_ad_creatives_api_returns_empty_for_import_source_filter(self):
         user = User.objects.create_user(email="creative-api-import@example.com", password="test")

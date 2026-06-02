@@ -445,8 +445,8 @@ export const AvitoAdsPage: React.FC = () => {
             render: (value: string | null, item) => (
                 <Space orientation="vertical" size={0}>
                     <Text strong>{value || "Без названия"}</Text>
-                    <Text type="secondary">
-                        row_id: {item.row_id || "не задан"}
+                    <Text type="secondary" style={{fontSize: 11}}>
+                        id: {item.row_id || "не задан"}
                     </Text>
                     {item.url && (
                         <Button
@@ -465,13 +465,13 @@ export const AvitoAdsPage: React.FC = () => {
             ),
         },
         {
-            title: "Avito ID",
-            dataIndex: "avito_id",
-            key: "avito_id",
-            width: 150,
-            render: (value: string | null) =>
-                value ? <Text copyable>{value}</Text> : <Tag>Нет</Tag>,
+            title: "Адрес",
+            dataIndex: "address",
+            key: "address",
+            width: 260,
+            render: (value: string) => value || "Не указан",
         },
+
         {
             title: "Статус",
             dataIndex: "status",
@@ -521,19 +521,21 @@ export const AvitoAdsPage: React.FC = () => {
                 );
             },
         },
-        {
-            title: "Адрес",
-            dataIndex: "address",
-            key: "address",
-            width: 260,
-            render: (value: string) => value || "Не указан",
-        },
+
         {
             title: "Источник",
             dataIndex: "source",
             key: "source",
             width: 140,
             render: (value: string) => <Tag>{value}</Tag>,
+        },
+        {
+            title: "Avito ID",
+            dataIndex: "avito_id",
+            key: "avito_id",
+            width: 150,
+            render: (value: string | null) =>
+                value ? <Text copyable>{value}</Text> : <Tag>Нет</Tag>,
         },
         {
             title: "Avito-аккаунт",

@@ -1,2 +1,9 @@
+def-files/
 venv/
 .idea/
+.env
+.env.*
+backend/.env
+.env.production
+!.env.example
+!backend/.env.example

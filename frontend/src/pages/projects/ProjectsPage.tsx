@@ -307,7 +307,7 @@ export const ProjectsPage: React.FC = () => {
         {
             title: "Avito API",
             key: "avito",
-            width: 320,
+            width: 260,
             render: (_, project) => (
                 <Space orientation="vertical" size={4}>
                     {getConnectionTag(project)}
@@ -317,14 +317,11 @@ export const ProjectsPage: React.FC = () => {
                     )}
 
                     {project.last_verified_at && (
-                        <Text type="secondary">
+                        <Text type="secondary" style={{fontSize: 10, }}>
                             Проверено: {formatDateTime(project.last_verified_at)}
                         </Text>
                     )}
 
-                    {project.sync_error && (
-                        <Text type="danger">{project.sync_error}</Text>
-                    )}
                 </Space>
             ),
         },
@@ -358,11 +355,43 @@ export const ProjectsPage: React.FC = () => {
                 </Space>
             ),
         },
+        {
+            title: "Синхронизация",
+            key: "sync",
+            width: 300,
+            render: (_, project) => (
+                <Space direction="vertical" size={4}>
+                    <Tag color={getSyncStatusColor(project.sync_status)}>
+                        {getSyncStatusText(project)}
+                    </Tag>
+
+                    {(project.sync_status === "queued" || project.sync_status === "syncing") && (
+                        <Text type="secondary" style={{fontSize: 12}}>
+                            Можно продолжать работу, результат обновится после завершения задачи.
+                        </Text>
+                    )}
+
+                    {project.sync_error && (
+                        <Text type="danger" style={{fontSize: 12}}>
+                            {project.sync_error}
+                        </Text>
+                    )}
+
+                    {project.last_synced_at && (
+                        <Text type="secondary" style={{fontSize: 12}}>
+                            Строк отчета: {project.last_sync_total_received ?? 0} · Создано связей:{" "}
+                            {project.last_sync_created_listings ?? 0} · Обновлено объявлений:{" "}
+                            {project.last_sync_updated_listings ?? 0}
+                        </Text>
+                    )}
+                </Space>
+            ),
+        },
 
         {
             title: "Действия",
             key: "actions",
-            width: 360,
+            width: 420,
             render: (_, project) => {
                 const hasConnectedAvito = Boolean(project.external_account_id);
                 const hasAvitoCredentials = Boolean(
@@ -412,41 +441,13 @@ export const ProjectsPage: React.FC = () => {
                             </Button>
                         </Tooltip>
 
-                        <Space direction="vertical" size={4}>
-                            <Space size={8} wrap>
-                                <Button
-                                    onClick={() => handleLinkPublications(project.id)}
-                                    loading={project.sync_status === "queued" || project.sync_status === "syncing"}
-                                    disabled={project.sync_status === "queued" || project.sync_status === "syncing"}
-                                >
-                                    Обновить связи с Avito
-                                </Button>
-
-                                <Tag color={getSyncStatusColor(project.sync_status)}>
-                                    {getSyncStatusText(project)}
-                                </Tag>
-                            </Space>
-
-                            {(project.sync_status === "queued" || project.sync_status === "syncing") && (
-                                <Text type="secondary" style={{fontSize: 12}}>
-                                    Можно продолжать работу, результат обновится после завершения задачи.
-                                </Text>
-                            )}
-
-                            {project.sync_error && (
-                                <Text type="danger" style={{fontSize: 12}}>
-                                    {project.sync_error}
-                                </Text>
-                            )}
-
-                            {project.last_synced_at && (
-                                <Text type="secondary" style={{fontSize: 12}}>
-                                    Строк отчета: {project.last_sync_total_received ?? 0} · Создано связей:{" "}
-                                    {project.last_sync_created_listings ?? 0} · Обновлено объявлений:{" "}
-                                    {project.last_sync_updated_listings ?? 0}
-                                </Text>
-                            )}
-                        </Space>
+                        <Button
+                            onClick={() => handleLinkPublications(project.id)}
+                            loading={project.sync_status === "queued" || project.sync_status === "syncing"}
+                            disabled={project.sync_status === "queued" || project.sync_status === "syncing"}
+                        >
+                            Обновить связи с Avito
+                        </Button>
 
                         <Tooltip title="Импортировать статистику">
                             <Button
@@ -525,6 +526,7 @@ export const ProjectsPage: React.FC = () => {
                 dataSource={projectsQuery.data ?? []}
                 loading={projectsQuery.isLoading}
                 pagination={{pageSize: 10}}
+                scroll={{x: 1700}}
             />
 
             <Modal

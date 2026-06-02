@@ -10,8 +10,6 @@ export const AvitoOAuthCallbackPage: React.FC = () => {
     const [searchParams] = useSearchParams();
     const hasSubmittedRef = useRef(false)
 
-    const completeOAuthMutation = useCompleteAvitoOAuthMutation();
-
     const code = searchParams.get("code") ?? undefined
     const state = searchParams.get("state") ?? undefined
     const avitoError = searchParams.get("error") ?? undefined

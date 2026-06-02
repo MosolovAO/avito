@@ -19,8 +19,15 @@ import type {
     AdCreativeSource,
     AdCreativesQueryParams,
 } from "../../entities/avito/types";
-import {useAdCreativesQuery, useDeleteAdCreativeMutation} from "../../features/avito";
+
+import {
+    useAdCreativesQuery,
+    useAvitoProjectsQuery,
+    useDeleteAdCreativeMutation,
+} from "../../features/avito";
+
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
+import {formatDateTime} from "../../shared/lib/formatDateTime";
 
 const {Title, Text, Paragraph} = Typography;
 
@@ -43,16 +50,19 @@ export const AdCreativesPage: React.FC = () => {
 
     const [page, setPage] = useState(1);
     const [source, setSource] = useState<AdCreativeSource | undefined>();
+    const [avitoAccountId, setAvitoAccountId] = useState<number | undefined>();
     const [search, setSearch] = useState("");
 
     const queryParams: AdCreativesQueryParams = {
         page,
         page_size: pageSize,
         source,
+        avito_account: avitoAccountId,
         search: search.trim() || undefined,
     };
 
     const creativesQuery = useAdCreativesQuery(queryParams);
+    const projectsQuery = useAvitoProjectsQuery();
     const deleteCreativeMutation = useDeleteAdCreativeMutation();
 
 
@@ -74,6 +84,7 @@ export const AdCreativesPage: React.FC = () => {
         {
             title: "Креатив",
             key: "creative",
+            width: 2180,
             render: (_, creative) => (
                 <Space direction="vertical" size={0}>
                     <Text strong>{creative.title}</Text>
@@ -82,7 +93,7 @@ export const AdCreativesPage: React.FC = () => {
                         ellipsis={{rows: 2, expandable: false}}
                         style={{marginBottom: 0, maxWidth: 520}}
                     >
-                        {creative.description}
+                        {/* {creative.description} */}
                     </Paragraph>
                 </Space>
             ),
@@ -105,6 +116,24 @@ export const AdCreativesPage: React.FC = () => {
             width: 130,
         },
         {
+            title: "Проекты",
+            key: "projects",
+            width: 240,
+            render: (_, creative) => {
+                if (creative.projects.length === 0) {
+                    return <Text type="secondary">Без проекта</Text>;
+                }
+
+                return (
+                    <Space wrap size={4}>
+                        {creative.projects.map((project) => (
+                            <Tag key={project.id}>{project.name}</Tag>
+                        ))}
+                    </Space>
+                );
+            },
+        },
+        {
             title: "Задача",
             key: "task",
             width: 220,
@@ -122,6 +151,7 @@ export const AdCreativesPage: React.FC = () => {
             dataIndex: "updated_at",
             key: "updated_at",
             width: 190,
+            render: (value: string) => formatDateTime(value),
         },
         {
             title: "Действия",
@@ -204,6 +234,22 @@ export const AdCreativesPage: React.FC = () => {
                     ]}
                     onChange={(value) => {
                         setSource(value);
+                        resetPage();
+                    }}
+                />
+
+                <Select
+                    allowClear
+                    placeholder="Проект"
+                    value={avitoAccountId}
+                    style={{width: 180}}
+                    loading={projectsQuery.isLoading}
+                    options={(projectsQuery.data ?? []).map((project) => ({
+                        value: project.id,
+                        label: project.name,
+                    }))}
+                    onChange={(value) => {
+                        setAvitoAccountId(value);
                         resetPage();
                     }}
                 />

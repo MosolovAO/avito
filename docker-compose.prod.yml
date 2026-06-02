@@ -19,13 +19,26 @@ services:
     env_file:
       - .env.production
     volumes:
+      - django_static:/usr/src/app/static
       - ./backend/media:/usr/src/app/media
-      - ./backend/static:/usr/src/app/static
-    ports:
-      - "80:8000"
+    expose:
+      - "8000"
     depends_on:
       - db
       - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    volumes:
+      - django_static:/usr/src/app/static:ro
+      - ./backend/media:/usr/src/app/media:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - django
 
   celery:
     build:
@@ -36,11 +49,11 @@ services:
       - .env.production
     volumes:
       - ./backend/media:/usr/src/app/media
-      - ./backend/static:/usr/src/app/static
+      - django_static:/usr/src/app/static
     depends_on:
-      - django
-      - redis
       - db
+      - redis
+      - django
 
   celery-beat:
     build:
@@ -50,9 +63,10 @@ services:
     env_file:
       - .env.production
     depends_on:
-      - django
-      - redis
       - db
+      - redis
+      - django
 
 volumes:
   postgres_data:
+  django_static:

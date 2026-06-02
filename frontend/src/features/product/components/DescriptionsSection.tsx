@@ -1,73 +1,35 @@
 // src/features/product/components/DescriptionsSection.tsx
-import React, {useEffect, useState} from 'react'
+import React, {useId, useState} from 'react'
 import {Card, Form, Tabs} from 'antd'
 import type {TabsProps} from 'antd'
 import {RichTextEditor} from '../../../shared/RichTextEditor'
 import type {ProductFormValues} from '../lib/productFormMapper'
+import {countCharsWithoutHtml} from '../../../shared/lib/htmlText'
 
 type TargetKey = React.MouseEvent | React.KeyboardEvent | string
 
 const EMPTY_DESCRIPTIONS: string[] = ['']
-
-const countCharsWithoutHtml = (html: string): number =>
-    html.replace(/<[^>]*>/g, '').trim().length
-
-const createDescriptionKey = (): string =>
-    `description-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 export const DescriptionsSection: React.FC = () => {
     const form = Form.useFormInstance<ProductFormValues>()
     const watchedDescriptions = Form.useWatch('descriptions', {form, preserve: true})
     const descriptions = watchedDescriptions ?? EMPTY_DESCRIPTIONS
 
-    const [descriptionKeys, setDescriptionKeys] = useState<string[]>(() =>
-        descriptions.map(createDescriptionKey)
-    )
-    const [activeKey, setActiveKey] = useState(() => descriptionKeys[0] ?? createDescriptionKey())
-
-    useEffect(() => {
-        setDescriptionKeys((currentKeys) => {
-            if (currentKeys.length === descriptions.length) {
-                return currentKeys
-            }
-
-            if (currentKeys.length < descriptions.length) {
-                const keysToAdd = Array.from(
-                    {length: descriptions.length - currentKeys.length},
-                    createDescriptionKey
-                )
-
-                return [...currentKeys, ...keysToAdd]
-            }
-
-            return currentKeys.slice(0, descriptions.length)
-        })
-    }, [descriptions.length])
-
-    useEffect(() => {
-        const firstKey = descriptionKeys[0]
-
-        if (!firstKey) {
-            return
-        }
-
-        const activeKeyExists = descriptionKeys.includes(activeKey)
-
-        if (!activeKeyExists) {
-            setActiveKey(firstKey)
-        }
-    }, [activeKey, descriptionKeys])
+    const tabsId = useId()
+    const descriptionKeys = descriptions.map((_, index) => `${tabsId}-${index}`)
+    const [activeIndex, setActiveIndex] = useState(0)
+    const resolvedActiveIndex = descriptions.length > 0
+        ? Math.min(activeIndex, descriptions.length - 1)
+        : 0
+    const resolvedActiveKey = descriptionKeys[resolvedActiveIndex]
 
     const setDescriptions = (nextDescriptions: string[]) => {
         form.setFieldValue('descriptions', nextDescriptions.length > 0 ? nextDescriptions : [''])
     }
 
     const handleAdd = () => {
-        const nextKey = createDescriptionKey()
-
-        setDescriptionKeys((currentKeys) => [...currentKeys, nextKey])
         setDescriptions([...descriptions, ''])
-        setActiveKey(nextKey)
+        setActiveIndex(descriptions.length)
     }
 
     const handleDelete = (targetKey: TargetKey) => {
@@ -82,14 +44,16 @@ export const DescriptionsSection: React.FC = () => {
         }
 
         const nextDescriptions = descriptions.filter((_, currentIndex) => currentIndex !== index)
-        const nextKeys = descriptionKeys.filter((key) => key !== targetKey)
 
-        setDescriptionKeys(nextKeys)
         setDescriptions(nextDescriptions)
 
-        if (targetKey === activeKey) {
-            const nextActiveIndex = index >= nextKeys.length ? index - 1 : index
-            setActiveKey(nextKeys[Math.max(0, nextActiveIndex)] ?? nextKeys[0])
+        if (index < resolvedActiveIndex) {
+            setActiveIndex(resolvedActiveIndex - 1)
+            return
+        }
+
+        if (index === resolvedActiveIndex) {
+            setActiveIndex(Math.max(0, Math.min(index, nextDescriptions.length - 1)))
         }
     }
 
@@ -122,8 +86,14 @@ export const DescriptionsSection: React.FC = () => {
         <Card title="📄 Описания" style={{marginBottom: 16}}>
             <Tabs
                 type="editable-card"
-                activeKey={activeKey}
-                onChange={setActiveKey}
+                activeKey={resolvedActiveKey}
+                onChange={(nextKey) => {
+                    const nextIndex = descriptionKeys.indexOf(nextKey)
+
+                    if (nextIndex !== -1) {
+                        setActiveIndex(nextIndex)
+                    }
+                }}
                 animated={{inkBar: true, tabPane: false}}
                 destroyOnHidden={false}
                 items={items}

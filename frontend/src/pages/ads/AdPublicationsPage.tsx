@@ -26,6 +26,7 @@ import {
     useLinkAvitoPublicationsMutation,
 } from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
+import {formatDateTime} from "../../shared/lib/formatDateTime";
 
 const {Title, Text} = Typography;
 
@@ -43,30 +44,6 @@ const publicationSourceLabel: Record<AdPublicationSource, string> = {
     auto: "Автогенерация",
     manual: "Ручной масс-постинг",
 };
-
-const dateTimeFormatter = new Intl.DateTimeFormat("ru-RU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-});
-
-const formatPublicationDateTime = (value: string | null | undefined): string => {
-    if (!value) {
-        return "не было";
-    }
-
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return "не было";
-    }
-
-    return dateTimeFormatter.format(date).replace(",", "");
-};
-
 
 export const AdPublicationsPage: React.FC = () => {
     const {currentWorkspace, canManageAvitoAccounts} = useCurrentWorkspace();
@@ -186,10 +163,10 @@ export const AdPublicationsPage: React.FC = () => {
             render: (_, publication) => (
                 <Space orientation="vertical" size={0}>
                     <Text type="secondary" style={{fontSize: 10}}>
-                        Последний экспорт: {formatPublicationDateTime(publication.last_exported_at)}
+                        Последний экспорт: {formatDateTime(publication.last_exported_at)}
                     </Text>
                     <Text type="secondary" style={{fontSize: 11, fontWeight: "bold"}}>
-                        Создано: {formatPublicationDateTime(publication.created_at)}
+                        Создано: {formatDateTime(publication.created_at)}
                     </Text>
                 </Space>
             ),

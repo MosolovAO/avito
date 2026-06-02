@@ -35,7 +35,7 @@ import {useAuth} from "../../features/auth/model/AuthProvider";
 import {WorkspaceSwitcher} from "../../features/workspace/components";
 
 const {Header, Content, Sider} = AntLayout;
-const {Text, Title} = Typography;
+const {Text} = Typography;
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -140,19 +140,6 @@ const routeByMenuKey: Record<MenuKey, string> = {
     manualMassPosting: "/manual-mass-posting/new",
     avitoAds: "/ads",
 };
-
-const userMenuItems: MenuProps["items"] = [
-    {
-        key: "profile",
-        label: "Профиль скоро появится",
-        disabled: true,
-    },
-    {
-        key: "settings",
-        label: "Настройки скоро появятся",
-        disabled: true,
-    },
-];
 
 const getSelectedMenuKey = (pathname: string): MenuKey => {
     if (pathname.startsWith("/workspace/users")) return "users";

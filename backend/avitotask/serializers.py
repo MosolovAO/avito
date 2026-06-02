@@ -799,6 +799,8 @@ class AdCreativeSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+    projects = serializers.SerializerMethodField()
+
     publications_count = serializers.IntegerField(read_only=True)
 
     class Meta:
@@ -817,6 +819,7 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "option_data",
             "identity_hash",
             "publications_count",
+            "projects",
             "created_at",
             "updated_at",
         ]
@@ -829,7 +832,41 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "source",
             "identity_hash",
             "publications_count",
+            "projects",
             "created_at",
+            "updated_at",
+        ]
+
+    def get_projects(self, instance):
+        projects_by_id = {}
+
+        for publication in instance.publications.all():
+            account = publication.avito_account
+            projects_by_id[account.id] = {
+                "id": account.id,
+                "name": account.name,
+            }
+
+        return sorted(
+            projects_by_id.values(),
+            key=lambda project: project["name"].lower(),
+        )
+
+
+class AdCreativeEditSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdCreative
+        fields = [
+            "id",
+            "title",
+            "description",
+            "image_urls",
+            "base_data",
+            "option_data",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
             "updated_at",
         ]
 
@@ -848,6 +885,8 @@ class AdCreativeUpdateSerializer(serializers.Serializer):
         required=False,
         allow_null=True
     )
+
+    expected_updated_at = serializers.DateTimeField(required=False)
 
     def validate(self, attrs):
         editable_fields = {

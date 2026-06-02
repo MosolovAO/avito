@@ -11,6 +11,7 @@ import {getApiErrorMessage} from "../../../shared/api/errors";
 import {requireWorkspaceId} from "../../../shared/api/workspaceHeaders";
 import {useCurrentWorkspace} from "../../workspace/model/useCurrentWorkspace";
 import type {
+    AdCreativeEdit,
     AdCreativesQueryParams,
     UpdateAdCreativeRequest,
 } from "../../../entities/avito/types";
@@ -31,6 +32,7 @@ export const useAdCreativesQuery = (params: AdCreativesQueryParams) => {
             params.source ?? null,
             params.task ?? null,
             params.batch ?? null,
+            params.avito_account ?? null,
             params.search ?? "",
         ],
         queryFn: () =>
@@ -42,16 +44,16 @@ export const useAdCreativesQuery = (params: AdCreativesQueryParams) => {
 export const useAdCreativeQuery = (creativeId: number | null) => {
     const {currentWorkspaceId} = useCurrentWorkspace();
 
-    return useQuery({
+    return useQuery<AdCreativeEdit, Error>({
         queryKey:
             creativeId === null
                 ? [...avitoKeys.creatives(currentWorkspaceId), "detail", null]
                 : [...avitoKeys.creatives(currentWorkspaceId), "detail", creativeId],
         queryFn: () =>
             getAdCreative(requireWorkspaceId(currentWorkspaceId), creativeId as number),
-        enabled: currentWorkspaceId !== null && creativeId !== null
-    })
-}
+        enabled: currentWorkspaceId !== null && creativeId !== null,
+    });
+};
 
 export const useUpdateAdCreativeMutation = () => {
     const queryClient = useQueryClient()

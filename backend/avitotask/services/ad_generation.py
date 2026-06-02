@@ -23,6 +23,14 @@ MAX_CREATIVE_GENERATION_ATTEMPTS = 50
 RECENT_CREATIVE_LOOKBACK_DAYS = 30
 DUPLICATE_CREATIVE_MATCH_THRESHOLD = 2
 
+AVITO_DEFAULT_CATEGORY = "Ремонт и строительство"
+
+
+def force_default_avito_category(base_data):
+    base_data = dict(base_data or {})
+    base_data["Category"] = AVITO_DEFAULT_CATEGORY
+    return base_data
+
 
 class AdGenerationError(Exception):
     """Ошибка генерации объявления из задачи."""
@@ -142,7 +150,7 @@ def create_manual_mass_posting(
     )
 
     image_urls = list(image_urls or [])
-    base_data = dict(base_data or {})
+    base_data = force_default_avito_category(base_data)
     option_data = dict(option_data or {})
 
     dedupe_data = build_creative_dedupe_data(
@@ -360,22 +368,46 @@ def render_description(*, processed_template, title, sku):
 
 
 def build_base_data(task):
-    base_data = dict(task.base_data or {})
+    base_data = force_default_avito_category(task.base_data)
 
     base_data.update({
-        "Category": task.category.category if task.category else "",
         "Price": task.price or 0,
     })
 
     return base_data
 
 
-def build_option_data(task):
-    assignments = task.adgenerationtaskoptionassignment_set.all()
+def normalize_option_data_value(assignment):
+    value = assignment.selected_value
 
-    return {
-        assigment.option.option_title_en: assigment.selected_value for assigment in assignments
-    }
+    if assignment.option.allow_multiple_options:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+
+        normalized = str(value).strip() if value is not None else ""
+        return [normalized] if normalized else []
+
+    if isinstance(value, list):
+        return str(value[0]).strip() if value else ""
+
+    return str(value).strip() if value is not None else ""
+
+
+def build_option_data(task):
+    assignments = task.adgenerationtaskoptionassignment_set.select_related("option")
+
+    option_data = {}
+
+    for assignment in assignments:
+        key = assignment.option.option_title_en.strip()
+        value = normalize_option_data_value(assignment)
+
+        if not key or value == [] or value == "":
+            continue
+
+        option_data[key] = value
+
+    return option_data
 
 
 def create_publications_for_creative(*, task, batch, creative):

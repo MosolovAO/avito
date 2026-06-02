@@ -19,7 +19,7 @@ interface FilePreview {
     revokeUrl: boolean
 }
 
-const MAX_FILES = 10
+const MAX_FILES = 200
 const MAX_FILE_SIZE = 2 * 1024 * 1024
 const ALLOWED_TYPES = ['image/jpeg', 'image/png']
 const FILE_ID_UNSAFE_CHARS_REGEXP = /[^a-zA-Z0-9]/g
