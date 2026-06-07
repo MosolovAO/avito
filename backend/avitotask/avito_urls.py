@@ -10,7 +10,6 @@ from avitotask.avito_api_views import (
     AvitoAccountRequestCsvExportView,
     AvitoAccountExcelImportApplyView,
     AvitoAccountExcelImportPreviewView,
-    AvitoAccountBulkListingDesiredStatusView,
     AvitoAccountListingLifecycleReportView,
     AvitoAccountBulkListingManagementStatusView,
     AvitoAccountListingUnmappedSummaryView,
@@ -18,6 +17,7 @@ from avitotask.avito_api_views import (
     AvitoAccountAutoloadReportSyncView,
     AvitoAccountAdsListView,
     AvitoAccountPublicCsvFeedView,
+    AvitoAccountAdsBulkLifecycleView,
 )
 
 urlpatterns = [
@@ -68,11 +68,6 @@ urlpatterns = [
         name="avito-account-excel-import-apply",
     ),
     path(
-        "accounts/<int:avito_account_id>/listings/bulk-desired-status/",
-        AvitoAccountBulkListingDesiredStatusView.as_view(),
-        name="avito-account-listings-bulk-desired-status",
-    ),
-    path(
         "accounts/<int:avito_account_id>/listings/lifecycle-report/",
         AvitoAccountListingLifecycleReportView.as_view(),
         name="avito-account-listing-lifecycle-report",
@@ -106,6 +101,11 @@ urlpatterns = [
         "feeds/<str:feed_token>/autoload.csv",
         AvitoAccountPublicCsvFeedView.as_view(),
         name="avito-account-public-csv-feed",
+    ),
+    path(
+        "accounts/<int:avito_account_id>/ads/bulk-lifecycle/",
+        AvitoAccountAdsBulkLifecycleView.as_view(),
+        name="avito-account-ads-bulk-lifecycle",
     ),
 
 ]

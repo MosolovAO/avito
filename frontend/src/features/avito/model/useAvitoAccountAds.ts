@@ -26,6 +26,8 @@ export const useAvitoAccountAdsQuery = (
             params.has_avito_id ?? "",
             params.has_errors ?? "",
             params.search ?? "",
+            params.address ?? "",
+            params.ordering ?? "",
         ],
         queryFn: () =>
             getAvitoAccountAds({

@@ -15,6 +15,11 @@ from avitotask.services.ad_export_state import (
     mark_avito_account_exporting,
 )
 
+from avitotask.services.ad_publication_dates import (
+    build_publication_default_date_end,
+    format_avito_date,
+)
+
 IMAGE_URLS_SEPARATOR = " | "
 CSV_DELIMITER = ";"
 MULTI_VALUE_SEPARATOR = ", "
@@ -89,10 +94,7 @@ def filter_row_to_approved_columns(row, approved_columns):
 
 
 def build_publication_date_end(publication):
-    created_at = publication.created_at or timezone.now()
-    date_end = created_at + timedelta(days=PUBLICATION_LIFETIME_DAYS)
-
-    return timezone.localtime(date_end).isoformat(timespec="seconds")
+    return format_avito_date(build_publication_default_date_end(publication))
 
 
 def build_publication_export_row(publication):

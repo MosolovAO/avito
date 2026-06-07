@@ -6,14 +6,22 @@ from django.utils import timezone
 
 from rest_framework.test import APIClient
 
+from avitotask.services.ad_publication_dates import (
+    extend_ad_creative_publications,
+    extend_ad_publication,
+    format_avito_date,
+    get_publication_effective_date_end,
+    inherit_creative_date_end_for_publication
+)
+
 from io import BytesIO
 from openpyxl import Workbook
 
 from avitotask.services.avito_import import import_avito_listings_for_account, upsert_avito_listing
 from avitotask.services.avito_listing_editing import (
-    bulk_update_avito_listing_desired_status,
     bulk_update_avito_listing_management_status,
 )
+from avitotask.services.ad_lifecycle import bulk_update_ads_lifecycle
 from avitotask.services.avito_listing_lifecycle import build_avito_listing_lifecycle_report
 
 from avitotask.services.avito_autoload import link_publications_to_avito_ids_for_account
@@ -477,6 +485,68 @@ class AvitoExcelImportFlowTests(TestCase):
             [unlinked_publication.id],
         )
 
+    def test_ads_api_filters_by_address(self):
+        matched_publication = self.create_publication_for_autoload_report(
+            row_id="SERVICE-ROW-ADDRESS-001",
+            address="Москва, Тестовая 1",
+        )
+        self.create_publication_for_autoload_report(
+            row_id="SERVICE-ROW-ADDRESS-002",
+            address="Санкт-Петербург, Невский 2",
+        )
+
+        matched_listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            row_id="LISTING-ADDRESS-001",
+            avito_id="1111111111",
+            title="Подходящее объявление",
+            description="Описание",
+            address="Москва, Лесная 7",
+        )
+        AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            row_id="LISTING-ADDRESS-002",
+            avito_id="2222222222",
+            title="Лишнее объявление",
+            description="Описание",
+            address="Казань, Кремлевская 3",
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.defaults["HTTP_X_WORKSPACE_ID"] = str(self.workspace.id)
+
+        url = reverse(
+            "avito-account-ads-list",
+            kwargs={"avito_account_id": self.avito_account.id},
+        )
+
+        response = client.get(
+            url,
+            {
+                "address": "москва",
+                "page": 1,
+                "page_size": 20,
+            },
+            HTTP_HOST="localhost",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        results = response.json()["results"]
+
+        self.assertEqual(
+            {(item["entity_type"], item["id"]) for item in results},
+            {
+                ("ad_publication", matched_publication.id),
+                ("avito_listing", matched_listing.id),
+            },
+        )
+
     def test_autoload_report_sync_api_links_publication_to_listing(self):
         publication = self.create_publication_for_autoload_report()
 
@@ -586,7 +656,7 @@ class AvitoExcelImportFlowTests(TestCase):
         listing = AvitoListing.objects.get(publication=publication)
         self.assertEqual(listing.avito_id, "2222222222")
 
-    def create_publication_for_autoload_report(self, row_id="SERVICE-ROW-001"):
+    def create_publication_for_autoload_report(self, row_id="SERVICE-ROW-001", address="Москва"):
         batch = AdBatch.objects.create(
             workspace=self.workspace,
             source=AdBatch.Source.MANUAL,
@@ -618,7 +688,7 @@ class AvitoExcelImportFlowTests(TestCase):
             source=AdPublication.Source.MANUAL,
             status=AdPublication.Status.ACTIVE,
             row_id=row_id,
-            address="Москва",
+            address=address,
         )
 
     def test_autoload_report_sync_links_publication_to_avito_listing(self):
@@ -879,7 +949,7 @@ class AvitoExcelImportFlowTests(TestCase):
         stream.name = "avito_listings.xlsx"
         return stream
 
-    def test_bulk_desired_status_updates_managed_excel_listings(self):
+    def test_bulk_lifecycle_pause_updates_managed_excel_listings(self):
         import_avito_excel_file(
             workspace=self.workspace,
             avito_account=self.avito_account,
@@ -892,18 +962,22 @@ class AvitoExcelImportFlowTests(TestCase):
             avito_id="8036155996",
         )
 
-        result = bulk_update_avito_listing_desired_status(
+        result = bulk_update_ads_lifecycle(
             workspace=self.workspace,
             avito_account=self.avito_account,
-            listing_ids=[listing.id],
-            desired_status=AvitoListing.DesiredStatus.PAUSE,
+            items=[
+                {
+                    "entity_type": "avito_listing",
+                    "id": listing.id,
+                },
+            ],
+            action="pause",
         )
 
         self.assertEqual(result["requested"], 1)
-        self.assertEqual(result["matched"], 1)
         self.assertEqual(result["updated"], 1)
-        self.assertEqual(result["missing"], 0)
-        self.assertEqual(result["desired_status"], "pause")
+        self.assertEqual(result["listings"]["matched"], 1)
+        self.assertEqual(result["listings"]["missing"], 0)
 
         listing.refresh_from_db()
         self.assertEqual(listing.desired_status, AvitoListing.DesiredStatus.PAUSE)
@@ -1292,6 +1366,396 @@ class AdScheduleCalculationTests(TestCase):
 
 
 class AdGenerationServiceTests(TestCase):
+
+    def test_inherit_creative_date_end_removes_publication_override(self):
+        user = User.objects.create_user(email="inherit-date-end-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Inherit date end workspace",
+            slug="inherit-date-end-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Inherit DateEnd Account",
+            export_status=AvitoAccount.ExportStatus.CLEAN,
+        )
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Inherit DateEnd Address"],
+            title="Inherit DateEnd title",
+            description="Inherit DateEnd description",
+            image_urls=["https://example.com/inherit-date-end.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        publication = update_ad_publication(
+            publication_id=result.publications[0].id,
+            workspace=workspace,
+            overrides={"DateEnd": "2099-06-15"},
+        )
+
+        self.assertEqual(publication.overrides["DateEnd"], "2099-06-15")
+
+        updated_publication = inherit_creative_date_end_for_publication(
+            publication_id=publication.id,
+            workspace=workspace,
+        )
+
+        account.refresh_from_db()
+
+        self.assertNotIn("DateEnd", updated_publication.overrides)
+        self.assertEqual(
+            format_avito_date(get_publication_effective_date_end(updated_publication)),
+            "2099-05-30",
+        )
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.DIRTY)
+
+    def test_inherit_creative_date_end_api_removes_publication_override(self):
+        user = User.objects.create_user(email="inherit-date-end-api-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Inherit date end API workspace",
+            slug="inherit-date-end-api-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Inherit DateEnd API Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Inherit DateEnd API Address"],
+            title="Inherit DateEnd API title",
+            description="Inherit DateEnd API description",
+            image_urls=["https://example.com/inherit-date-end-api.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        publication = update_ad_publication(
+            publication_id=result.publications[0].id,
+            workspace=workspace,
+            overrides={"DateEnd": "2099-06-15"},
+        )
+
+        client = self.create_api_client_for_workspace(user=user, workspace=workspace)
+
+        response = client.patch(f"/api/ad-publications/{publication.id}/inherit-creative-date-end/")
+
+        publication.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("DateEnd", publication.overrides)
+        self.assertEqual(response.data["effective_date_end"], "2099-05-30")
+        self.assertEqual(response.data["date_end_source"], "creative")
+        
+    def test_generate_ads_from_task_sets_creative_date_end_by_default(self):
+        user = User.objects.create_user(email="auto-date-end-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Auto date end workspace",
+            slug="auto-date-end-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Auto DateEnd Account")
+
+        task = AdGenerationTask.objects.create(
+            workspace=workspace,
+            name="Auto DateEnd task",
+            is_active=True,
+            titles=["Auto DateEnd title"],
+            descriptions={"1": "Auto DateEnd description"},
+            addresses=["Auto DateEnd Address"],
+            price=500,
+            base_data={},
+        )
+        self.attach_task_images(task, main_urls=["https://example.com/auto-date-end.jpg"])
+        task.avito_accounts.add(account)
+
+        result = generate_ads_from_task(task.id, workspace=workspace)
+
+        expected_date_end = format_avito_date(
+            timezone.localdate() + timedelta(days=30)
+        )
+
+        self.assertEqual(result.creative.base_data["DateEnd"], expected_date_end)
+
+    def test_create_manual_mass_posting_sets_creative_date_end_by_default(self):
+        user = User.objects.create_user(email="manual-date-end-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Manual date end workspace",
+            slug="manual-date-end-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Manual DateEnd Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Manual DateEnd Address"],
+            title="Manual DateEnd title",
+            description="Manual DateEnd description",
+            image_urls=["https://example.com/manual-date-end.jpg"],
+            base_data={"Price": 500},
+            option_data={},
+        )
+
+        expected_date_end = format_avito_date(
+            timezone.localdate() + timedelta(days=30)
+        )
+
+        self.assertEqual(result.creative.base_data["DateEnd"], expected_date_end)
+
+    def test_build_publication_export_row_sets_default_date_end_as_date_only(self):
+        user = User.objects.create_user(email="date-default-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Date default workspace",
+            slug="date-default-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Date Default Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Date Address"],
+            title="Date title",
+            description="Date description",
+            image_urls=["https://example.com/date.jpg"],
+            base_data={"Price": 500},
+            option_data={},
+        )
+
+        creative_base_data = dict(result.creative.base_data or {})
+        creative_base_data.pop("DateEnd", None)
+        result.creative.base_data = creative_base_data
+        result.creative.save(update_fields=["base_data", "updated_at"])
+
+        publication = result.publications[0]
+        publication.created_at = timezone.make_aware(
+            datetime(2099, 5, 1, 12, 0, 0),
+            timezone.get_current_timezone(),
+        )
+        publication.save(update_fields=["created_at"])
+
+        row = build_publication_export_row(publication)
+
+        self.assertEqual(row["DateEnd"], "2099-05-31")
+
+    def test_extend_ad_creative_updates_shared_date_end_and_keeps_publication_override(self):
+        user = User.objects.create_user(email="creative-extend-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Creative extend workspace",
+            slug="creative-extend-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Creative Extend Account",
+            export_status=AvitoAccount.ExportStatus.CLEAN,
+        )
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Extend Address 1", "Extend Address 2"],
+            title="Extend title",
+            description="Extend description",
+            image_urls=["https://example.com/extend.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        first_publication = result.publications[0]
+        second_publication = result.publications[1]
+
+        update_ad_publication(
+            publication_id=first_publication.id,
+            workspace=workspace,
+            overrides={"DateEnd": "2099-06-15"},
+        )
+
+        updated_creative = extend_ad_creative_publications(
+            creative_id=result.creative.id,
+            workspace=workspace,
+        )
+
+        first_publication.refresh_from_db()
+        second_publication.refresh_from_db()
+        account.refresh_from_db()
+
+        self.assertEqual(updated_creative.base_data["DateEnd"], "2099-06-29")
+        self.assertEqual(first_publication.overrides["DateEnd"], "2099-06-15")
+        self.assertEqual(
+            format_avito_date(get_publication_effective_date_end(first_publication)),
+            "2099-06-15",
+        )
+        self.assertEqual(
+            format_avito_date(get_publication_effective_date_end(second_publication)),
+            "2099-06-29",
+        )
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.DIRTY)
+
+    def test_extend_ad_publication_sets_individual_date_end_override(self):
+        user = User.objects.create_user(email="publication-extend-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Publication extend workspace",
+            slug="publication-extend-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(
+            workspace=workspace,
+            name="Publication Extend Account",
+            export_status=AvitoAccount.ExportStatus.CLEAN,
+        )
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Publication Extend Address"],
+            title="Publication extend title",
+            description="Publication extend description",
+            image_urls=["https://example.com/publication-extend.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        publication = extend_ad_publication(
+            publication_id=result.publications[0].id,
+            workspace=workspace,
+        )
+
+        account.refresh_from_db()
+
+        self.assertEqual(publication.overrides["DateEnd"], "2099-06-29")
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.DIRTY)
+
+    def test_extend_ad_creative_does_not_activate_paused_or_archived_publications(self):
+        user = User.objects.create_user(email="paused-extend-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Paused extend workspace",
+            slug="paused-extend-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Paused Extend Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Paused Address", "Archived Address"],
+            title="Paused title",
+            description="Paused description",
+            image_urls=["https://example.com/paused.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        paused_publication = result.publications[0]
+        archived_publication = result.publications[1]
+
+        update_ad_publication(
+            publication_id=paused_publication.id,
+            workspace=workspace,
+            status=AdPublication.Status.PAUSED,
+        )
+        update_ad_publication(
+            publication_id=archived_publication.id,
+            workspace=workspace,
+            status=AdPublication.Status.ARCHIVED,
+        )
+
+        extend_ad_creative_publications(
+            creative_id=result.creative.id,
+            workspace=workspace,
+        )
+
+        paused_publication.refresh_from_db()
+        archived_publication.refresh_from_db()
+
+        self.assertEqual(paused_publication.status, AdPublication.Status.PAUSED)
+        self.assertEqual(archived_publication.status, AdPublication.Status.ARCHIVED)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = export_avito_account_publications_to_csv(
+                workspace=workspace,
+                avito_account=account,
+                output_dir=Path(temp_dir),
+            )
+
+            with open(file_path, newline="", encoding="utf-8") as csv_file:
+                rows = list(csv.DictReader(csv_file, delimiter=";"))
+
+        self.assertEqual(rows, [])
+
+    def test_extend_ad_publication_api_sets_individual_date_end_override(self):
+        user = User.objects.create_user(email="publication-api-extend-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Publication API extend workspace",
+            slug="publication-api-extend-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Publication API Extend Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Publication API Extend Address"],
+            title="Publication API extend title",
+            description="Publication API extend description",
+            image_urls=["https://example.com/publication-api-extend.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        client = self.create_api_client_for_workspace(user=user, workspace=workspace)
+
+        response = client.patch(f"/api/ad-publications/{result.publications[0].id}/extend/")
+
+        result.publications[0].refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(result.publications[0].overrides["DateEnd"], "2099-06-29")
+        self.assertEqual(response.data["effective_date_end"], "2099-06-29")
+        self.assertEqual(response.data["date_end_source"], "publication")
+
+    def test_extend_ad_creative_api_updates_shared_date_end(self):
+        user = User.objects.create_user(email="creative-api-extend-owner@example.com", password="test")
+        workspace = Workspace.objects.create(
+            name="Creative API extend workspace",
+            slug="creative-api-extend-workspace",
+            owner=user,
+        )
+        account = AvitoAccount.objects.create(workspace=workspace, name="Creative API Extend Account")
+
+        result = create_manual_mass_posting(
+            workspace=workspace,
+            user=user,
+            avito_accounts=[account],
+            addresses=["Creative API Extend Address"],
+            title="Creative API extend title",
+            description="Creative API extend description",
+            image_urls=["https://example.com/creative-api-extend.jpg"],
+            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            option_data={},
+        )
+
+        client = self.create_api_client_for_workspace(user=user, workspace=workspace)
+
+        response = client.patch(f"/api/ad-creatives/{result.creative.id}/extend-publications/")
+
+        result.creative.refresh_from_db()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(result.creative.base_data["DateEnd"], "2099-06-29")
+        self.assertEqual(response.data["base_data"]["DateEnd"], "2099-06-29")
 
     def test_build_option_data_normalizes_single_and_multiple_option_values(self):
         user = User.objects.create_user(email="option-data-normalize@example.com", password="test")

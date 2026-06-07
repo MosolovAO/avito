@@ -16,7 +16,9 @@ export {useAvitoListingsQuery} from "./model/useAvitoListings";
 export {
     useAdPublicationQuery,
     useAdPublicationsQuery,
+    useExtendAdPublicationMutation,
     useUpdateAdPublicationMutation,
+    useInheritAdPublicationCreativeDateEndMutation
 } from "./model/useAdPublications";
 
 export {
@@ -30,6 +32,7 @@ export {
     useAdCreativeQuery,
     useAdCreativesQuery,
     useDeleteAdCreativeMutation,
+    useExtendAdCreativePublicationsMutation,
     useUpdateAdCreativeMutation,
 } from "./model/useAdCreatives";
 
@@ -41,7 +44,7 @@ export {
 } from "./model/useAvitoExcelImport";
 
 export {
-    useBulkUpdateAvitoListingDesiredStatusMutation,
+    useBulkUpdateAvitoAdsLifecycleMutation,
     useBulkUpdateAvitoListingManagementStatusMutation,
 } from "./model/useAvitoListingBulkActions";
 
@@ -51,6 +54,7 @@ export {
 
 export {
     useUpdateAvitoListingMutation,
+    useExtendAvitoListingMutation
 } from "./model/useAvitoListingEditing";
 export {
     useAvitoListingUnmappedSummaryQuery,
@@ -63,3 +67,5 @@ export {
 export {
     useAvitoAccountAdsQuery,
 } from "./model/useAvitoAccountAds";
+
+export {AdLifecycleBulkActions} from "./components/AdLifecycleBulkActions";

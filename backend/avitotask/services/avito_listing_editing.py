@@ -3,6 +3,13 @@ from avitotask.services.ad_editing import AdEditingError
 from avitotask.services.ad_export_state import mark_avito_accounts_export_dirty
 from django.utils import timezone
 
+from avitotask.services.ad_publication_dates import (
+    DATE_END_FIELD,
+    extend_date_end,
+    format_avito_date,
+    parse_avito_date,
+)
+
 
 def update_avito_listing(
         *,
@@ -95,49 +102,44 @@ def update_avito_listing(
     return listing
 
 
-def bulk_update_avito_listing_desired_status(
-        *,
-        workspace,
-        avito_account,
-        listing_ids,
-        desired_status,
-):
-    if avito_account.workspace_id != workspace.id:
-        raise AdEditingError("Аккаунт Avito принадлежит другому workspace.")
+def get_avito_listing_date_end(listing):
+    return parse_avito_date(
+        (listing.base_data or {}).get(DATE_END_FIELD)
+        or (listing.raw_data or {}).get("AvitoDateEnd")
+    )
 
-    if desired_status not in AvitoListing.DesiredStatus.values:
-        raise AdEditingError("Некорректное желаемое состояние объявления.")
 
-    queryset = AvitoListing.objects.filter(
+def get_avito_listing_date_end_source(listing):
+    return "avito" if get_avito_listing_date_end(listing) else "none"
+
+
+def extend_avito_listing_date_end(*, listing_id, workspace):
+    listing = AvitoListing.objects.select_related("avito_account").get(
+        id=listing_id,
         workspace=workspace,
-        avito_account=avito_account,
-        id__in=listing_ids,
-        source__in=[
-            AvitoListing.Source.AVITO_EXCEL,
-            AvitoListing.Source.SERVICE,
-        ],
-        management_status=AvitoListing.ManagementStatus.MANAGED,
     )
 
-    found_count = queryset.count()
+    if listing.source != AvitoListing.Source.AVITO_EXCEL:
+        raise AdEditingError("Продлевать напрямую можно только объявления, импортированные из XLSX Avito.")
 
-    updated_count = queryset.update(
-        desired_status=desired_status,
-        updated_at=timezone.now(),
-    )
+    if listing.management_status not in [
+        AvitoListing.ManagementStatus.MANAGED,
+        AvitoListing.ManagementStatus.OUT_OF_SYNC,
+    ]:
+        raise AdEditingError("Это объявление не находится под управлением сервиса.")
 
-    missing_count = len(set(listing_ids)) - found_count
+    next_date_end = extend_date_end(get_avito_listing_date_end(listing))
 
-    if updated_count:
-        mark_avito_accounts_export_dirty([avito_account.id])
+    base_data = dict(listing.base_data or {})
+    base_data[DATE_END_FIELD] = format_avito_date(next_date_end)
 
-    return {
-        "requested": len(listing_ids),
-        "matched": found_count,
-        "updated": updated_count,
-        "missing": missing_count,
-        "desired_status": desired_status.value if hasattr(desired_status, "value") else str(desired_status),
-    }
+    listing.base_data = base_data
+    listing.desired_status = AvitoListing.DesiredStatus.PUBLISH
+    listing.save(update_fields=["base_data", "desired_status", "updated_at"])
+
+    mark_avito_accounts_export_dirty([listing.avito_account_id])
+
+    return listing
 
 
 def bulk_update_avito_listing_management_status(

@@ -26,7 +26,6 @@ import type {
     AvitoExcelImportApplyResponse,
     AvitoExcelImportPreviewResponse,
     AvitoListingLifecycleReport,
-    BulkAvitoListingDesiredStatusRequest,
     BulkAvitoListingManagementStatusRequest,
     BulkAvitoListingStatusResponse,
     UpdateAvitoListingRequest,
@@ -34,6 +33,8 @@ import type {
     AvitoListingRemapImportFieldsResponse,
     AvitoAccountAdsQueryParams,
     AvitoAccountAdsResponse,
+    BulkAvitoAdLifecycleRequest,
+    BulkAvitoAdLifecycleResponse,
 } from "../../entities/avito/types";
 
 import type {PaginatedResponse} from "./pagination";
@@ -336,6 +337,21 @@ export const updateAdCreative = async (
     return response.data
 }
 
+export const extendAdCreativePublications = async (
+    workspaceId: number,
+    creativeId: number,
+): Promise<AdCreative> => {
+    const response = await api.patch<AdCreative>(
+        `/api/ad-creatives/${creativeId}/extend-publications/`,
+        undefined,
+        {
+            headers: getWorkspaceHeaders(workspaceId),
+        },
+    );
+
+    return response.data;
+};
+
 export const deleteAdCreative = async (
     workspaceId: number,
     creativeId: number,
@@ -364,6 +380,35 @@ export const updateAdPublication = async (
     return response.data;
 };
 
+export const extendAdPublication = async (
+    workspaceId: number,
+    publicationId: number,
+): Promise<AdPublication> => {
+    const response = await api.patch<AdPublication>(
+        `/api/ad-publications/${publicationId}/extend/`,
+        undefined,
+        {
+            headers: getWorkspaceHeaders(workspaceId),
+        },
+    );
+
+    return response.data;
+};
+
+export const inheritAdPublicationCreativeDateEnd = async (
+    workspaceId: number,
+    publicationId: number,
+): Promise<AdPublication> => {
+    const response = await api.patch<AdPublication>(
+        `/api/ad-publications/${publicationId}/inherit-creative-date-end/`,
+        undefined,
+        {
+            headers: getWorkspaceHeaders(workspaceId),
+        },
+    );
+
+    return response.data;
+};
 export const getAdPublication = async (
     workspaceId: number,
     publicationId: number,
@@ -441,15 +486,15 @@ export const applyAvitoExcelImport = async ({
     return response.data;
 };
 
-export const bulkUpdateAvitoListingDesiredStatus = async ({
-                                                              workspaceId,
-                                                              avitoAccountId,
-                                                              payload,
-                                                          }: AvitoAccountRequest & {
-    payload: BulkAvitoListingDesiredStatusRequest;
-}): Promise<BulkAvitoListingStatusResponse> => {
-    const response = await api.post<BulkAvitoListingStatusResponse>(
-        `/api/avito/accounts/${avitoAccountId}/listings/bulk-desired-status/`,
+export const bulkUpdateAvitoAdsLifecycle = async ({
+                                                      workspaceId,
+                                                      avitoAccountId,
+                                                      payload,
+                                                  }: AvitoAccountRequest & {
+    payload: BulkAvitoAdLifecycleRequest;
+}): Promise<BulkAvitoAdLifecycleResponse> => {
+    const response = await api.post<BulkAvitoAdLifecycleResponse>(
+        `/api/avito/accounts/${avitoAccountId}/ads/bulk-lifecycle/`,
         payload,
         {
             headers: getWorkspaceHeaders(workspaceId),
@@ -539,6 +584,19 @@ export const updateAvitoListing = async (
         {
             headers: getWorkspaceHeaders(workspaceId),
         },
+    );
+
+    return response.data;
+};
+
+export const extendAvitoListing = async (
+    workspaceId: number,
+    listingId: number,
+): Promise<AvitoListing> => {
+    const response = await api.patch<AvitoListing>(
+        `/api/avito-listings/${listingId}/extend/`,
+        undefined,
+        {headers: getWorkspaceHeaders(workspaceId)},
     );
 
     return response.data;

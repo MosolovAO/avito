@@ -124,14 +124,7 @@ export const ProductList: React.FC<ProductListProps> = ({
     }))
 
     const columns: ColumnsType<Product> = [
-        {
-            title: 'ID',
-            dataIndex: 'id',
-            key: 'id',
-            width: 70,
-            sorter: (a, b) => a.id - b.id,
-            defaultSortOrder: 'ascend'
-        },
+
         {
             title: 'Название',
             dataIndex: 'name',
@@ -184,7 +177,7 @@ export const ProductList: React.FC<ProductListProps> = ({
             title: 'Заголовков',
             dataIndex: 'titles',
             key: 'titles_count',
-            width: 100,
+            width: 120,
             render: (titles: string[]) => titles?.length || 0,
         },
 
@@ -307,7 +300,6 @@ export const ProductList: React.FC<ProductListProps> = ({
                 rowKey="id"
                 loading={loading}
                 pagination={{pageSize: 10}}
-                size="middle"
                 tableLayout="fixed"
                 scroll={{x: 1280}}
 

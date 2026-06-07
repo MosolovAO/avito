@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from "react";
+import React, {useCallback, useEffect, useMemo, useState} from "react";
 import {useNavigate} from "react-router-dom";
 import {
     Alert,
@@ -13,36 +13,52 @@ import {
     Drawer,
     Form,
     message,
+    Col,
+    Row,
+    Spin,
 } from "antd";
-import type {TablePaginationConfig, TableProps} from "antd";
+import type {FormInstance, TablePaginationConfig, TableProps} from "antd";
 import {
     CloudDownloadOutlined,
     FileSyncOutlined,
     LinkOutlined,
     SearchOutlined,
-    PauseCircleOutlined,
-    PlayCircleOutlined,
-    StopOutlined,
     EditOutlined,
+    CalendarOutlined,
+    FilterOutlined,
 } from "@ant-design/icons";
-
+import {
+    dateDeadlineColor,
+    formatDate,
+    getDateDeadlineTone,
+} from "../../shared/lib/formatDateTime";
 import {
     useAvitoAccountAdsQuery,
     useAvitoProjectsQuery,
     useDownloadAvitoCsvMutation,
     useRequestAvitoCsvExportMutation,
-    useBulkUpdateAvitoListingDesiredStatusMutation,
+    useBulkUpdateAvitoAdsLifecycleMutation,
     useUpdateAvitoListingMutation,
+    useExtendAvitoListingMutation,
+    useExtendAdPublicationMutation,
+    useUpdateAdPublicationMutation,
+    useAdPublicationQuery,
+    AdLifecycleBulkActions
 } from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import type {
     AvitoAccountAd,
     AvitoAccountAdsQueryParams,
-    AvitoListingDesiredStatus,
+    AvitoAdLifecycleAction,
     AvitoExportStatus,
     JsonObject,
     UpdateAvitoListingRequest,
+    AdPublicationStatus,
 } from "../../entities/avito/types";
+import {
+    buildPublicationEditInitialValues,
+    buildPublicationUpdateRequest,
+} from "../../features/avito/lib/adPublicationEditMapper";
 
 interface ListingEditFormValues {
     title: string;
@@ -54,6 +70,14 @@ interface ListingEditFormValues {
     base_data_json: string;
     option_data_json: string;
 }
+
+interface AdEditFormValues extends ListingEditFormValues {
+    status: AdPublicationStatus;
+}
+
+type EditingAdState =
+    | { type: "avito_listing"; item: AvitoAccountAd }
+    | { type: "ad_publication"; item: AvitoAccountAd };
 
 const stringifyJsonForForm = (value: JsonObject): string =>
     JSON.stringify(value ?? {}, null, 2);
@@ -79,7 +103,9 @@ const parseImageUrls = (value: string): string[] =>
 
 const {Title, Text} = Typography;
 
-const pageSize = 50;
+type JsonTextFieldName = "base_data_json" | "option_data_json";
+
+const pageSize = 30;
 
 const entityTypeLabel: Record<string, string> = {
     avito_listing: "Avito",
@@ -133,6 +159,126 @@ const managementStatusLabel: Record<string, string> = {
     out_of_sync: "Расхождение",
 };
 
+const dateEndSourceLabel: Record<AvitoAccountAd["date_end_source"], string> = {
+    avito: "Avito",
+    publication: "Публикация",
+    creative: "Креатив",
+    default: "30 дней",
+    none: "Нет данных",
+};
+
+interface JsonObjectInputsProps {
+    form: FormInstance<AdEditFormValues>;
+    name: JsonTextFieldName;
+    title: string;
+    emptyText: string;
+}
+
+
+const parseJsonObjectForInputs = (value: string | undefined): JsonObject => {
+    try {
+        const parsed = JSON.parse(value || "{}");
+
+        if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+            return {};
+        }
+
+        return parsed as JsonObject;
+    } catch {
+        return {};
+    }
+};
+
+const formatJsonInputValue = (value: unknown): string => {
+    if (value === null || value === undefined) {
+        return "";
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(String).join(", ");
+    }
+
+    if (typeof value === "object") {
+        return JSON.stringify(value);
+    }
+
+    return String(value);
+};
+
+const coerceJsonInputValue = (previousValue: unknown, rawValue: string): unknown => {
+    if (Array.isArray(previousValue)) {
+        return rawValue
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean);
+    }
+
+    if (typeof previousValue === "number") {
+        const numberValue = Number(rawValue.replace(",", "."));
+        return Number.isFinite(numberValue) ? numberValue : rawValue;
+    }
+
+    if (typeof previousValue === "boolean") {
+        if (rawValue === "true") return true;
+        if (rawValue === "false") return false;
+        return rawValue;
+    }
+
+    if (previousValue !== null && typeof previousValue === "object") {
+        try {
+            return JSON.parse(rawValue);
+        } catch {
+            return rawValue;
+        }
+    }
+
+    return rawValue;
+};
+
+const JsonObjectInputs: React.FC<JsonObjectInputsProps> = ({
+                                                               form,
+                                                               name,
+                                                               title,
+                                                               emptyText,
+                                                           }) => (
+    <Form.Item noStyle shouldUpdate={(prev, next) => prev[name] !== next[name]}>
+        {() => {
+            const data = parseJsonObjectForInputs(form.getFieldValue(name) as string | undefined);
+            const entries = Object.entries(data);
+
+            return (
+                <Space direction="vertical" size={12} style={{width: "100%"}}>
+                    <Text strong>{title}</Text>
+
+                    {entries.length === 0 ? (
+                        <Text type="secondary">{emptyText}</Text>
+                    ) : (
+                        <Row gutter={[12, 12]}>
+                            {entries.map(([key, value]) => (
+                                <Col key={key} xs={24} md={12}>
+                                    <Form.Item label={key} style={{marginBottom: 0}}>
+                                        <Input
+                                            value={formatJsonInputValue(value)}
+                                            onChange={(event) => {
+                                                const nextData = {
+                                                    ...data,
+                                                    [key]: coerceJsonInputValue(value, event.target.value),
+                                                };
+
+                                                form.setFieldValue(name, JSON.stringify(nextData, null, 2));
+                                            }}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                            ))}
+                        </Row>
+                    )}
+                </Space>
+            );
+        }}
+    </Form.Item>
+);
+
 const getAutoloadState = (item: AvitoAccountAd): AutoloadState => {
     if (item.has_errors || item.status === "error") {
         return "error";
@@ -156,9 +302,14 @@ const getAutoloadState = (item: AvitoAccountAd): AutoloadState => {
 
 export const AvitoAdsPage: React.FC = () => {
 
-    const [editForm] = Form.useForm<ListingEditFormValues>();
-    const [editingListing, setEditingListing] = useState<AvitoAccountAd | null>(null);
+    const [editForm] = Form.useForm<AdEditFormValues>();
+    const [editingAd, setEditingAd] = useState<EditingAdState | null>(null);
+    const editingListing = editingAd?.type === "avito_listing" ? editingAd.item : null;
+    const editingPublication = editingAd?.type === "ad_publication" ? editingAd.item : null;
+    const editingPublicationId = editingPublication?.publication ?? editingPublication?.id ?? null;
     const updateListingMutation = useUpdateAvitoListingMutation();
+    const updatePublicationMutation = useUpdateAdPublicationMutation();
+    const publicationQuery = useAdPublicationQuery(editingPublicationId);
 
     const {currentWorkspace} = useCurrentWorkspace();
     const navigate = useNavigate();
@@ -171,7 +322,14 @@ export const AvitoAdsPage: React.FC = () => {
     const [hasErrors, setHasErrors] =
         useState<AvitoAccountAdsQueryParams["has_errors"]>("");
     const [search, setSearch] = useState("");
-    const [selectedListingIds, setSelectedListingIds] = useState<number[]>([]);
+    const [addressFilter, setAddressFilter] = useState("");
+    const [dateEndOrdering, setDateEndOrdering] =
+        useState<AvitoAccountAdsQueryParams["ordering"]>("");
+    const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
+    const [selectedAdItems, setSelectedAdItems] = useState<Array<{
+        entity_type: AvitoAccountAd["entity_type"];
+        id: number;
+    }>>([]);
 
     const [isExportPollingEnabled, setIsExportPollingEnabled] = useState(false);
 
@@ -182,11 +340,39 @@ export const AvitoAdsPage: React.FC = () => {
 
     const requestCsvExportMutation = useRequestAvitoCsvExportMutation();
     const downloadCsvMutation = useDownloadAvitoCsvMutation();
-    const bulkDesiredStatusMutation = useBulkUpdateAvitoListingDesiredStatusMutation();
+    const bulkLifecycleMutation = useBulkUpdateAvitoAdsLifecycleMutation();
+    const extendListingMutation = useExtendAvitoListingMutation();
+    const extendPublicationMutation = useExtendAdPublicationMutation();
 
     const selectedAvitoAccount = (projectsQuery.data ?? []).find(
         (account) => account.id === avitoAccountId,
     );
+
+    const activeFiltersCount = useMemo(
+        () =>
+            [
+                entityType,
+                hasAvitoId,
+                hasErrors,
+                addressFilter.trim(),
+                dateEndOrdering,
+            ].filter(Boolean).length,
+        [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors],
+    );
+
+    const resetPage = useCallback(() => {
+        setPage(1);
+        setSelectedAdItems([]);
+    }, []);
+
+    const resetFilters = useCallback(() => {
+        setEntityType("");
+        setHasAvitoId("");
+        setHasErrors("");
+        setAddressFilter("");
+        setDateEndOrdering("");
+        resetPage();
+    }, [resetPage]);
 
     const isCsvExportInProgress =
         selectedAvitoAccount?.export_status === "queued" ||
@@ -197,22 +383,39 @@ export const AvitoAdsPage: React.FC = () => {
         Boolean(selectedAvitoAccount.export_file_path);
 
     useEffect(() => {
-        if (!editingListing) {
+        if (!editingAd) {
             editForm.resetFields();
             return;
         }
 
+        if (editingAd.type === "ad_publication") {
+            if (!publicationQuery.data) {
+                editForm.resetFields();
+                return;
+            }
+
+            editForm.setFieldsValue(
+                buildPublicationEditInitialValues(
+                    editingAd.item,
+                    publicationQuery.data.overrides,
+                ),
+            );
+            return;
+        }
+
+        const listing = editingAd.item;
+
         editForm.setFieldsValue({
-            title: editingListing.title ?? "",
-            description: editingListing.description ?? "",
-            address: editingListing.address ?? "",
-            desired_status: editingListing.desired_status ?? "publish",
-            management_status: editingListing.management_status ?? "managed",
-            image_urls_text: stringifyImageUrlsForForm(editingListing.image_urls),
-            base_data_json: stringifyJsonForForm(editingListing.base_data),
-            option_data_json: stringifyJsonForForm(editingListing.option_data),
+            title: listing.title ?? "",
+            description: listing.description ?? "",
+            address: listing.address ?? "",
+            desired_status: listing.desired_status ?? "publish",
+            management_status: listing.management_status ?? "managed",
+            image_urls_text: stringifyImageUrlsForForm(listing.image_urls),
+            base_data_json: stringifyJsonForForm(listing.base_data),
+            option_data_json: stringifyJsonForForm(listing.option_data),
         });
-    }, [editForm, editingListing]);
+    }, [editForm, editingAd, publicationQuery.data]);
 
     useEffect(() => {
         if (isCsvExportInProgress && !isExportPollingEnabled) {
@@ -250,34 +453,42 @@ export const AvitoAdsPage: React.FC = () => {
             has_avito_id: hasAvitoId,
             has_errors: hasErrors,
             search: search.trim(),
+            address: addressFilter.trim(),
+            ordering: dateEndOrdering,
         }),
-        [entityType, hasAvitoId, hasErrors, page, search],
+        [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors, page, search],
     );
 
     const adsQuery = useAvitoAccountAdsQuery(avitoAccountId, queryParams);
 
-    const rowSelection: TableProps<AvitoAccountAd>["rowSelection"] = {
-        selectedRowKeys: selectedListingIds.map((id) => `avito_listing-${id}`),
+    const selectedAdKeys = useMemo(
+        () => selectedAdItems.map((item) => `${item.entity_type}-${item.id}`),
+        [selectedAdItems],
+    );
+
+    const rowSelection = useMemo<TableProps<AvitoAccountAd>["rowSelection"]>(() => ({
+        selectedRowKeys: selectedAdKeys,
         onChange: (_, selectedRows) => {
-            setSelectedListingIds(
+            setSelectedAdItems(
                 selectedRows
-                    .filter((item) => item.entity_type === "avito_listing")
-                    .map((item) => item.id),
+                    .filter((item) => item.avito_account === avitoAccountId)
+                    .map((item) => ({
+                        entity_type: item.entity_type,
+                        id: item.id,
+                    })),
             );
         },
         getCheckboxProps: (item) => ({
-            disabled:
-                item.entity_type !== "avito_listing" ||
-                item.avito_account !== avitoAccountId,
+            disabled: item.avito_account !== avitoAccountId,
         }),
-    };
+    }), [avitoAccountId, selectedAdKeys]);
 
-    const getEditAction = (item: AvitoAccountAd) => {
+    const getEditAction = useCallback((item: AvitoAccountAd) => {
         if (item.entity_type === "ad_publication" && item.publication) {
             return {
                 disabled: false,
                 tooltip: "Редактировать публикацию",
-                onClick: () => navigate(`/ads/publications/${item.publication}/edit`),
+                onClick: () => setEditingAd({type: "ad_publication", item}),
             };
         }
 
@@ -285,7 +496,7 @@ export const AvitoAdsPage: React.FC = () => {
             return {
                 disabled: false,
                 tooltip: "Редактировать импортированное Avito-объявление",
-                onClick: () => setEditingListing(item),
+                onClick: () => setEditingAd({type: "avito_listing", item}),
             };
         }
 
@@ -302,13 +513,8 @@ export const AvitoAdsPage: React.FC = () => {
             tooltip: "Это объявление пока нельзя редактировать из общего списка",
             onClick: undefined,
         };
-    };
+    }, [navigate]);
 
-
-    const resetPage = () => {
-        setPage(1);
-        setSelectedListingIds([]);
-    };
 
     const handleTableChange = (pagination: TablePaginationConfig) => {
         setPage(pagination.current ?? 1);
@@ -325,14 +531,46 @@ export const AvitoAdsPage: React.FC = () => {
     };
 
     const handleCloseEditListing = () => {
-        if (updateListingMutation.isPending) {
+        if (updateListingMutation.isPending || updatePublicationMutation.isPending) {
             return;
         }
 
-        setEditingListing(null);
+        setEditingAd(null);
     };
 
     const handleSubmitEditListing = async () => {
+        if (editingPublication) {
+            if (!editingPublicationId || !publicationQuery.data) {
+                return;
+            }
+
+            const values = await editForm.validateFields();
+
+            try {
+                const payload = buildPublicationUpdateRequest(
+                    editingPublication,
+                    publicationQuery.data.overrides,
+                    values,
+                );
+
+                updatePublicationMutation.mutate(
+                    {
+                        publicationId: editingPublicationId,
+                        data: payload,
+                    },
+                    {
+                        onSuccess: () => {
+                            setEditingAd(null);
+                        },
+                    },
+                );
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "Некорректные данные публикации");
+            }
+
+            return;
+        }
+
         if (!editingListing) {
             return;
         }
@@ -369,7 +607,7 @@ export const AvitoAdsPage: React.FC = () => {
             },
             {
                 onSuccess: () => {
-                    setEditingListing(null);
+                    setEditingAd(null);
                 },
             },
         );
@@ -405,32 +643,33 @@ export const AvitoAdsPage: React.FC = () => {
         });
     };
 
-    const handleBulkDesiredStatus = (nextStatus: AvitoListingDesiredStatus) => {
-        if (!avitoAccountId || selectedListingIds.length === 0) {
+    const handleBulkLifecycle = (action: AvitoAdLifecycleAction) => {
+        if (!avitoAccountId || selectedAdItems.length === 0) {
             return;
         }
 
-        bulkDesiredStatusMutation.mutate(
+        bulkLifecycleMutation.mutate(
             {
                 avitoAccountId,
-                listingIds: selectedListingIds,
-                desiredStatus: nextStatus,
+                items: selectedAdItems,
+                action,
             },
             {
                 onSuccess: () => {
-                    setSelectedListingIds([]);
+                    setSelectedAdItems([]);
                 },
             },
         );
     };
 
 
-    const columns: TableProps<AvitoAccountAd>["columns"] = [
+    const columns = useMemo<TableProps<AvitoAccountAd>["columns"]>
+    (() => [
         {
             title: "Тип",
             dataIndex: "entity_type",
             key: "entity_type",
-            width: 100,
+            width: 90,
             render: (value: string) => (
                 <Tag color={entityTypeColor[value] ?? "default"}>
                     {entityTypeLabel[value] ?? value}
@@ -438,16 +677,26 @@ export const AvitoAdsPage: React.FC = () => {
             ),
         },
         {
-            title: "Название",
+            title: "Заголовок",
             dataIndex: "title",
             key: "title",
-            width: 400,
+            width: 300,
             render: (value: string | null, item) => (
                 <Space orientation="vertical" size={0}>
                     <Text strong>{value || "Без названия"}</Text>
-                    <Text type="secondary" style={{fontSize: 11}}>
-                        id: {item.row_id || "не задан"}
-                    </Text>
+                    {item.row_id ? (
+                        <Text
+                            type="secondary"
+                            style={{fontSize: 11}}
+                            copyable={{text: item.row_id}}
+                        >
+                            id: {item.row_id}
+                        </Text>
+                    ) : (
+                        <Text type="secondary" style={{fontSize: 11}}>
+                            id: не задан
+                        </Text>
+                    )}
                     {item.url && (
                         <Button
                             type="link"
@@ -469,9 +718,26 @@ export const AvitoAdsPage: React.FC = () => {
             dataIndex: "address",
             key: "address",
             width: 260,
-            render: (value: string) => value || "Не указан",
+            ellipsis: true,
+            render: (value: string | null) =>
+                value ? value : <Text type="secondary">Не указан</Text>,
         },
+        {
+            title: "Окончание",
+            key: "date_end",
+            width: 100,
+            render: (_, item) => {
+                const deadlineTone = getDateDeadlineTone(item.date_end);
 
+                return (
+                    <Tooltip title={dateEndSourceLabel[item.date_end_source] ?? item.date_end_source}>
+                        <Text style={{color: dateDeadlineColor[deadlineTone]}}>
+                            {formatDate(item.date_end)}
+                        </Text>
+                    </Tooltip>
+                );
+            },
+        },
         {
             title: "Статус",
             dataIndex: "status",
@@ -497,7 +763,7 @@ export const AvitoAdsPage: React.FC = () => {
         {
             title: "Управление",
             key: "management_status",
-            width: 130,
+            width: 100,
             render: (_, item) =>
                 item.management_status ? (
                     <Tag color={item.management_status === "managed" ? "success" : "warning"}>
@@ -510,7 +776,7 @@ export const AvitoAdsPage: React.FC = () => {
         {
             title: "Автозагрузка",
             key: "autoload_state",
-            width: 150,
+            width: 110,
             render: (_, item) => {
                 const state = getAutoloadState(item);
 
@@ -526,46 +792,91 @@ export const AvitoAdsPage: React.FC = () => {
             title: "Источник",
             dataIndex: "source",
             key: "source",
-            width: 140,
+            width: 110,
             render: (value: string) => <Tag>{value}</Tag>,
         },
         {
             title: "Avito ID",
             dataIndex: "avito_id",
             key: "avito_id",
-            width: 150,
+            width: 110,
             render: (value: string | null) =>
-                value ? <Text copyable>{value}</Text> : <Tag>Нет</Tag>,
-        },
-        {
-            title: "Avito-аккаунт",
-            dataIndex: "avito_account_name",
-            key: "avito_account_name",
-            width: 170,
+                value ? <Text>{value}</Text> : <Tag>Нет</Tag>,
         },
         {
             title: "Действия",
             key: "actions",
-            width: 140,
+            width: 80,
             fixed: "right",
+            onHeaderCell: () => ({
+                style: {
+                    backgroundColor: "#fafafa",
+                },
+            }),
+            onCell: () => ({
+                style: {
+                    backgroundColor: "#fafafa",
+                },
+            }),
             render: (_, item) => {
                 const action = getEditAction(item);
 
                 return (
-                    <Tooltip title={action.tooltip}>
-                        <Button
-                            size="small"
-                            icon={<EditOutlined/>}
-                            disabled={action.disabled}
-                            onClick={action.onClick}
-                        >
-                            Изменить
-                        </Button>
-                    </Tooltip>
+                    <Space>
+                        <Tooltip title={action.tooltip}>
+                            <Button
+                                size="small"
+                                icon={<EditOutlined/>}
+                                disabled={action.disabled}
+                                onClick={action.onClick}
+                            >
+
+                            </Button>
+                        </Tooltip>
+                        <Tooltip title="Продлить на 30 дней">
+                            <Button
+                                size="small"
+                                icon={<CalendarOutlined/>}
+                                disabled={
+                                    item.entity_type === "avito_listing"
+                                        ? item.source !== "avito_excel" || item.management_status !== "managed"
+                                        : !item.publication
+                                }
+                                loading={
+                                    (item.entity_type === "avito_listing" &&
+                                        extendListingMutation.isPending &&
+                                        extendListingMutation.variables?.listingId === item.id) ||
+                                    (item.entity_type === "ad_publication" &&
+                                        extendPublicationMutation.isPending &&
+                                        extendPublicationMutation.variables === item.publication)
+                                }
+                                onClick={() => {
+                                    if (item.entity_type === "avito_listing") {
+                                        extendListingMutation.mutate({
+                                            listingId: item.id,
+                                            avitoAccountId: item.avito_account,
+                                        });
+                                        return;
+                                    }
+
+                                    if (item.publication) {
+                                        extendPublicationMutation.mutate(item.publication);
+                                    }
+                                }}
+                            />
+                        </Tooltip>
+
+                    </Space>
+
                 );
             },
         },
-    ];
+    ], [
+        extendListingMutation,
+        extendPublicationMutation,
+        getEditAction,
+    ]);
+    ;
 
     if (!currentWorkspace) {
         return (
@@ -580,105 +891,90 @@ export const AvitoAdsPage: React.FC = () => {
 
     return (
         <Space orientation="vertical" size={16} style={{width: "100%"}}>
-            <Space orientation="vertical" size={0}>
-                <Title level={2} style={{margin: 0}}>
-                    Все объявления
-                </Title>
-                <Text type="secondary">
-                    Единый список: реальные объявления Avito и публикации сервиса, которые еще не связаны с Avito ID.
-                </Text>
-            </Space>
+            <Row gutter={[16, 12]} align="top">
+                <Col xs={24} lg={16}>
+                    <Space orientation="vertical" size={0} style={{width: "100%"}}>
+                        <Space
+                            align="center"
+                            size={10}
+                            wrap
+                            style={{marginBottom: 10}}
+                        >
+                            <Title level={2} style={{margin: 0}}>
+                                Все объявления
+                            </Title>
 
-            <Space wrap>
-                <Select
-                    style={{width: 220}}
-                    placeholder="Avito-аккаунт"
-                    loading={projectsQuery.isLoading}
-                    value={avitoAccountId ?? undefined}
-                    options={(projectsQuery.data ?? []).map((account) => ({
-                        label: account.name,
-                        value: account.id,
-                    }))}
-                    onChange={(value) => {
-                        setAvitoAccountId(value);
-                        resetPage();
-                    }}
-                />
-                {selectedAvitoAccount && (
-                    <Tag
-                        color={csvExportStatusColor[selectedAvitoAccount.export_status]}
+                            {selectedAvitoAccount && (
+                                <Tag
+                                    color={csvExportStatusColor[selectedAvitoAccount.export_status]}
+                                    style={{
+                                        height: 32,
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        marginInlineEnd: 0,
+                                        paddingInline: 12,
+                                        fontWeight: 700,
+                                        border: 1,
+                                        borderStyle: "solid",
+                                    }}
+                                >
+                                    CSV: {csvExportStatusLabel[selectedAvitoAccount.export_status]}
+                                </Tag>
+                            )}
+                        </Space>
+
+                        <Text type="secondary">
+                            Единый список: реальные объявления Avito и публикации сервиса, которые еще не связаны с
+                            Avito ID.
+                        </Text>
+
+                        {selectedAvitoAccount?.export_error && (
+                            <Text type="danger">
+                                {selectedAvitoAccount.export_error}
+                            </Text>
+                        )}
+                    </Space>
+                </Col>
+
+                <Col xs={24} lg={8}>
+                    <Space
+                        wrap
                         style={{
-                            height: 32,
-                            display: "inline-flex",
-                            alignItems: "center",
-                            marginInlineEnd: 0,
-                            paddingInline: 12,
-                            fontWeight: 700,
-                            border: 1,
-                            borderStyle: "solid",
+                            width: "100%",
+                            justifyContent: "flex-end",
+                            paddingTop: 5
                         }}
                     >
-                        CSV: {csvExportStatusLabel[selectedAvitoAccount.export_status]}
-                    </Tag>
-                )}
+                        <Button
+                            icon={<FileSyncOutlined/>}
+                            disabled={!avitoAccountId || isCsvExportInProgress}
+                            loading={requestCsvExportMutation.isPending || isCsvExportInProgress}
+                            onClick={handleRequestCsvExport}
+                        >
+                            {isCsvExportInProgress ? "CSV формируется" : "Сформировать CSV"}
+                        </Button>
 
-                {selectedAvitoAccount?.export_error && (
-                    <Text type="danger">
-                        {selectedAvitoAccount.export_error}
-                    </Text>
-                )}
-                <Button
-                    icon={<FileSyncOutlined/>}
-                    disabled={!avitoAccountId || isCsvExportInProgress}
-                    loading={requestCsvExportMutation.isPending || isCsvExportInProgress}
-                    onClick={handleRequestCsvExport}
-                >
-                    {isCsvExportInProgress ? "CSV формируется" : "Сформировать CSV"}
-                </Button>
+                        <Button
+                            icon={<CloudDownloadOutlined/>}
+                            disabled={!avitoAccountId || !isCsvReady}
+                            loading={downloadCsvMutation.isPending}
+                            onClick={handleDownloadCsv}
+                        >
+                            Скачать CSV
+                        </Button>
+                    </Space>
+                </Col>
+            </Row>
 
-                <Button
-                    icon={<CloudDownloadOutlined/>}
-                    disabled={!avitoAccountId || !isCsvReady}
-                    loading={downloadCsvMutation.isPending}
-                    onClick={handleDownloadCsv}
-                >
-                    Скачать CSV
-                </Button>
-
-                <Button
-                    icon={<PlayCircleOutlined/>}
-                    disabled={!avitoAccountId || selectedListingIds.length === 0}
-                    loading={bulkDesiredStatusMutation.isPending}
-                    onClick={() => handleBulkDesiredStatus("publish")}
-                >
-
-                </Button>
-
-                <Button
-                    icon={<PauseCircleOutlined/>}
-                    disabled={!avitoAccountId || selectedListingIds.length === 0}
-                    loading={bulkDesiredStatusMutation.isPending}
-                    onClick={() => handleBulkDesiredStatus("pause")}
-                >
-
-                </Button>
-
-                <Button
-                    icon={<StopOutlined/>}
-                    disabled={!avitoAccountId || selectedListingIds.length === 0}
-                    loading={bulkDesiredStatusMutation.isPending}
-                    onClick={() => handleBulkDesiredStatus("archive")}
-                >
-
-                </Button>
-
-                <Text type="secondary">
-                    Выбрано Avito-объявлений: {selectedListingIds.length}
-                </Text>
-            </Space>
-
-            <Space wrap>
-
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    width: "100%",
+                }}
+            >
 
                 <Input
                     allowClear
@@ -693,49 +989,45 @@ export const AvitoAdsPage: React.FC = () => {
                 />
 
                 <Select
-                    style={{width: 190}}
-                    value={entityType}
-                    options={[
-                        {label: "Все типы", value: ""},
-                        {label: "Avito", value: "avito_listing"},
-                        {label: "Публикации", value: "ad_publication"},
-                    ]}
+                    style={{width: 220}}
+                    placeholder="Avito-аккаунт"
+                    loading={projectsQuery.isLoading}
+                    value={avitoAccountId ?? undefined}
+                    options={(projectsQuery.data ?? []).map((account) => ({
+                        label: account.name,
+                        value: account.id,
+                    }))}
                     onChange={(value) => {
-                        setEntityType(value);
-                        resetPage();
-                    }}
-                />
-
-                <Select
-                    style={{width: 190}}
-                    value={hasAvitoId}
-                    options={[
-                        {label: "Любой Avito ID", value: ""},
-                        {label: "Есть Avito ID", value: "1"},
-                        {label: "Нет Avito ID", value: "0"},
-                    ]}
-                    onChange={(value) => {
-                        setHasAvitoId(value);
-                        resetPage();
-                    }}
-                />
-
-                <Select
-                    style={{width: 170}}
-                    value={hasErrors}
-                    options={[
-                        {label: "Все ошибки", value: ""},
-                        {label: "Только ошибки", value: "1"},
-                        {label: "Без ошибок", value: "0"},
-                    ]}
-                    onChange={(value) => {
-                        setHasErrors(value);
+                        setAvitoAccountId(value);
                         resetPage();
                     }}
                 />
 
 
-            </Space>
+                {selectedAvitoAccount?.export_error && (
+                    <Text type="danger">
+                        {selectedAvitoAccount.export_error}
+                    </Text>
+                )}
+
+                <AdLifecycleBulkActions
+                    selectedCount={selectedAdItems.length}
+                    disabled={!avitoAccountId}
+                    loading={bulkLifecycleMutation.isPending}
+                    onAction={handleBulkLifecycle}
+                    onClearSelection={() => setSelectedAdItems([])}
+                />
+
+                <Button
+                    icon={<FilterOutlined/>}
+                    type={activeFiltersCount > 0 ? "primary" : "default"}
+                    onClick={() => setFiltersDrawerOpen(true)}
+                    style={{marginLeft: "auto"}}
+                >
+                    {activeFiltersCount > 0 ? `Фильтры (${activeFiltersCount})` : "Фильтры"}
+                </Button>
+
+            </div>
 
             {!avitoAccountId && (
                 <Alert
@@ -752,7 +1044,9 @@ export const AvitoAdsPage: React.FC = () => {
                 rowSelection={rowSelection}
                 dataSource={adsQuery.data?.results ?? []}
                 loading={adsQuery.isLoading || adsQuery.isFetching}
-                scroll={{x: 1600}}
+                tableLayout="fixed"
+                scroll={{x: 2000}}
+                rowHoverable={false}
                 pagination={{
                     current: page,
                     pageSize,
@@ -763,9 +1057,9 @@ export const AvitoAdsPage: React.FC = () => {
             />
 
             <Drawer
-                title="Редактирование Avito-объявления"
-                open={editingListing !== null}
-                width={720}
+                title={editingPublication ? "Редактирование публикации" : "Редактирование Avito-объявления"}
+                open={editingAd !== null}
+                size={720}
                 onClose={handleCloseEditListing}
                 extra={
                     <Space>
@@ -774,7 +1068,11 @@ export const AvitoAdsPage: React.FC = () => {
                         </Button>
                         <Button
                             type="primary"
-                            loading={updateListingMutation.isPending}
+                            loading={updateListingMutation.isPending || updatePublicationMutation.isPending}
+                            disabled={
+                                editingPublication !== null &&
+                                (!publicationQuery.data || publicationQuery.isError)
+                            }
                             onClick={handleSubmitEditListing}
                         >
                             Сохранить
@@ -782,55 +1080,185 @@ export const AvitoAdsPage: React.FC = () => {
                     </Space>
                 }
             >
-                <Form form={editForm} layout="vertical">
-                    <Form.Item
-                        name="title"
-                        label="Название"
-                        rules={[{required: true, message: "Введите название"}]}
+                {editingPublication && publicationQuery.isLoading ? (
+                    <Spin/>
+                ) : editingPublication && (publicationQuery.isError || !publicationQuery.data) ? (
+                    <Alert
+                        type="error"
+                        message="Публикация не найдена"
+                        description="Проверьте, что публикация существует и принадлежит текущему кабинету."
+                        showIcon
+                    />
+                ) : (
+                    <Form
+                        form={editForm}
+                        layout="vertical"
+                        disabled={updateListingMutation.isPending || updatePublicationMutation.isPending}
                     >
-                        <Input/>
-                    </Form.Item>
+                        <Form.Item
+                            name="title"
+                            label="Название"
+                            rules={[{required: true, message: "Введите название"}]}
+                        >
+                            <Input/>
+                        </Form.Item>
 
-                    <Form.Item name="description" label="Описание">
-                        <Input.TextArea rows={6}/>
-                    </Form.Item>
+                        <Form.Item name="description" label="Описание">
+                            <Input.TextArea rows={6}/>
+                        </Form.Item>
 
-                    <Form.Item name="address" label="Адрес">
-                        <Input/>
-                    </Form.Item>
+                        <Form.Item name="address" label="Адрес">
+                            <Input/>
+                        </Form.Item>
 
-                    <Form.Item name="desired_status" label="Автозагрузка">
-                        <Select
-                            options={[
-                                {label: "Выгружать", value: "publish"},
-                                {label: "Пауза", value: "pause"},
-                                {label: "Архив", value: "archive"},
-                            ]}
+                        {editingPublication ? (
+                            <Form.Item
+                                name="status"
+                                label="Статус"
+                                rules={[{required: true, message: "Выберите статус"}]}
+                            >
+                                <Select
+                                    options={[
+                                        {value: "draft", label: "draft"},
+                                        {value: "active", label: "active"},
+                                        {value: "paused", label: "paused"},
+                                        {value: "archived", label: "archived"},
+                                        {value: "error", label: "error"},
+                                    ]}
+                                />
+                            </Form.Item>
+                        ) : (
+                            <>
+                                <Form.Item name="desired_status" label="Автозагрузка">
+                                    <Select
+                                        options={[
+                                            {label: "Выгружать", value: "publish"},
+                                            {label: "Пауза", value: "pause"},
+                                            {label: "Архив", value: "archive"},
+                                        ]}
+                                    />
+                                </Form.Item>
+
+                                <Form.Item name="management_status" label="Статус управления">
+                                    <Select
+                                        options={[
+                                            {label: "Управляется", value: "managed"},
+                                            {label: "Расхождение", value: "out_of_sync"},
+                                            {label: "Наблюдаем", value: "observed"},
+                                        ]}
+                                    />
+                                </Form.Item>
+                            </>
+                        )}
+
+                        <Form.Item name="image_urls_text" label="Ссылки на фото">
+                            <Input.TextArea rows={4}/>
+                        </Form.Item>
+
+                        <Form.Item name="base_data_json" hidden>
+                            <Input.TextArea/>
+                        </Form.Item>
+
+                        <Form.Item name="option_data_json" hidden>
+                            <Input.TextArea/>
+                        </Form.Item>
+
+                        <JsonObjectInputs
+                            form={editForm}
+                            name="base_data_json"
+                            title="base_data"
+                            emptyText="base_data пустой"
                         />
-                    </Form.Item>
 
-                    <Form.Item name="management_status" label="Статус управления">
-                        <Select
-                            options={[
-                                {label: "Управляется", value: "managed"},
-                                {label: "Расхождение", value: "out_of_sync"},
-                                {label: "Наблюдаем", value: "observed"},
-                            ]}
+                        <JsonObjectInputs
+                            form={editForm}
+                            name="option_data_json"
+                            title="option_data"
+                            emptyText="option_data пустой"
                         />
-                    </Form.Item>
+                    </Form>
+                )}
+            </Drawer>
 
-                    <Form.Item name="image_urls_text" label="Ссылки на фото">
-                        <Input.TextArea rows={4}/>
-                    </Form.Item>
+            <Drawer
+                title="Фильтры"
+                open={filtersDrawerOpen}
+                size={360}
+                onClose={() => setFiltersDrawerOpen(false)}
+                extra={
+                    <Button onClick={resetFilters} disabled={activeFiltersCount === 0}>
+                        Сбросить
+                    </Button>
+                }
+            >
+                <Space direction="vertical" size={16} style={{width: "100%"}}>
+                    <Select
+                        style={{width: "100%"}}
+                        value={entityType}
+                        options={[
+                            {label: "Все типы", value: ""},
+                            {label: "Avito", value: "avito_listing"},
+                            {label: "Публикации", value: "ad_publication"},
+                        ]}
+                        onChange={(value) => {
+                            setEntityType(value);
+                            resetPage();
+                        }}
+                    />
 
-                    <Form.Item name="base_data_json" label="base_data">
-                        <Input.TextArea rows={8} style={{fontFamily: "monospace"}}/>
-                    </Form.Item>
+                    <Select
+                        style={{width: "100%"}}
+                        value={hasAvitoId}
+                        options={[
+                            {label: "Любой Avito ID", value: ""},
+                            {label: "Есть Avito ID", value: "1"},
+                            {label: "Нет Avito ID", value: "0"},
+                        ]}
+                        onChange={(value) => {
+                            setHasAvitoId(value);
+                            resetPage();
+                        }}
+                    />
 
-                    <Form.Item name="option_data_json" label="option_data">
-                        <Input.TextArea rows={8} style={{fontFamily: "monospace"}}/>
-                    </Form.Item>
-                </Form>
+                    <Select
+                        style={{width: "100%"}}
+                        value={hasErrors}
+                        options={[
+                            {label: "Все ошибки", value: ""},
+                            {label: "Только ошибки", value: "1"},
+                            {label: "Без ошибок", value: "0"},
+                        ]}
+                        onChange={(value) => {
+                            setHasErrors(value);
+                            resetPage();
+                        }}
+                    />
+
+                    <Select
+                        style={{width: "100%"}}
+                        value={dateEndOrdering}
+                        options={[
+                            {label: "Без сортировки", value: ""},
+                            {label: "Окончание: сначала ранние", value: "date_end"},
+                            {label: "Окончание: сначала поздние", value: "-date_end"},
+                        ]}
+                        onChange={(value) => {
+                            setDateEndOrdering(value);
+                            resetPage();
+                        }}
+                    />
+
+                    <Input
+                        allowClear
+                        prefix={<SearchOutlined/>}
+                        placeholder="Адрес"
+                        value={addressFilter}
+                        onChange={(event) => {
+                            setAddressFilter(event.target.value);
+                            resetPage();
+                        }}
+                    />
+                </Space>
             </Drawer>
         </Space>
     );

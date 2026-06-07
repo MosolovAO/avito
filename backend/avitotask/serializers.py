@@ -611,6 +611,8 @@ class AvitoListingSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
+    date_end = serializers.SerializerMethodField()
+    date_end_source = serializers.SerializerMethodField()
 
     class Meta:
         model = AvitoListing
@@ -638,6 +640,8 @@ class AvitoListingSerializer(serializers.ModelSerializer):
             "base_data",
             "option_data",
             "unmapped_data",
+            "date_end",
+            "date_end_source",
 
             "published_at",
             "last_seen_at",
@@ -655,6 +659,17 @@ class AvitoListingSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_date_end(self, instance):
+        from avitotask.services.ad_publication_dates import format_avito_date
+        from avitotask.services.avito_listing_editing import get_avito_listing_date_end
+
+        return format_avito_date(get_avito_listing_date_end(instance))
+
+    def get_date_end_source(self, instance):
+        from avitotask.services.avito_listing_editing import get_avito_listing_date_end_source
+
+        return get_avito_listing_date_end_source(instance)
 
 
 class AvitoListingUpdateSerializer(serializers.Serializer):
@@ -684,16 +699,6 @@ class AvitoListingUpdateSerializer(serializers.Serializer):
         return attrs
 
 
-class AvitoListingBulkDesiredStatusSerializer(serializers.Serializer):
-    listing_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        allow_empty=False,
-    )
-    desired_status = serializers.ChoiceField(
-        choices=AvitoListing.DesiredStatus.choices,
-    )
-
-
 class AvitoListingBulkManagementStatusSerializer(serializers.Serializer):
     listing_ids = serializers.ListField(
         child=serializers.IntegerField(),
@@ -702,6 +707,38 @@ class AvitoListingBulkManagementStatusSerializer(serializers.Serializer):
     management_status = serializers.ChoiceField(
         choices=AvitoListing.ManagementStatus.choices,
     )
+
+
+class AvitoAccountAdsBulkLifecycleItemSerializer(serializers.Serializer):
+    entity_type = serializers.ChoiceField(
+        choices=["avito_listing", "ad_publication"],
+    )
+    id = serializers.IntegerField(min_value=1)
+
+
+class AvitoAccountAdsBulkLifecycleSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=["publish", "pause", "delete"],
+    )
+    items = AvitoAccountAdsBulkLifecycleItemSerializer(
+        many=True,
+        allow_empty=False,
+    )
+
+    def validate_items(self, items):
+        seen = set()
+
+        for item in items:
+            key = (item["entity_type"], item["id"])
+
+            if key in seen:
+                raise serializers.ValidationError(
+                    "Список объявлений содержит дубликаты."
+                )
+
+            seen.add(key)
+
+        return items
 
 
 class AdPublicationSerializer(serializers.ModelSerializer):
@@ -729,6 +766,9 @@ class AdPublicationSerializer(serializers.ModelSerializer):
         allow_null=True,
     )
 
+    effective_date_end = serializers.SerializerMethodField()
+    date_end_source = serializers.SerializerMethodField()
+
     class Meta:
         model = AdPublication
         fields = [
@@ -744,6 +784,8 @@ class AdPublicationSerializer(serializers.ModelSerializer):
             "row_id",
             "address",
             "overrides",
+            "effective_date_end",
+            "date_end_source",
             "avito_listing_id",
             "avito_id",
             "avito_listing_url",
@@ -754,6 +796,19 @@ class AdPublicationSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_effective_date_end(self, instance):
+        from avitotask.services.ad_publication_dates import (
+            format_avito_date,
+            get_publication_effective_date_end,
+        )
+
+        return format_avito_date(get_publication_effective_date_end(instance))
+
+    def get_date_end_source(self, instance):
+        from avitotask.services.ad_publication_dates import get_publication_date_end_source
+
+        return get_publication_date_end_source(instance)
 
 
 class AdBatchSerializer(serializers.ModelSerializer):
@@ -800,8 +855,9 @@ class AdCreativeSerializer(serializers.ModelSerializer):
     )
 
     projects = serializers.SerializerMethodField()
-
     publications_count = serializers.IntegerField(read_only=True)
+    effective_date_end = serializers.SerializerMethodField()
+    date_end_source = serializers.SerializerMethodField()
 
     class Meta:
         model = AdCreative
@@ -822,6 +878,8 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "projects",
             "created_at",
             "updated_at",
+            "effective_date_end",
+            "date_end_source",
         ]
         read_only_fields = [
             "id",
@@ -835,6 +893,8 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "projects",
             "created_at",
             "updated_at",
+            "effective_date_end",
+            "date_end_source",
         ]
 
     def get_projects(self, instance):
@@ -851,6 +911,22 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             projects_by_id.values(),
             key=lambda project: project["name"].lower(),
         )
+
+    def get_effective_date_end(self, instance):
+        from avitotask.services.ad_publication_dates import (
+            format_avito_date,
+            get_creative_effective_date_end,
+        )
+
+        return format_avito_date(get_creative_effective_date_end(instance))
+
+    def get_date_end_source(self, instance):
+        from avitotask.services.ad_publication_dates import get_creative_base_date_end
+
+        if get_creative_base_date_end(instance):
+            return "creative"
+
+        return "default"
 
 
 class AdCreativeEditSerializer(serializers.ModelSerializer):

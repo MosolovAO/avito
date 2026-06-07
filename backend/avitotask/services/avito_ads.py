@@ -8,8 +8,88 @@ from avitotask.models import AdPublication, AvitoAccount, AvitoListing
 
 from django.db.models.functions import Coalesce
 
+from avitotask.services.ad_publication_dates import (
+    format_avito_date,
+    get_publication_date_end_source,
+    get_publication_effective_date_end,
+    parse_avito_date,
+)
+
 ENTITY_TYPE_AVITO_LISTING = "avito_listing"
 ENTITY_TYPE_AD_PUBLICATION = "ad_publication"
+
+
+def get_listing_date_end_value(listing: AvitoListing) -> str:
+    return (
+            (listing.base_data or {}).get("DateEnd")
+            or (listing.raw_data or {}).get("AvitoDateEnd")
+            or ""
+    )
+
+
+def get_linked_ad_date_end_payload(listing: AvitoListing) -> dict[str, str]:
+    listing_date_end = get_listing_date_end_value(listing)
+
+    if listing_date_end:
+        return {
+            "date_end": str(listing_date_end),
+            "date_end_source": "avito",
+        }
+
+    publication = listing.publication
+
+    return {
+        "date_end": format_avito_date(get_publication_effective_date_end(publication)),
+        "date_end_source": get_publication_date_end_source(publication),
+    }
+
+
+def get_listing_date_end_payload(listing: AvitoListing) -> dict[str, str]:
+    listing_date_end = get_listing_date_end_value(listing)
+
+    return {
+        "date_end": str(listing_date_end) if listing_date_end else "",
+        "date_end_source": "avito" if listing_date_end else "none",
+    }
+
+
+def get_publication_date_end_payload(publication: AdPublication) -> dict[str, str]:
+    return {
+        "date_end": format_avito_date(get_publication_effective_date_end(publication)),
+        "date_end_source": get_publication_date_end_source(publication),
+    }
+
+
+def parse_date_end_sort_value(value) -> int | None:
+    parsed = parse_avito_date(value)
+
+    if parsed is None:
+        return None
+
+    return parsed.toordinal()
+
+
+def get_publication_date_end_sort_value(publication: AdPublication) -> int | None:
+    return get_publication_effective_date_end(publication).toordinal()
+
+
+def get_listing_date_end_sort_value(listing: AvitoListing) -> int | None:
+    listing_date_end = parse_date_end_sort_value(get_listing_date_end_value(listing))
+
+    if listing_date_end is not None:
+        return listing_date_end
+
+    if listing.source == AvitoListing.Source.SERVICE and listing.publication_id:
+        return get_publication_date_end_sort_value(listing.publication)
+
+    return None
+
+
+def get_date_end_sort_key(sort_value: int | None, *, is_desc: bool) -> tuple[bool, int]:
+    if sort_value is None:
+        return True, 0
+
+    return False, -sort_value if is_desc else sort_value
 
 
 @dataclass(frozen=True)
@@ -22,6 +102,8 @@ class AvitoAdListFilters:
     has_avito_id: str = ""
     has_errors: str = ""
     search: str = ""
+    address: str = ""
+    ordering: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,10 +137,10 @@ def list_avito_account_ads(
     filters = filters or AvitoAdListFilters()
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
-
+    date_end_candidates = []
     start = (page - 1) * page_size
     end = start + page_size
-
+    sort_by_date_end = filters.ordering in ("date_end", "-date_end")
     items = []
     total_count = 0
 
@@ -87,18 +169,22 @@ def list_avito_account_ads(
                 publication__isnull=False,
             )
 
-        listings_queryset = (
-            listings_queryset
-            .annotate(sort_value=Coalesce("last_seen_at", "updated_at", "created_at"))
-            .order_by("-sort_value")
-        )
-
         total_count += listings_queryset.count()
 
-        items.extend(
-            serialize_listing_for_ads_page(listing)
-            for listing in listings_queryset[:end]
-        )
+        if sort_by_date_end:
+            date_end_candidates.extend(
+                (
+                    get_listing_date_end_sort_value(listing),
+                    ENTITY_TYPE_AVITO_LISTING,
+                    listing,
+                )
+                for listing in listings_queryset
+            )
+        else:
+            items.extend(
+                serialize_listing_for_ads_page(listing)
+                for listing in listings_queryset[:end]
+            )
 
     if filters.entity_type in ("", ENTITY_TYPE_AD_PUBLICATION):
         publications_queryset = (
@@ -113,15 +199,39 @@ def list_avito_account_ads(
 
         total_count += publications_queryset.count()
 
-        items.extend(
-            serialize_publication_for_ads_page(publication)
-            for publication in publications_queryset[:end]
+        if sort_by_date_end:
+            date_end_candidates.extend(
+                (
+                    get_publication_date_end_sort_value(publication),
+                    ENTITY_TYPE_AD_PUBLICATION,
+                    publication,
+                )
+                for publication in publications_queryset
+            )
+        else:
+            items.extend(
+                serialize_publication_for_ads_page(publication)
+                for publication in publications_queryset[:end]
+            )
+
+    if sort_by_date_end:
+        is_desc = filters.ordering == "-date_end"
+
+        date_end_candidates.sort(
+            key=lambda candidate: get_date_end_sort_key(candidate[0], is_desc=is_desc),
         )
 
-    items.sort(
-        key=lambda item: item["sort_at"] or datetime.min,
-        reverse=True,
-    )
+        items = [
+            serialize_listing_for_ads_page(item)
+            if entity_type == ENTITY_TYPE_AVITO_LISTING
+            else serialize_publication_for_ads_page(item)
+            for _, entity_type, item in date_end_candidates[start:end]
+        ]
+    else:
+        items.sort(
+            key=lambda item: item["sort_at"] or datetime.min,
+            reverse=True,
+        )
 
     return AvitoAdListResult(
         count=total_count,
@@ -129,7 +239,7 @@ def list_avito_account_ads(
         page_size=page_size,
         results=[
             strip_internal_fields(item)
-            for item in items[start:end]
+            for item in (items if sort_by_date_end else items[start:end])
         ],
     )
 
@@ -146,7 +256,7 @@ def get_filtered_listings(
             workspace=workspace,
             avito_account=avito_account,
         )
-        .select_related("avito_account", "publication")
+        .select_related("avito_account", "publication", "publication__creative")
         .order_by("-last_seen_at", "-created_at")
     )
 
@@ -182,6 +292,9 @@ def get_filtered_listings(
             Q(row_id__icontains=filters.search) |
             Q(avito_id__icontains=filters.search)
         )
+
+    if filters.address:
+        queryset = queryset.filter(address__icontains=filters.address)
 
     return queryset
 
@@ -225,12 +338,16 @@ def get_filtered_unlinked_publications(
             Q(row_id__icontains=filters.search)
         )
 
+    if filters.address:
+        queryset = queryset.filter(address__icontains=filters.address)
+
     return queryset
 
 
 def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
     publication = listing.publication
     autoload_error = extract_listing_autoload_error(listing)
+    date_end_payload = get_linked_ad_date_end_payload(listing)
 
     return {
         "entity_type": ENTITY_TYPE_AD_PUBLICATION,
@@ -262,6 +379,8 @@ def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> 
         "created_at": publication.created_at,
         "updated_at": max(publication.updated_at, listing.updated_at),
         "sort_at": listing.last_seen_at or listing.updated_at or publication.updated_at,
+        "date_end": date_end_payload["date_end"],
+        "date_end_source": date_end_payload["date_end_source"],
     }
 
 
@@ -270,6 +389,7 @@ def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
         return serialize_linked_publication_listing_for_ads_page(listing)
 
     autoload_error = extract_listing_autoload_error(listing)
+    date_end_payload = get_listing_date_end_payload(listing)
 
     return {
         "entity_type": ENTITY_TYPE_AVITO_LISTING,
@@ -301,11 +421,15 @@ def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
         "created_at": listing.created_at,
         "updated_at": listing.updated_at,
         "sort_at": listing.last_seen_at or listing.updated_at or listing.created_at,
+        "date_end": date_end_payload["date_end"],
+        "date_end_source": date_end_payload["date_end_source"],
     }
 
 
 def serialize_publication_for_ads_page(publication: AdPublication) -> dict[str, Any]:
     autoload_error = extract_publication_autoload_error(publication)
+
+    date_end_payload = get_publication_date_end_payload(publication)
 
     return {
         "entity_type": ENTITY_TYPE_AD_PUBLICATION,
@@ -337,6 +461,8 @@ def serialize_publication_for_ads_page(publication: AdPublication) -> dict[str, 
         "created_at": publication.created_at,
         "updated_at": publication.updated_at,
         "sort_at": publication.updated_at or publication.created_at,
+        "date_end": date_end_payload["date_end"],
+        "date_end_source": date_end_payload["date_end_source"],
     }
 
 

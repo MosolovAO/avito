@@ -4,14 +4,12 @@ import {
     FileSyncOutlined,
     LinkOutlined,
     SearchOutlined,
-    PauseCircleOutlined,
-    PlayCircleOutlined,
-    StopOutlined,
     CheckCircleOutlined,
     EyeOutlined,
     UploadOutlined,
     EditOutlined,
     ReloadOutlined,
+    CalendarOutlined
 } from "@ant-design/icons";
 import {
     Alert,
@@ -29,16 +27,17 @@ import {
     Typography,
     Drawer,
     Form,
+    Tooltip
 } from "antd";
 
 import type {
     AvitoListing,
     AvitoListingsQueryParams,
-    AvitoListingDesiredStatus,
     AvitoExcelImportPreviewResponse,
     JsonObject,
     UpdateAvitoListingRequest,
     AvitoListingUnmappedColumnSummary,
+    AvitoAdLifecycleAction
 } from "../../entities/avito/types";
 import {
     useAvitoListingsQuery,
@@ -46,16 +45,21 @@ import {
     useAvitoListingLifecycleReportQuery,
     useDownloadAvitoCsvMutation,
     useRequestAvitoCsvExportMutation,
-    useBulkUpdateAvitoListingDesiredStatusMutation,
+    useBulkUpdateAvitoAdsLifecycleMutation,
     useApplyAvitoExcelImportMutation,
     usePreviewAvitoExcelImportMutation,
     useUpdateAvitoListingMutation,
     useAvitoListingUnmappedSummaryQuery,
     useRemapAvitoListingImportFieldsMutation,
-
+    AdLifecycleBulkActions,
+    useExtendAvitoListingMutation
 } from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
-
+import {
+    dateDeadlineColor,
+    formatDate,
+    getDateDeadlineTone,
+} from "../../shared/lib/formatDateTime";
 import type {
     TablePaginationConfig,
     TableProps,
@@ -166,13 +170,13 @@ export const AvitoListingsPage: React.FC = () => {
 
     const listingsQuery = useAvitoListingsQuery(queryParams);
     const projectsQuery = useAvitoProjectsQuery()
-
+    const extendListingMutation = useExtendAvitoListingMutation();
     const lifecycleQuery = useAvitoListingLifecycleReportQuery(avitoAccountId, 3);
     const unmappedSummaryQuery = useAvitoListingUnmappedSummaryQuery(avitoAccountId, 30);
     const remapImportFieldsMutation = useRemapAvitoListingImportFieldsMutation();
     const requestCsvExportMutation = useRequestAvitoCsvExportMutation();
     const downloadCsvMutation = useDownloadAvitoCsvMutation();
-    const bulkDesiredStatusMutation = useBulkUpdateAvitoListingDesiredStatusMutation();
+    const bulkLifecycleMutation = useBulkUpdateAvitoAdsLifecycleMutation();
     const previewExcelImportMutation = usePreviewAvitoExcelImportMutation();
     const applyExcelImportMutation = useApplyAvitoExcelImportMutation();
     const updateListingMutation = useUpdateAvitoListingMutation();
@@ -231,142 +235,198 @@ export const AvitoListingsPage: React.FC = () => {
     };
 
     const columns: TableProps<AvitoListing>["columns"] = [
-        {
-            title: "Avito ID",
-            dataIndex: "avito_id",
-            key: "avito_id",
-            width: 140,
-            render: (value: string) => <Text copyable>{value}</Text>
-        },
-        {
-            title: "Название",
-            dataIndex: "title",
-            key: "title",
-            render: (value: string | null, listing) => (
-                <Space orientation="vertical" size={0}>
-                    <Text strong>{value || "Без названия"}</Text>
-                    {listing.url && (
-                        <Button
-                            type="link"
-                            size="small"
-                            icon={<LinkOutlined/>}
-                            href={listing.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{padding: 0}}
-                        >
-                            Открыть на Avito
-                        </Button>
-                    )}
-                </Space>
-            ),
-        },
-        {
-            title: "Статус",
-            dataIndex: "status",
-            key: "status",
-            width: 140,
-            render: (value: string | null) => {
-                if (!value) {
-                    return <Tag>Неизвестно</Tag>
-                }
-
-                return (
-                    <Tag color={statusColorByValue[value] ?? "processing"}>
+            {
+                title: "Avito ID",
+                dataIndex: "avito_id",
+                key: "avito_id",
+                width: 140,
+                render: (value: string) => (
+                    <Text copyable style={{fontSize: 11}}>
                         {value}
-                    </Tag>
-                )
-            }
-        },
-
-        {
-            title: "Управление",
-            key: "management_status",
-            width: 150,
-            render: (_, listing) => (
-                <Tag color={listing.management_status === "managed" ? "success" : "warning"}>
-                    {managementStatusLabel[listing.management_status] ?? listing.management_status}
-                </Tag>
-            ),
-        },
-        {
-            title: "В автозагрузке",
-            key: "desired_status",
-            width: 150,
-            render: (_, listing) => (
-                <Tag color={desiredStatusColor[listing.desired_status] ?? "default"}>
-                    {desiredStatusLabel[listing.desired_status] ?? listing.desired_status}
-                </Tag>
-            ),
-        },
-        {
-            title: "Unmapped",
-            key: "unmapped_data",
-            width: 120,
-            render: (_, listing) => {
-                const count = Object.keys(listing.unmapped_data ?? {}).length;
-
-                return count > 0 ? (
-                    <Tag color="warning">{count}</Tag>
-                ) : (
-                    <Tag color="success">0</Tag>
-                );
+                    </Text>
+                ),
             },
-        },
-        {
-            title: "Адрес",
-            dataIndex: "address",
-            key: "address",
-            width: 260,
-            render: (value: string) => value || "Не указан",
-        },
-        {
-            title: "Avito-аккаунт",
-            dataIndex: "avito_account_name",
-            key: "avito_account_name",
-            width: 220,
-            render: (value: string) => value || "Не указан",
-        },
-        {
-            title: "Публикация",
-            key: "publication",
-            width: 180,
-            render: (_, listing) =>
-                listing.publication ? (
+            {
+                title: "Название",
+                dataIndex: "title",
+                key: "title",
+                width: 520,
+                render: (value: string | null, listing) => (
                     <Space orientation="vertical" size={0}>
-                        <Text>ID: {listing.publication}</Text>
-                        {listing.publication_row_id && (
-                            <Text type="secondary">row_id: {listing.publication_row_id}</Text>
+                        <Text strong>{value || "Без названия"}</Text>
+                        {listing.url && (
+                            <Button
+                                type="link"
+                                size="small"
+                                icon={<LinkOutlined/>}
+                                href={listing.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{padding: 0}}
+                            >
+                                Открыть на Avito
+                            </Button>
                         )}
                     </Space>
-                ) : (
-                    <Tag>Не связана</Tag>
                 ),
-        },
-        {
-            title: "Последний импорт",
-            dataIndex: "last_seen_at",
-            key: "last_seen_at",
-            width: 190,
-            render: (value: string | null) => value ?? "не было"
-        },
-        {
-            title: "Действия",
-            key: "actions",
-            width: 140,
-            fixed: "right",
-            render: (_, listing) => (
-                <Button
-                    size="small"
-                    icon={<EditOutlined/>}
-                    disabled={listing.source !== "avito_excel"}
-                    onClick={() => handleOpenEditListing(listing)}
-                >
-                    Изменить
-                </Button>
-            ),
-        },
-    ];
+            },
+            {
+                title: "Статус",
+                dataIndex: "status",
+                key: "status",
+                width: 140,
+                render: (value: string | null) => {
+                    if (!value) {
+                        return <Tag>Неизвестно</Tag>
+                    }
+
+                    return (
+                        <Tag color={statusColorByValue[value] ?? "processing"}>
+                            {value}
+                        </Tag>
+                    )
+                }
+            },
+
+            {
+                title: "Управление",
+                key: "management_status",
+                width: 150,
+                render: (_, listing) => (
+                    <Tag color={listing.management_status === "managed" ? "success" : "warning"}>
+                        {managementStatusLabel[listing.management_status] ?? listing.management_status}
+                    </Tag>
+                ),
+            },
+            {
+                title: "В автозагрузке",
+                key: "desired_status",
+                width: 150,
+                render: (_, listing) => (
+                    <Tag color={desiredStatusColor[listing.desired_status] ?? "default"}>
+                        {desiredStatusLabel[listing.desired_status] ?? listing.desired_status}
+                    </Tag>
+                ),
+            },
+            {
+                title: "Окончание",
+                key: "date_end",
+                width: 150,
+                render: (_, listing) => {
+                    const tone = getDateDeadlineTone(listing.date_end);
+
+                    return (
+                        <Tooltip title={listing.date_end_source === "avito" ? "Avito" : "Нет данных"}>
+                            <Text style={{color: dateDeadlineColor[tone], fontWeight: 600}}>
+                                {formatDate(listing.date_end)}
+                            </Text>
+                        </Tooltip>
+                    );
+                },
+            },
+            {
+                title: "Unmapped",
+                key: "unmapped_data",
+                width: 120,
+                render: (_, listing) => {
+                    const count = Object.keys(listing.unmapped_data ?? {}).length;
+
+                    return count > 0 ? (
+                        <Tag color="warning">{count}</Tag>
+                    ) : (
+                        <Tag color="success">0</Tag>
+                    );
+                },
+            },
+            {
+                title: "Адрес",
+                dataIndex: "address",
+                key: "address",
+                width: 280,
+                render: (value: string) => value || "Не указан",
+            },
+            {
+                title: "Avito-аккаунт",
+                dataIndex: "avito_account_name",
+                key: "avito_account_name",
+                width: 220,
+                render: (value: string) => value || "Не указан",
+            },
+            {
+                title: "Публикация",
+                key: "publication",
+                width: 180,
+                render: (_, listing) =>
+                    listing.publication ? (
+                        <Space orientation="vertical" size={0}>
+                            <Text>ID: {listing.publication}</Text>
+                            {listing.publication_row_id && (
+                                <Text type="secondary" style={{fontSize: 11}}>
+                                    row_id: {listing.publication_row_id}
+                                </Text>
+                            )}
+                        </Space>
+                    ) : (
+                        <Tag>Не связана</Tag>
+                    ),
+            },
+            {
+                title: "Последний импорт",
+                dataIndex: "last_seen_at",
+                key: "last_seen_at",
+                width: 260,
+                render: (value: string | null) => value ?? "не было"
+            },
+            {
+                title: "Действия",
+                key: "actions",
+                width: 144,
+                fixed: "right",
+                onHeaderCell: () => ({
+                    style: {
+                        backgroundColor: "#fafafa",
+                    },
+                }),
+                onCell: () => ({
+                    style: {
+                        backgroundColor: "#fafafa",
+                    },
+                }),
+                render: (_, listing) => (
+                    <Space>
+                        <Tooltip title="Изменить объявление">
+                            <Button
+                                size="small"
+                                icon={<EditOutlined/>}
+                                disabled={listing.source !== "avito_excel"}
+                                onClick={() => handleOpenEditListing(listing)}
+                            />
+                        </Tooltip>
+                        <Tooltip title="Продлить на 30 дней">
+                            <Button
+                                size="small"
+                                icon={<CalendarOutlined/>}
+                                disabled={
+                                    listing.source !== "avito_excel" ||
+                                    !["managed", "out_of_sync"].includes(listing.management_status)
+                                }
+                                loading={
+                                    extendListingMutation.isPending &&
+                                    extendListingMutation.variables?.listingId === listing.id
+                                }
+                                onClick={() =>
+                                    extendListingMutation.mutate({
+                                        listingId: listing.id,
+                                        avitoAccountId: listing.avito_account,
+                                    })
+                                }
+                            />
+                        </Tooltip>
+                    </Space>
+                ),
+            },
+        ]
+    ;
 
     const handleRemapImportFields = () => {
         if (!avitoAccountId) {
@@ -523,16 +583,19 @@ export const AvitoListingsPage: React.FC = () => {
         });
     };
 
-    const handleBulkDesiredStatus = (nextStatus: AvitoListingDesiredStatus) => {
+    const handleBulkLifecycle = (action: AvitoAdLifecycleAction) => {
         if (!avitoAccountId || selectedListingIds.length === 0) {
             return;
         }
 
-        bulkDesiredStatusMutation.mutate(
+        bulkLifecycleMutation.mutate(
             {
                 avitoAccountId,
-                listingIds: selectedListingIds,
-                desiredStatus: nextStatus,
+                items: selectedListingIds.map((id) => ({
+                    entity_type: "avito_listing",
+                    id,
+                })),
+                action,
             },
             {
                 onSuccess: () => {
@@ -985,35 +1048,14 @@ export const AvitoListingsPage: React.FC = () => {
 
             <Card size="small">
                 <Space wrap size="middle">
-                    <Text strong>Выбрано: {selectedListingIds.length}</Text>
 
-                    <Button
-                        icon={<PlayCircleOutlined/>}
-                        disabled={!avitoAccountId || selectedListingIds.length === 0}
-                        loading={bulkDesiredStatusMutation.isPending}
-                        onClick={() => handleBulkDesiredStatus("publish")}
-                    >
-                        Публиковать
-                    </Button>
-
-                    <Button
-                        icon={<PauseCircleOutlined/>}
-                        disabled={!avitoAccountId || selectedListingIds.length === 0}
-                        loading={bulkDesiredStatusMutation.isPending}
-                        onClick={() => handleBulkDesiredStatus("pause")}
-                    >
-                        Пауза
-                    </Button>
-
-                    <Button
-                        danger
-                        icon={<StopOutlined/>}
-                        disabled={!avitoAccountId || selectedListingIds.length === 0}
-                        loading={bulkDesiredStatusMutation.isPending}
-                        onClick={() => handleBulkDesiredStatus("archive")}
-                    >
-                        Архив
-                    </Button>
+                    <AdLifecycleBulkActions
+                        selectedCount={selectedListingIds.length}
+                        disabled={!avitoAccountId}
+                        loading={bulkLifecycleMutation.isPending}
+                        onAction={handleBulkLifecycle}
+                        onClearSelection={() => setSelectedListingIds([])}
+                    />
 
                     {selectedListingIds.length > 0 && (
                         <Button onClick={() => setSelectedListingIds([])}>
@@ -1021,19 +1063,19 @@ export const AvitoListingsPage: React.FC = () => {
                         </Button>
                     )}
 
-                    <Text type="secondary">
-                        Эти действия меняют `desired_status`: строки с pause/archive не попадут в следующий CSV.
-                    </Text>
                 </Space>
             </Card>
 
-            <Table
+            <Table<AvitoListing>
                 rowKey="id"
                 columns={columns}
                 rowSelection={rowSelection}
                 dataSource={listingsQuery.data?.results ?? []}
                 loading={listingsQuery.isLoading}
                 onChange={handleTableChange}
+                tableLayout="fixed"
+                scroll={{x: 2200}}
+                rowHoverable={false}
                 pagination={{
                     current: page,
                     pageSize,

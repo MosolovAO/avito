@@ -1,9 +1,10 @@
 // src/pages/ads/AdCreativesPage.tsx
 import React, {useState} from "react";
-import {DeleteOutlined, EditOutlined, SearchOutlined} from "@ant-design/icons";
+import {CalendarOutlined, DeleteOutlined, EditOutlined, FilterOutlined, SearchOutlined} from "@ant-design/icons";
 import {
     Alert,
     Button,
+    Drawer,
     Input,
     Select,
     Space,
@@ -11,6 +12,7 @@ import {
     Tag,
     Modal,
     Typography,
+    Tooltip,
 } from "antd";
 import type {TablePaginationConfig, TableProps} from "antd";
 import {useNavigate} from "react-router-dom";
@@ -24,10 +26,16 @@ import {
     useAdCreativesQuery,
     useAvitoProjectsQuery,
     useDeleteAdCreativeMutation,
+    useExtendAdCreativePublicationsMutation,
 } from "../../features/avito";
 
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
-import {formatDateTime} from "../../shared/lib/formatDateTime";
+import {
+    dateDeadlineColor,
+    formatDate,
+    formatDateTime,
+    getDateDeadlineTone,
+} from "../../shared/lib/formatDateTime";
 
 const {Title, Text, Paragraph} = Typography;
 
@@ -52,6 +60,7 @@ export const AdCreativesPage: React.FC = () => {
     const [source, setSource] = useState<AdCreativeSource | undefined>();
     const [avitoAccountId, setAvitoAccountId] = useState<number | undefined>();
     const [search, setSearch] = useState("");
+    const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
 
     const queryParams: AdCreativesQueryParams = {
         page,
@@ -64,7 +73,7 @@ export const AdCreativesPage: React.FC = () => {
     const creativesQuery = useAdCreativesQuery(queryParams);
     const projectsQuery = useAvitoProjectsQuery();
     const deleteCreativeMutation = useDeleteAdCreativeMutation();
-
+    const extendCreativeMutation = useExtendAdCreativePublicationsMutation();
 
     const handleDeleteCreative = (creative: AdCreative) => {
         modal.confirm({
@@ -76,18 +85,44 @@ export const AdCreativesPage: React.FC = () => {
             onOk: () => deleteCreativeMutation.mutateAsync(creative.id),
         });
     };
+
+    const handleExtendCreative = (creative: AdCreative) => {
+        modal.confirm({
+            title: "Продлить публикации креатива?",
+            content: `Будет обновлен общий DateEnd креатива. Публикации с индивидуальным DateEnd не изменятся. Связанных публикаций: ${creative.publications_count}.`,
+            okText: "Продлить",
+            cancelText: "Отмена",
+            onOk: () => extendCreativeMutation.mutateAsync(creative.id),
+        });
+    };
     const resetPage = () => {
         setPage(1);
+    };
+
+    const activeFiltersCount = [
+        source,
+        avitoAccountId,
+    ].filter(Boolean).length;
+
+    const resetFilters = () => {
+        setSource(undefined);
+        setAvitoAccountId(undefined);
+        resetPage();
+    };
+
+    const creativeDateEndSourceLabel: Record<AdCreative["date_end_source"], string> = {
+        creative: "Креатив",
+        default: "30 дней",
     };
 
     const columns: TableProps<AdCreative>["columns"] = [
         {
             title: "Креатив",
             key: "creative",
-            width: 2180,
+            width: 420,
             render: (_, creative) => (
                 <Space direction="vertical" size={0}>
-                    <Text strong>{creative.title}</Text>
+                    <Text>{creative.title}</Text>
                     <Paragraph
                         type="secondary"
                         ellipsis={{rows: 2, expandable: false}}
@@ -102,7 +137,7 @@ export const AdCreativesPage: React.FC = () => {
             title: "Источник",
             dataIndex: "source",
             key: "source",
-            width: 140,
+            width: 170,
             render: (value: AdCreativeSource) => (
                 <Tag color={creativeSourceColor[value]}>
                     {creativeSourceLabel[value]}
@@ -113,12 +148,28 @@ export const AdCreativesPage: React.FC = () => {
             title: "Публикации",
             dataIndex: "publications_count",
             key: "publications_count",
-            width: 130,
+            width: 120,
+        },
+        {
+            title: "Окончание",
+            key: "date_end",
+            width: 120,
+            render: (_, creative) => {
+                const deadlineTone = getDateDeadlineTone(creative.effective_date_end);
+
+                return (
+                    <Tooltip title={creativeDateEndSourceLabel[creative.date_end_source]}>
+                        <Text style={{color: dateDeadlineColor[deadlineTone]}}>
+                            {formatDate(creative.effective_date_end)}
+                        </Text>
+                    </Tooltip>
+                );
+            },
         },
         {
             title: "Проекты",
             key: "projects",
-            width: 240,
+            width: 160,
             render: (_, creative) => {
                 if (creative.projects.length === 0) {
                     return <Text type="secondary">Без проекта</Text>;
@@ -128,6 +179,7 @@ export const AdCreativesPage: React.FC = () => {
                     <Space wrap size={4}>
                         {creative.projects.map((project) => (
                             <Tag key={project.id}>{project.name}</Tag>
+
                         ))}
                     </Space>
                 );
@@ -156,16 +208,37 @@ export const AdCreativesPage: React.FC = () => {
         {
             title: "Действия",
             key: "actions",
-            width: 120,
+            width: 144,
+            fixed: "right",
+            onHeaderCell: () => ({
+                style: {
+                    paddingLeft: 24,
+                    backgroundColor: "#fafafa",
+                },
+            }),
+            onCell: () => ({
+                style: {
+                    paddingLeft: 24,
+                    backgroundColor: "#fafafa",
+                },
+            }),
             render: (_, creative) => (
                 <Space>
+                    <Button
+                        icon={<CalendarOutlined/>}
+                        disabled={!canManageAvitoAccounts}
+                        loading={
+                            extendCreativeMutation.isPending &&
+                            extendCreativeMutation.variables === creative.id
+                        }
+                        onClick={() => handleExtendCreative(creative)}
+                    />
+
                     <Button
                         icon={<EditOutlined/>}
                         disabled={!canManageAvitoAccounts}
                         onClick={() => navigate(`/ads/creatives/${creative.id}/edit`)}
-                    >
-
-                    </Button>
+                    />
 
                     <Button
                         danger
@@ -173,11 +246,8 @@ export const AdCreativesPage: React.FC = () => {
                         disabled={!canManageAvitoAccounts}
                         loading={deleteCreativeMutation.isPending}
                         onClick={() => handleDeleteCreative(creative)}
-                    >
-
-                    </Button>
+                    />
                 </Space>
-
             ),
         },
     ];
@@ -210,7 +280,15 @@ export const AdCreativesPage: React.FC = () => {
                 </Text>
             </Space>
 
-            <Space wrap size="middle">
+            <div
+                style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    width: "100%",
+                }}
+            >
                 <Input
                     allowClear
                     prefix={<SearchOutlined/>}
@@ -223,37 +301,15 @@ export const AdCreativesPage: React.FC = () => {
                     }}
                 />
 
-                <Select
-                    allowClear
-                    placeholder="Источник"
-                    value={source}
-                    style={{width: 180}}
-                    options={[
-                        {value: "auto", label: "Автогенерация"},
-                        {value: "manual", label: "Ручной масс-постинг"},
-                    ]}
-                    onChange={(value) => {
-                        setSource(value);
-                        resetPage();
-                    }}
-                />
-
-                <Select
-                    allowClear
-                    placeholder="Проект"
-                    value={avitoAccountId}
-                    style={{width: 180}}
-                    loading={projectsQuery.isLoading}
-                    options={(projectsQuery.data ?? []).map((project) => ({
-                        value: project.id,
-                        label: project.name,
-                    }))}
-                    onChange={(value) => {
-                        setAvitoAccountId(value);
-                        resetPage();
-                    }}
-                />
-            </Space>
+                <Button
+                    icon={<FilterOutlined/>}
+                    type={activeFiltersCount > 0 ? "primary" : "default"}
+                    onClick={() => setFiltersDrawerOpen(true)}
+                    style={{marginLeft: "auto"}}
+                >
+                    {activeFiltersCount > 0 ? `Фильтры (${activeFiltersCount})` : "Фильтры"}
+                </Button>
+            </div>
 
             <Table
                 rowKey="id"
@@ -261,6 +317,10 @@ export const AdCreativesPage: React.FC = () => {
                 dataSource={creativesQuery.data?.results ?? []}
                 loading={creativesQuery.isLoading}
                 onChange={handleTableChange}
+                bordered={true}
+
+                tableLayout="fixed"
+                scroll={{x: 1800}}
                 pagination={{
                     current: page,
                     pageSize,
@@ -268,6 +328,51 @@ export const AdCreativesPage: React.FC = () => {
                     showSizeChanger: false,
                 }}
             />
+
+            <Drawer
+                title="Фильтры"
+                open={filtersDrawerOpen}
+                width={360}
+                onClose={() => setFiltersDrawerOpen(false)}
+                extra={
+                    <Button onClick={resetFilters} disabled={activeFiltersCount === 0}>
+                        Сбросить
+                    </Button>
+                }
+            >
+                <Space direction="vertical" size={16} style={{width: "100%"}}>
+                    <Select
+                        allowClear
+                        placeholder="Источник"
+                        value={source}
+                        style={{width: "100%"}}
+                        options={[
+                            {value: "auto", label: "Автогенерация"},
+                            {value: "manual", label: "Ручной масс-постинг"},
+                        ]}
+                        onChange={(value) => {
+                            setSource(value);
+                            resetPage();
+                        }}
+                    />
+
+                    <Select
+                        allowClear
+                        placeholder="Проект"
+                        value={avitoAccountId}
+                        style={{width: "100%"}}
+                        loading={projectsQuery.isLoading}
+                        options={(projectsQuery.data ?? []).map((project) => ({
+                            value: project.id,
+                            label: project.name,
+                        }))}
+                        onChange={(value) => {
+                            setAvitoAccountId(value);
+                            resetPage();
+                        }}
+                    />
+                </Space>
+            </Drawer>
         </Space>
     );
 };

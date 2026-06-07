@@ -3,9 +3,11 @@ import {message} from "antd";
 import {getApiErrorMessage} from "../../../shared/api/errors";
 import {
     avitoKeys,
+    extendAdPublication,
     getAdPublication,
     getAdPublications,
     updateAdPublication,
+    inheritAdPublicationCreativeDateEnd
 } from "../../../shared/api/avito";
 import {requireWorkspaceId} from "../../../shared/api/workspaceHeaders";
 import {useCurrentWorkspace} from "../../workspace/model/useCurrentWorkspace";
@@ -58,6 +60,9 @@ export const useUpdateAdPublicationMutation = () => {
                 queryClient.invalidateQueries({
                     queryKey: avitoKeys.accounts(currentWorkspaceId),
                 }),
+                queryClient.invalidateQueries({
+                    queryKey: [...avitoKeys.all, "ads", currentWorkspaceId],
+                }),
             ]);
 
             message.success("Публикация обновлена, CSV помечен к пересборке");
@@ -65,6 +70,86 @@ export const useUpdateAdPublicationMutation = () => {
         onError: (error) => {
             message.error(
                 getApiErrorMessage(error, "Не удалось обновить публикацию"),
+            );
+        },
+    });
+};
+
+export const useExtendAdPublicationMutation = () => {
+    const queryClient = useQueryClient();
+    const {currentWorkspaceId} = useCurrentWorkspace();
+
+    return useMutation({
+        mutationFn: (publicationId: number) =>
+            extendAdPublication(
+                requireWorkspaceId(currentWorkspaceId),
+                publicationId,
+            ),
+        onSuccess: async (_, publicationId) => {
+            await Promise.all([
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.publications(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: [
+                        ...avitoKeys.publications(currentWorkspaceId),
+                        "detail",
+                        publicationId,
+                    ],
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.accounts(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: [...avitoKeys.all, "ads", currentWorkspaceId],
+                }),
+            ]);
+
+            message.success("Публикация продлена, CSV помечен к пересборке");
+        },
+        onError: (error) => {
+            message.error(
+                getApiErrorMessage(error, "Не удалось продлить публикацию"),
+            );
+        },
+    });
+};
+
+export const useInheritAdPublicationCreativeDateEndMutation = () => {
+    const queryClient = useQueryClient();
+    const {currentWorkspaceId} = useCurrentWorkspace();
+
+    return useMutation({
+        mutationFn: (publicationId: number) =>
+            inheritAdPublicationCreativeDateEnd(
+                requireWorkspaceId(currentWorkspaceId),
+                publicationId,
+            ),
+        onSuccess: async (_, publicationId) => {
+            await Promise.all([
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.publications(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: [
+                        ...avitoKeys.publications(currentWorkspaceId),
+                        "detail",
+                        publicationId,
+                    ],
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: [...avitoKeys.all, "ads", currentWorkspaceId],
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.accounts(currentWorkspaceId),
+                }),
+            ]);
+
+            message.success("Публикация снова использует срок креатива");
+        },
+        onError: (error) => {
+            message.error(
+                getApiErrorMessage(error, "Не удалось вернуть срок креатива"),
             );
         },
     });

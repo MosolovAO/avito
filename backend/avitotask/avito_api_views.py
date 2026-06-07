@@ -22,8 +22,8 @@ from avitotask.services.avito_api import (
 )
 
 from avitotask.serializers import (
-    AvitoListingBulkDesiredStatusSerializer,
     AvitoListingBulkManagementStatusSerializer,
+    AvitoAccountAdsBulkLifecycleSerializer,
 )
 
 from avitotask.services.avito_ads import (
@@ -39,8 +39,9 @@ from avitotask.services.avito_excel_import import (
 
 from avitotask.services.ad_editing import AdEditingError
 
-from avitotask.services.avito_listing_editing import bulk_update_avito_listing_desired_status, \
-    bulk_update_avito_listing_management_status
+from avitotask.services.avito_listing_editing import (
+    bulk_update_avito_listing_management_status,
+)
 from avitotask.services.avito_listing_lifecycle import build_avito_listing_lifecycle_report
 from avitotask.services.avito_listing_unmapped import (
     build_avito_listing_unmapped_summary,
@@ -66,6 +67,8 @@ from django.http import FileResponse
 
 from django.conf import settings
 from datetime import timedelta
+
+from avitotask.services.ad_lifecycle import bulk_update_ads_lifecycle
 
 
 def build_autoload_report_sync_rate_limit_response(avito_account):
@@ -484,6 +487,17 @@ class AvitoAccountAdsListSerializer(serializers.Serializer):
         allow_blank=True,
         default="",
     )
+    address = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    ordering = serializers.ChoiceField(
+        choices=["", "date_end", "-date_end"],
+        required=False,
+        allow_blank=True,
+        default="",
+    )
     page = serializers.IntegerField(
         required=False,
         min_value=1,
@@ -731,11 +745,11 @@ class AvitoAccountExcelImportApplyView(APIView):
         )
 
 
-class AvitoAccountBulkListingDesiredStatusView(APIView):
+class AvitoAccountAdsBulkLifecycleView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, avito_account_id):
-        serializer = AvitoListingBulkDesiredStatusSerializer(data=request.data)
+        serializer = AvitoAccountAdsBulkLifecycleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         workspace = get_request_workspace(
@@ -749,11 +763,11 @@ class AvitoAccountBulkListingDesiredStatusView(APIView):
         )
 
         try:
-            result = bulk_update_avito_listing_desired_status(
+            result = bulk_update_ads_lifecycle(
                 workspace=workspace,
                 avito_account=avito_account,
-                listing_ids=serializer.validated_data["listing_ids"],
-                desired_status=serializer.validated_data["desired_status"],
+                items=serializer.validated_data["items"],
+                action=serializer.validated_data["action"],
             )
         except AdEditingError as exc:
             return Response(
@@ -842,6 +856,8 @@ class AvitoAccountAdsListView(APIView):
             has_avito_id=serializer.validated_data["has_avito_id"],
             has_errors=serializer.validated_data["has_errors"],
             search=serializer.validated_data["search"].strip(),
+            address=serializer.validated_data["address"].strip(),
+            ordering=serializer.validated_data["ordering"],
         )
 
         result = list_avito_account_ads(

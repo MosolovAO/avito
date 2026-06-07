@@ -6,6 +6,7 @@ export type AvitoListingSource = "api" | "avito_excel" | "service";
 export type AvitoListingManagementStatus = "observed" | "managed" | "out_of_sync";
 export type AvitoListingDesiredStatus = "publish" | "pause" | "archive";
 export type AvitoAdEntityType = "avito_listing" | "ad_publication";
+export type AvitoAdLifecycleAction = "publish" | "pause" | "delete";
 
 export interface AvitoAccount {
     id: number;
@@ -120,6 +121,8 @@ export interface AvitoListing {
     avito_account_name: string;
     publication: number | null;
     publication_row_id: string | null;
+    date_end: string;
+    date_end_source: "avito" | "none";
 
     source: AvitoListingSource;
     management_status: AvitoListingManagementStatus;
@@ -160,6 +163,9 @@ export interface AvitoAccountAd {
     publication: number | null;
     publication_row_id: string | null;
 
+    date_end: string;
+    date_end_source: "avito" | "publication" | "creative" | "default" | "none";
+
     source: AvitoListingSource | AdPublicationSource;
     status: string | null;
     desired_status: AvitoListingDesiredStatus | null;
@@ -199,6 +205,8 @@ export interface AvitoAccountAdsQueryParams {
     has_avito_id?: "" | "1" | "0";
     has_errors?: "" | "1" | "0";
     search?: string;
+    address?: string;
+    ordering?: "" | "date_end" | "-date_end";
 }
 
 export interface AvitoAccountAdsResponse {
@@ -206,6 +214,37 @@ export interface AvitoAccountAdsResponse {
     page: number;
     page_size: number;
     results: AvitoAccountAd[];
+}
+
+
+export interface BulkAvitoAdLifecycleItem {
+    entity_type: AvitoAdEntityType;
+    id: number;
+}
+
+export interface BulkAvitoAdLifecycleRequest {
+    action: AvitoAdLifecycleAction;
+    items: BulkAvitoAdLifecycleItem[];
+}
+
+export interface BulkAvitoAdLifecycleResponse {
+    action: AvitoAdLifecycleAction;
+    requested: number;
+    updated: number;
+    publications: {
+        requested: number;
+        matched: number;
+        updated: number;
+        missing: number;
+    };
+    listings: {
+        requested: number;
+        matched: number;
+        updated: number;
+        missing: number;
+        unsupported: number;
+        redirected_to_publications: number;
+    };
 }
 
 export interface AvitoExcelPreviewRow {
@@ -239,11 +278,6 @@ export interface AvitoExcelImportApplyResponse {
     unmapped_columns: string[];
 }
 
-export interface BulkAvitoListingDesiredStatusRequest {
-    listing_ids: number[];
-    desired_status: AvitoListingDesiredStatus;
-}
-
 export interface BulkAvitoListingManagementStatusRequest {
     listing_ids: number[];
     management_status: AvitoListingManagementStatus;
@@ -254,7 +288,6 @@ export interface BulkAvitoListingStatusResponse {
     matched: number;
     updated: number;
     missing: number;
-    desired_status?: AvitoListingDesiredStatus;
     management_status?: AvitoListingManagementStatus;
 }
 
@@ -343,6 +376,8 @@ export interface AdPublication {
     archived_at: string | null;
     created_at: string;
     updated_at: string;
+    effective_date_end: string;
+    date_end_source: "publication" | "creative" | "default";
 }
 
 export interface AdPublicationsQueryParams {
@@ -398,6 +433,7 @@ export interface AdCreativeEdit {
     option_data: JsonObject;
     updated_at: string;
 }
+
 export interface AdCreative {
     id: number;
     task: number | null;
@@ -415,6 +451,8 @@ export interface AdCreative {
     projects: AdCreativeProject[];
     created_at: string;
     updated_at: string;
+    effective_date_end: string;
+    date_end_source: "creative" | "default";
 }
 
 export interface UpdateAdCreativeRequest {

@@ -4,7 +4,7 @@ from typing import Any
 
 from rest_framework.views import APIView
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.decorators import action, api_view, parser_classes, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -50,13 +50,19 @@ from .serializers import (
 
 )
 
-from .services.avito_listing_editing import update_avito_listing
+from .services.avito_listing_editing import update_avito_listing, extend_avito_listing_date_end
 
 from .services.ad_editing import (
     AdEditingError,
     update_ad_creative,
     update_ad_publication,
     delete_ad_creative,
+)
+
+from .services.ad_publication_dates import (
+    extend_ad_creative_publications,
+    extend_ad_publication,
+    inherit_creative_date_end_for_publication,
 )
 
 from .services.ad_generation import (
@@ -455,6 +461,21 @@ class AvitoListingViewSet(WorkspaceScopedModelViewSet):
         output_serializer = self.get_serializer(updated_listing)
         return Response(output_serializer.data)
 
+    @action(detail=True, methods=["patch"], url_path="extend")
+    def extend(self, request, *args, **kwargs):
+        listing = self.get_object()
+
+        try:
+            updated_listing = extend_avito_listing_date_end(
+                listing_id=listing.id,
+                workspace=self.get_workspace(),
+            )
+        except AdEditingError as exc:
+            raise ValidationError({"detail": str(exc)})
+
+        output_serializer = self.get_serializer(updated_listing)
+        return Response(output_serializer.data)
+
 
 class AdPublicationViewSet(WorkspaceScopedModelViewSet):
     serializer_class = AdPublicationSerializer
@@ -528,6 +549,36 @@ class AdPublicationViewSet(WorkspaceScopedModelViewSet):
             )
         except AdEditingError as exc:
             raise ValidationError({"detail": str(exc)})
+
+        output_serializer = self.get_serializer(updated_publication)
+        return Response(output_serializer.data)
+
+    @action(detail=True, methods=["patch"], url_path="extend")
+    def extend(self, request, *args, **kwargs):
+        publication = self.get_object()
+
+        try:
+            updated_publication = extend_ad_publication(
+                publication_id=publication.id,
+                workspace=self.get_workspace(),
+            )
+        except AdPublication.DoesNotExist:
+            raise ValidationError({"detail": "Публикация не найдена."})
+
+        output_serializer = self.get_serializer(updated_publication)
+        return Response(output_serializer.data)
+
+    @action(detail=True, methods=["patch"], url_path="inherit-creative-date-end")
+    def inherit_creative_date_end(self, request, *args, **kwargs):
+        publication = self.get_object()
+
+        try:
+            updated_publication = inherit_creative_date_end_for_publication(
+                publication_id=publication.id,
+                workspace=self.get_workspace(),
+            )
+        except AdPublication.DoesNotExist:
+            raise ValidationError({"detail": "Публикация не найдена."})
 
         output_serializer = self.get_serializer(updated_publication)
         return Response(output_serializer.data)
@@ -658,6 +709,24 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
         )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["patch"], url_path="extend-publications")
+    def extend_publications(self, request, *args, **kwargs):
+        creative = self.get_object()
+
+        try:
+            updated_creative = extend_ad_creative_publications(
+                creative_id=creative.id,
+                workspace=self.get_workspace(),
+            )
+        except AdCreative.DoesNotExist:
+            raise ValidationError({"detail": "Креатив не найден."})
+
+        output_serializer = AdCreativeSerializer(
+            updated_creative,
+            context=self.get_serializer_context(),
+        )
+        return Response(output_serializer.data)
 
 
 # backend/avitotask/api_views.py

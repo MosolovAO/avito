@@ -3,6 +3,7 @@ import {message} from "antd";
 import {
     avitoKeys,
     deleteAdCreative,
+    extendAdCreativePublications,
     getAdCreative,
     getAdCreatives,
     updateAdCreative,
@@ -95,6 +96,46 @@ export const useUpdateAdCreativeMutation = () => {
         }
     })
 }
+
+export const useExtendAdCreativePublicationsMutation = () => {
+    const queryClient = useQueryClient();
+    const {currentWorkspaceId} = useCurrentWorkspace();
+
+    return useMutation({
+        mutationFn: (creativeId: number) =>
+            extendAdCreativePublications(
+                requireWorkspaceId(currentWorkspaceId),
+                creativeId,
+            ),
+        onSuccess: async (_, creativeId) => {
+            await Promise.all([
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.creatives(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: [
+                        ...avitoKeys.creatives(currentWorkspaceId),
+                        "detail",
+                        creativeId,
+                    ],
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.publications(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.accounts(currentWorkspaceId),
+                }),
+            ]);
+
+            message.success("Публикации креатива продлены, CSV помечен к пересборке");
+        },
+        onError: (error) => {
+            message.error(
+                getApiErrorMessage(error, "Не удалось продлить публикации креатива"),
+            );
+        },
+    });
+};
 
 // src/features/avito/model/useAdCreatives.ts
 export const useDeleteAdCreativeMutation = () => {

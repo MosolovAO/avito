@@ -2,21 +2,25 @@ import {useMutation, useQueryClient} from "@tanstack/react-query";
 import {message} from "antd";
 import {
     avitoKeys,
-    bulkUpdateAvitoListingDesiredStatus,
+    bulkUpdateAvitoAdsLifecycle,
     bulkUpdateAvitoListingManagementStatus,
 } from "../../../shared/api/avito";
 import {getApiErrorMessage} from "../../../shared/api/errors";
 import {requireWorkspaceId} from "../../../shared/api/workspaceHeaders";
 import type {
-    AvitoListingDesiredStatus,
+    AvitoAdLifecycleAction,
+    AvitoAdEntityType,
     AvitoListingManagementStatus,
 } from "../../../entities/avito/types";
 import {useCurrentWorkspace} from "../../workspace/model/useCurrentWorkspace";
 
-interface BulkDesiredStatusVariables {
+interface BulkLifecycleVariables {
     avitoAccountId: number;
-    listingIds: number[];
-    desiredStatus: AvitoListingDesiredStatus;
+    items: Array<{
+        entity_type: AvitoAdEntityType;
+        id: number;
+    }>;
+    action: AvitoAdLifecycleAction;
 }
 
 interface BulkManagementStatusVariables {
@@ -25,18 +29,18 @@ interface BulkManagementStatusVariables {
     managementStatus: AvitoListingManagementStatus;
 }
 
-export const useBulkUpdateAvitoListingDesiredStatusMutation = () => {
+export const useBulkUpdateAvitoAdsLifecycleMutation = () => {
     const queryClient = useQueryClient();
     const {currentWorkspaceId} = useCurrentWorkspace();
 
     return useMutation({
-        mutationFn: ({avitoAccountId, listingIds, desiredStatus}: BulkDesiredStatusVariables) =>
-            bulkUpdateAvitoListingDesiredStatus({
+        mutationFn: ({avitoAccountId, items, action}: BulkLifecycleVariables) =>
+            bulkUpdateAvitoAdsLifecycle({
                 workspaceId: requireWorkspaceId(currentWorkspaceId),
                 avitoAccountId,
                 payload: {
-                    listing_ids: listingIds,
-                    desired_status: desiredStatus,
+                    action,
+                    items,
                 },
             }),
         onSuccess: async (result, variables) => {
@@ -48,10 +52,7 @@ export const useBulkUpdateAvitoListingDesiredStatusMutation = () => {
                     queryKey: avitoKeys.listings(currentWorkspaceId),
                 }),
                 queryClient.invalidateQueries({
-                    queryKey: avitoKeys.lifecycle(
-                        currentWorkspaceId,
-                        variables.avitoAccountId,
-                    ),
+                    queryKey: avitoKeys.publications(currentWorkspaceId),
                 }),
                 queryClient.invalidateQueries({
                     queryKey: avitoKeys.ads(
@@ -65,7 +66,7 @@ export const useBulkUpdateAvitoListingDesiredStatusMutation = () => {
         },
         onError: (error) => {
             message.error(
-                getApiErrorMessage(error, "Не удалось обновить желаемый статус"),
+                getApiErrorMessage(error, "Не удалось изменить трансляцию объявлений"),
             );
         },
     });

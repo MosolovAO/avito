@@ -32,6 +32,7 @@ from .models import WorkspaceInvitation, WorkspaceMembership
 
 User = get_user_model()
 
+
 def set_refresh_cookie(response, refresh_token):
     response.set_cookie(
         key=settings.AUTH_REFRESH_COOKIE_NAME,
@@ -120,11 +121,20 @@ class CookieRefreshView(APIView):
         if not refresh:
             return Response(
                 {"detail": "Refresh token cookie is missing."},
-                status=status.HTTP_401_UNAUTHORIZED
+                status=status.HTTP_401_UNAUTHORIZED,
             )
 
         serializer = TokenRefreshSerializer(data={"refresh": refresh})
-        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError:
+            response = Response(
+                {"detail": "Refresh token is invalid, expired, or blacklisted."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+            delete_refresh_cookie(response)
+            return response
 
         response = Response({"access": serializer.validated_data["access"]})
 
@@ -151,6 +161,7 @@ class CookieLogoutView(APIView):
         delete_refresh_cookie(response)
         return response
 
+
 def get_manage_users_membership(request, workspace_id):
     membership = (
         WorkspaceMembership.objects
@@ -162,7 +173,7 @@ def get_manage_users_membership(request, workspace_id):
         )
         .first()
     )
-    
+
     if membership is None:
         raise PermissionDenied("У вас нет доступа к этому кабинету.")
 
@@ -171,89 +182,96 @@ def get_manage_users_membership(request, workspace_id):
 
     return membership
 
+
 def get_workspace_member_or_404(workspace_id, membership_id):
     return get_object_or_404(
         WorkspaceMembership.objects.select_related("user", "workspace"),
         id=membership_id,
         workspace_id=workspace_id
     )
-    
+
+
 def validate_member_can_changed(target_membership, current_user):
     if target_membership.role == WorkspaceMembership.Role.OWNER:
         raise ValidationError("Владельца кабинета нельзя изменить или отключить.")
-    
+
     if target_membership.user_id == current_user.id:
         raise ValidationError("Нельзя изменить собственную роль или отключить самого себя.")
 
     if target_membership.status != WorkspaceMembership.Status.ACTIVE:
         raise ValidationError("Можно управлять только активными участниками.")
 
+
 class WorkspaceMemberListView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request, workspace_id):
         get_manage_users_membership(request, workspace_id)
-        
+
         memberships = (
             WorkspaceMembership.objects
             .select_related("user")
             .filter(workspace_id=workspace_id)
             .order_by("user__email")
         )
-        
+
         return Response(WorkspaceMemberSerializer(memberships, many=True).data)
+
 
 class WorkspaceMemberDetailView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     @transaction.atomic
     def patch(self, request, workspace_id, membership_id):
         get_manage_users_membership(request, workspace_id)
-        
+
         target_membership = (
             WorkspaceMembership.objects
             .select_for_update()
             .select_related("user", "workspace")
             .get(id=membership_id, workspace_id=workspace_id)
         )
-        
+
         validate_member_can_changed(target_membership, request.user)
-        
+
         serializer = WorkspaceMemberRoleUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         target_membership.role = serializer.validated_data["role"]
         target_membership.save(update_fields=["role", "updated_at"])
-        
+
         return Response(WorkspaceMemberSerializer(target_membership).data)
-    
+
+
 class WorkspaceMemberDisableView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     @transaction.atomic
     def post(self, request, workspace_id, membership_id):
         get_manage_users_membership(request, workspace_id)
-        
+
         target_membership = (
             WorkspaceMembership.objects
             .select_for_update()
             .select_related("user", "workspace")
             .get(id=membership_id, workspace_id=workspace_id)
         )
-        
+
         validate_member_can_changed(target_membership, request.user)
-        
+
         target_membership.status = WorkspaceMembership.Status.DISABLED
         target_membership.save(update_fields=["status", "updated_at"])
-        
+
         return Response(WorkspaceMemberSerializer(target_membership).data)
-    
+
+
 def build_invitation_url(invitation):
     return f"{settings.FRONTEND_URL.rstrip('/')}/invites/{invitation.token}"
 
+
 def send_workspace_invitation_email(invitation):
     invite_url = build_invitation_url(invitation)
-    
+
     send_mail(
         subject=f"Приглашение в кабинет {invitation.workspace.name}",
         message=(
@@ -265,96 +283,99 @@ def send_workspace_invitation_email(invitation):
         recipient_list={invitation.email},
         fail_silently=False
     )
-    
+
+
 def ensure_invitation_can_be_used(invitation):
     if invitation.status != WorkspaceInvitation.Status.PENDING:
         raise ValidationError("Это приглашение уже не активно")
-    
+
     if invitation.is_expired:
         invitation.status = WorkspaceInvitation.Status.EXPIRED
         invitation.save(update_fields=["status", "updated_at"])
         raise ValidationError("Скрой действия приглашения истек")
-    
+
     if invitation.role == WorkspaceMembership.Role.OWNER:
         raise ValidationError("Нельзя принять приглашение с ролью владельца")
-    
-    
+
+
 class WorkspaceInvitationListCreateView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     def get(self, request, workspace_id):
         get_manage_users_membership(request, workspace_id)
-        
+
         invitations = (
             WorkspaceInvitation.objects
             .select_related("workspace", "invited_by")
             .filter(workspace_id=workspace_id)
             .order_by("-created_at")
         )
-        
+
         return Response(WorkspaceInvitationSerializer(invitations, many=True).data)
-    
+
     @transaction.atomic
     def post(self, request, workspace_id):
         manager_membership = get_manage_users_membership(request, workspace_id)
         workspace = manager_membership.workspace
-        
+
         serializer = WorkspaceInvitationCreateSerializer(
             data=request.data,
             context={"workspace": workspace},
         )
-        
+
         serializer.is_valid(raise_exception=True)
-        
+
         invitation = WorkspaceInvitation.objects.create(
             workspace=workspace,
             email=serializer.validated_data["email"],
             role=serializer.validated_data["role"],
             invited_by=request.user,
         )
-        
+
         send_workspace_invitation_email(invitation)
-        
+
         data = WorkspaceInvitationSerializer(invitation).data
         data["accept_url"] = build_invitation_url(invitation)
-        
+
         return Response(data, status=status.HTTP_201_CREATED)
-    
+
+
 class WorkspaceInvitationRevokeView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     @transaction.atomic
     def post(self, request, workspace_id, invitation_id):
         get_manage_users_membership(request, workspace_id)
-        
+
         invitation = get_object_or_404(
             WorkspaceInvitation.objects.select_for_update(),
             id=invitation_id,
             workspace_id=workspace_id
         )
-        
+
         if invitation.status != WorkspaceInvitation.Status.PENDING:
             raise ValidationError("Можно отозвать только активное приглашение.")
-        
+
         invitation.status = WorkspaceInvitation.Status.REVOKED
         invitation.save(update_fields=["status", "updated_at"])
-        
+
         return Response(WorkspaceInvitationSerializer(invitation).data)
-    
+
+
 class WorkspaceInvitationPublicDetailView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    
+
     def get(self, request, token):
         invitation = get_object_or_404(
             WorkspaceInvitation.objects.select_related("workspace"),
             token=token,
         )
-        
+
         if invitation.is_expired:
             invitation.status = WorkspaceInvitation.Status.EXPIRED
             invitation.save(update_fields=["status", "updated_at"])
-            
+
         return Response({
             "workspace": {
                 "id": invitation.workspace_id,
@@ -366,10 +387,11 @@ class WorkspaceInvitationPublicDetailView(APIView):
             "status": invitation.status,
             "expires_at": invitation.expires_at,
         })
-        
+
+
 class WorkspaceInvitationAcceptView(APIView):
     permission_classes = [IsAuthenticated]
-    
+
     @transaction.atomic
     def post(self, request, token):
         invitation = get_object_or_404(
@@ -378,9 +400,9 @@ class WorkspaceInvitationAcceptView(APIView):
             .select_related("workspace"),
             token=token,
         )
-        
+
         ensure_invitation_can_be_used(invitation)
-        
+
         if request.user.email.lower() != invitation.email.lower():
             raise ValidationError("Это приглашение создано для другого email.")
 
@@ -390,19 +412,19 @@ class WorkspaceInvitationAcceptView(APIView):
             .filter(workspace=invitation.workspace, user=request.user)
             .first()
         )
-        
+
         if existing_membership:
             if existing_membership.status == WorkspaceMembership.Status.ACTIVE:
                 raise ValidationError("Пользователь уже состоит в этом кабинете")
             if existing_membership.status == WorkspaceMembership.Status.DISABLED:
                 raise ValidationError("Доступ пользователя к этому кабинету отключен.")
-            
+
             existing_membership.role = invitation.role
             existing_membership.status = WorkspaceMembership.Status.ACTIVE
             existing_membership.joined_at = timezone.now()
             existing_membership.save(update_fields=["role", "status", "joined_at", "updated_at"])
             membership = existing_membership
-            
+
         else:
             membership = WorkspaceMembership.objects.create(
                 workspace=invitation.workspace,
@@ -412,11 +434,11 @@ class WorkspaceInvitationAcceptView(APIView):
                 invited_by=invitation.invited_by,
                 joined_at=timezone.now(),
             )
-        
+
         invitation.status = WorkspaceInvitation.Status.ACCEPTED
         invitation.accepted_at = timezone.now()
         invitation.save(update_fields=["status", "accepted_at", "updated_at"])
-        
+
         return Response({
             "user": UserSerializer(request.user).data,
             "workspace": {
@@ -426,11 +448,12 @@ class WorkspaceInvitationAcceptView(APIView):
             },
             "membership": WorkspaceMemberSerializer(membership).data,
         })
-        
+
+
 class WorkspaceInvitationRegisterView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
-    
+
     @transaction.atomic
     def post(self, request, token):
         invitation = get_object_or_404(
@@ -439,23 +462,23 @@ class WorkspaceInvitationRegisterView(APIView):
             .select_related("workspace", "invited_by"),
             token=token
         )
-        
+
         ensure_invitation_can_be_used(invitation)
-        
+
         if User.objects.filter(email__iexact=invitation.email).exists():
             raise ValidationError("Пользователь с таким email уже существует. Войдите и примите приглашение.")
-        
+
         serializer = WorkspaceInvitationRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         user = User.objects.create_user(
             email=invitation.email,
             password=serializer.validated_data["password"],
             first_name=serializer.validated_data.get("first_name", ""),
             last_name=serializer.validated_data.get("last_name", "")
-            
+
         )
-        
+
         membership = WorkspaceMembership.objects.create(
             workspace=invitation.workspace,
             user=user,
@@ -464,13 +487,13 @@ class WorkspaceInvitationRegisterView(APIView):
             invited_by=invitation.invited_by,
             joined_at=timezone.now()
         )
-        
+
         invitation.status = WorkspaceInvitation.Status.ACCEPTED
         invitation.accepted_at = timezone.now()
         invitation.save(update_fields=["status", "accepted_at", "updated_at"])
-        
+
         refresh = RefreshToken.for_user(user)
-        
+
         response = Response({
             "user": UserSerializer(user).data,
             "workspace": {
@@ -480,9 +503,8 @@ class WorkspaceInvitationRegisterView(APIView):
             },
             "membership": WorkspaceMemberSerializer(membership).data,
             "access": str(refresh.access_token),
-        },  status=status.HTTP_201_CREATED)
-        
+        }, status=status.HTTP_201_CREATED)
+
         set_refresh_cookie(response, str(refresh))
-        
+
         return response
-       

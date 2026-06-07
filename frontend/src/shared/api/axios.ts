@@ -16,6 +16,24 @@ const refreshClient = axios.create({
     withCredentials: true
 })
 
+let refreshPromise: Promise<string> | null = null
+
+const refreshAccessToken = async (): Promise<string> => {
+    if (!refreshPromise) {
+        refreshPromise = refreshClient
+            .post<AccessResponse>('/api/auth/refresh/')
+            .then((response) => {
+                setAccessToken(response.data.access)
+                return response.data.access
+            })
+            .finally(() => {
+                refreshPromise = null
+            })
+    }
+
+    return refreshPromise
+}
+
 // Создаём экземпляр axios с базовыми настройками
 const api = axios.create({
     baseURL,
@@ -49,12 +67,11 @@ api.interceptors.response.use(
         originalRequest._retry = true
 
         try {
-            const response = await refreshClient.post<AccessResponse>('/api/auth/refresh/')
-            setAccessToken(response.data.access)
+            const access = await refreshAccessToken()
 
             originalRequest.headers = {
                 ...originalRequest.headers,
-                Authorization:  `Bearer ${response.data.access}`,
+                Authorization: `Bearer ${access}`,
             }
 
             return api(originalRequest)

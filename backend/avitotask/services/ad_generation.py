@@ -19,6 +19,12 @@ from avitotask.models import (
     AdPublication,
 )
 
+from avitotask.services.ad_publication_dates import (
+    DATE_END_FIELD,
+    PUBLICATION_EXTENSION_DAYS,
+    format_avito_date,
+)
+
 MAX_CREATIVE_GENERATION_ATTEMPTS = 50
 RECENT_CREATIVE_LOOKBACK_DAYS = 30
 DUPLICATE_CREATIVE_MATCH_THRESHOLD = 2
@@ -29,6 +35,16 @@ AVITO_DEFAULT_CATEGORY = "Ремонт и строительство"
 def force_default_avito_category(base_data):
     base_data = dict(base_data or {})
     base_data["Category"] = AVITO_DEFAULT_CATEGORY
+    return base_data
+
+
+def force_default_creative_date_end(base_data):
+    base_data = dict(base_data or {})
+
+    if not base_data.get(DATE_END_FIELD):
+        date_end = timezone.localdate() + timedelta(days=PUBLICATION_EXTENSION_DAYS)
+        base_data[DATE_END_FIELD] = format_avito_date(date_end)
+
     return base_data
 
 
@@ -150,7 +166,9 @@ def create_manual_mass_posting(
     )
 
     image_urls = list(image_urls or [])
-    base_data = force_default_avito_category(base_data)
+    base_data = force_default_creative_date_end(
+        force_default_avito_category(base_data)
+    )
     option_data = dict(option_data or {})
 
     dedupe_data = build_creative_dedupe_data(
@@ -368,7 +386,9 @@ def render_description(*, processed_template, title, sku):
 
 
 def build_base_data(task):
-    base_data = force_default_avito_category(task.base_data)
+    base_data = force_default_creative_date_end(
+        force_default_avito_category(task.base_data)
+    )
 
     base_data.update({
         "Price": task.price or 0,

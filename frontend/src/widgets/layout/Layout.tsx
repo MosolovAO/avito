@@ -21,6 +21,7 @@ import {
 import {
     Avatar,
     Button,
+    ConfigProvider,
     Dropdown,
     Layout as AntLayout,
     Menu,
@@ -55,17 +56,36 @@ type MenuKey =
     | "bots"
     | "avitoAds";
 
+const getMenuGroupLabel = (label: string) => (
+    <span
+        style={{
+            color: "rgba(255, 255, 255, 0.42)",
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: 0,
+            textTransform: "uppercase",
+        }}>
+        {label}
+    </span>
+);
 
 const menuItems: MenuProps["items"] = [
     {
-        key: "workspace",
-        icon: <AppstoreOutlined/>,
-        label: "Рабочее пространство",
+        key: "workspace-group",
+        type: "group",
+        label: getMenuGroupLabel("Основное"),
+        children: [
+            {
+                key: "workspace",
+                icon: <AppstoreOutlined/>,
+                label: "Рабочее пространство",
+            },
+        ],
     },
     {
-        key: "ads",
-        icon: <DatabaseOutlined/>,
-        label: "Объявления",
+        key: "ads-group",
+        type: "group",
+        label: getMenuGroupLabel("Объявления"),
         children: [
             {
                 key: "avitoAds",
@@ -73,56 +93,77 @@ const menuItems: MenuProps["items"] = [
                 label: "Все объявления",
             },
             {
-                key: "manualMassPosting",
-                icon: <PlusSquareOutlined/>,
-                label: "Маспостинг",
+                key: "adPublications",
+                icon: <FileTextOutlined/>,
+                label: "Публикации",
+            },
+            {
+                key: "avitoListings",
+                icon: <DatabaseOutlined/>,
+                label: "Импорт авито",
             },
             {
                 key: "adCreatives",
                 icon: <AppstoreAddOutlined/>,
                 label: "Креативы",
             },
+        ],
+    },
+    {
+        key: "tools-group",
+        type: "group",
+        label: getMenuGroupLabel("Инструменты"),
+        children: [
             {
                 key: "products",
                 icon: <ProductOutlined/>,
                 label: "Задачи автогенерации",
             },
             {
-                key: "avitoListings",
-                icon: <DatabaseOutlined/>,
-                label: "Объявления авито",
+                key: "manualMassPosting",
+                icon: <PlusSquareOutlined/>,
+                label: "Ручной масспостинг",
             },
             {
-                key: "adPublications",
-                icon: <FileTextOutlined/>,
-                label: "Публикации",
+                key: "adBatches",
+                icon: <HistoryOutlined/>,
+                label: "Операции",
             },
         ],
     },
     {
-        key: "users",
-        icon: <TeamOutlined/>,
-        label: "Пользователи",
+        key: "admin-group",
+        type: "group",
+        label: getMenuGroupLabel("Администрирование"),
+        children: [
+            {
+                key: "projects",
+                icon: <FolderOutlined/>,
+                label: "Кабинеты Avito",
+            },
+            {
+                key: "users",
+                icon: <TeamOutlined/>,
+                label: "Пользователи",
+            },
+        ],
     },
     {
-        key: "adBatches",
-        icon: <HistoryOutlined/>,
-        label: "Операции",
-    },
-    {
-        key: "projects",
-        icon: <FolderOutlined/>,
-        label: "Проекты",
-    },
-    {
-        key: "chats",
-        icon: <MessageOutlined/>,
-        label: "Чаты",
-    },
-    {
-        key: "bots",
-        icon: <RobotOutlined/>,
-        label: "Боты",
+        key: "other-group",
+        type: "group",
+        label: getMenuGroupLabel("Прочее"),
+        children: [
+            {
+                key: "chats",
+                icon: <MessageOutlined/>,
+                label: "Чаты",
+            },
+            {
+                key: "bots",
+                icon: <RobotOutlined/>,
+                label: "Боты",
+            },
+        ],
     },
 ];
 
@@ -235,21 +276,31 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
                     </Space>
                 </div>
 
-                <Menu
-                    mode="inline"
-                    theme="dark"
-                    selectedKeys={[selectedMenuKey]}
-                    defaultOpenKeys={["ads"]}
-                    items={menuItems}
-                    onClick={handleMenuClick}
-                    style={{
-                        paddingTop: 8,
-                        borderInlineEnd: 0,
-                        height: "calc(100vh - 72px)",
-                        overflowY: "auto",
-                        overflowX: "hidden",
-                    }}
-                />
+                <ConfigProvider
+                    theme={{
+                        components: {
+                            Menu: {
+                                darkItemBg: "#001529",
+                                darkItemHoverBg: "rgba(255, 255, 255, 0.08)",
+                                darkItemSelectedBg: token.colorPrimary,
+                            },
+                        },
+                    }}>
+                    <Menu
+                        mode="inline"
+                        theme="dark"
+                        selectedKeys={[selectedMenuKey]}
+                        items={menuItems}
+                        onClick={handleMenuClick}
+                        style={{
+                            paddingTop: 8,
+                            borderInlineEnd: 0,
+                            height: "calc(100vh - 72px)",
+                            overflowY: "auto",
+                            overflowX: "hidden",
+                        }}
+                    />
+                </ConfigProvider>
             </Sider>
 
             <AntLayout style={{height: "100vh", minWidth: 0, overflow: "hidden"}}>
