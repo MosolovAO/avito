@@ -57,8 +57,7 @@ import {
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import {
     dateDeadlineColor,
-    formatDate,
-    getDateDeadlineTone,
+    getDateDeadlinePresentation,
 } from "../../shared/lib/formatDateTime";
 import type {
     TablePaginationConfig,
@@ -313,12 +312,23 @@ export const AvitoListingsPage: React.FC = () => {
                 key: "date_end",
                 width: 150,
                 render: (_, listing) => {
-                    const tone = getDateDeadlineTone(listing.date_end);
+                    const deadline = getDateDeadlinePresentation(listing.date_end);
 
                     return (
-                        <Tooltip title={listing.date_end_source === "avito" ? "Avito" : "Нет данных"}>
-                            <Text style={{color: dateDeadlineColor[tone], fontWeight: 600}}>
-                                {formatDate(listing.date_end)}
+                        <Tooltip
+                            title={
+                                listing.date_end_source === "avito"
+                                    ? "Avito"
+                                    : "Нет данных"
+                            }
+                        >
+                            <Text
+                                style={{
+                                    color: dateDeadlineColor[deadline.tone],
+                                    fontWeight: 600,
+                                }}
+                            >
+                                {deadline.text}
                             </Text>
                         </Tooltip>
                     );

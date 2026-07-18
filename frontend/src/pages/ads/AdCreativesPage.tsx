@@ -32,9 +32,8 @@ import {
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import {
     dateDeadlineColor,
-    formatDate,
     formatDateTime,
-    getDateDeadlineTone,
+    getDateDeadlinePresentation,
 } from "../../shared/lib/formatDateTime";
 
 const {Title, Text, Paragraph} = Typography;
@@ -155,12 +154,16 @@ export const AdCreativesPage: React.FC = () => {
             key: "date_end",
             width: 120,
             render: (_, creative) => {
-                const deadlineTone = getDateDeadlineTone(creative.effective_date_end);
+                const deadline = getDateDeadlinePresentation(
+                    creative.effective_date_end,
+                );
 
                 return (
-                    <Tooltip title={creativeDateEndSourceLabel[creative.date_end_source]}>
-                        <Text style={{color: dateDeadlineColor[deadlineTone]}}>
-                            {formatDate(creative.effective_date_end)}
+                    <Tooltip
+                        title={creativeDateEndSourceLabel[creative.date_end_source]}
+                    >
+                        <Text style={{color: dateDeadlineColor[deadline.tone]}}>
+                            {deadline.text}
                         </Text>
                     </Tooltip>
                 );

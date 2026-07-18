@@ -50,44 +50,94 @@ export const formatDateTime = (
 
 export type DateDeadlineTone = "danger" | "warning" | "success" | "default";
 
-export const getDateDeadlineTone = (
-    value: string | null | undefined,
-): DateDeadlineTone => {
-    if (!value) {
-        return "default";
+export interface DateDeadlinePresentation {
+    text: string;
+    tone: DateDeadlineTone;
+}
+
+const MILLISECONDS_PER_DAY = 86_400_000;
+
+const defaultDateDeadlinePresentation: DateDeadlinePresentation = {
+    text: "не указано",
+    tone: "default",
+};
+
+const getRussianDayWord = (days: number): "день" | "дня" | "дней" => {
+    const lastTwoDigits = days % 100;
+
+    if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+        return "дней";
     }
 
+    const lastDigit = days % 10;
+
+    if (lastDigit === 1) {
+        return "день";
+    }
+
+    if (lastDigit >= 2 && lastDigit <= 4) {
+        return "дня";
+    }
+
+    return "дней";
+};
+
+const formatDays = (days: number): string =>
+    `${days} ${getRussianDayWord(days)}`;
+
+const getCalendarDateUtc = (
+    value: string | null | undefined,
+): number | null => {
     const formattedDate = formatDate(value, "");
 
-    if (!formattedDate) {
-        return "default";
+    if (!DATE_ONLY_PATTERN.test(formattedDate)) {
+        return null;
     }
 
-    const targetDate = new Date(`${formattedDate}T00:00:00`);
-    const now = new Date();
-    const today = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate(),
+    const [year, month, day] = formattedDate.split("-").map(Number);
+    const timestamp = Date.UTC(year, month - 1, day);
+    const parsedDate = new Date(timestamp);
+
+    const isValidDate =
+        parsedDate.getUTCFullYear() === year &&
+        parsedDate.getUTCMonth() === month - 1 &&
+        parsedDate.getUTCDate() === day;
+
+    return isValidDate ? timestamp : null;
+};
+
+export const getDateDeadlinePresentation = (
+    value: string | null | undefined,
+    currentDate = new Date(),
+): DateDeadlinePresentation => {
+    const targetDateUtc = getCalendarDateUtc(value);
+
+    if (targetDateUtc === null) {
+        return defaultDateDeadlinePresentation;
+    }
+
+    const currentDateUtc = Date.UTC(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        currentDate.getDate(),
     );
 
-    if (Number.isNaN(targetDate.getTime())) {
-        return "default";
+    const diffDays =
+        (targetDateUtc - currentDateUtc) / MILLISECONDS_PER_DAY;
+
+    if (diffDays < 0) {
+        const elapsedDays = Math.abs(diffDays);
+
+        return {
+            text: `Снято ${formatDays(elapsedDays)} назад`,
+            tone: "danger",
+        };
     }
 
-    const diffDays = Math.ceil(
-        (targetDate.getTime() - today.getTime()) / 86_400_000,
-    );
-
-    if (diffDays <= 3) {
-        return "danger";
-    }
-
-    if (diffDays <= 10) {
-        return "warning";
-    }
-
-    return "success";
+    return {
+        text: formatDays(diffDays),
+        tone: diffDays <= 10 ? "warning" : "success",
+    };
 };
 
 export const dateDeadlineColor: Record<DateDeadlineTone, string> = {

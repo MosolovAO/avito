@@ -36,8 +36,7 @@ import {
 
 import {
     dateDeadlineColor,
-    formatDate,
-    getDateDeadlineTone,
+    getDateDeadlinePresentation,
 } from "../../shared/lib/formatDateTime";
 import {
     useAvitoAccountAdsQuery,
@@ -152,6 +151,10 @@ const {Title, Text} = Typography;
 type JsonTextFieldName = "base_data_json" | "option_data_json";
 
 const pageSize = 30;
+
+const DEFAULT_DATE_END_ORDERING: NonNullable<
+    AvitoAccountAdsQueryParams["ordering"]
+> = "-date_end";
 
 const entityTypeLabel: Record<string, string> = {
     avito_listing: "Avito",
@@ -432,7 +435,9 @@ export const AvitoAdsPage: React.FC = () => {
     const [search, setSearch] = useState("");
     const [addressFilter, setAddressFilter] = useState("");
     const [dateEndOrdering, setDateEndOrdering] =
-        useState<AvitoAccountAdsQueryParams["ordering"]>("");
+        useState<AvitoAccountAdsQueryParams["ordering"]>(
+            DEFAULT_DATE_END_ORDERING,
+        );
     const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
     const [selectedAdItems, setSelectedAdItems] = useState<SelectedAdItem[]>([]);
 
@@ -459,7 +464,9 @@ export const AvitoAdsPage: React.FC = () => {
                 hasAvitoId,
                 hasErrors,
                 addressFilter.trim(),
-                dateEndOrdering,
+                dateEndOrdering === DEFAULT_DATE_END_ORDERING
+                    ? ""
+                    : "custom-ordering",
             ].filter(Boolean).length,
         [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors],
     );
@@ -474,7 +481,7 @@ export const AvitoAdsPage: React.FC = () => {
         setHasAvitoId("");
         setHasErrors("");
         setAddressFilter("");
-        setDateEndOrdering("");
+        setDateEndOrdering(DEFAULT_DATE_END_ORDERING);
         resetPage();
     }, [resetPage]);
 
@@ -989,12 +996,17 @@ export const AvitoAdsPage: React.FC = () => {
             key: "date_end",
             width: 100,
             render: (_, item) => {
-                const deadlineTone = getDateDeadlineTone(item.date_end);
+                const deadline = getDateDeadlinePresentation(item.date_end);
 
                 return (
-                    <Tooltip title={dateEndSourceLabel[item.date_end_source] ?? item.date_end_source}>
-                        <Text style={{color: dateDeadlineColor[deadlineTone]}}>
-                            {formatDate(item.date_end)}
+                    <Tooltip
+                        title={
+                            dateEndSourceLabel[item.date_end_source] ??
+                            item.date_end_source
+                        }
+                    >
+                        <Text style={{color: dateDeadlineColor[deadline.tone]}}>
+                            {deadline.text}
                         </Text>
                     </Tooltip>
                 );
@@ -1457,7 +1469,7 @@ export const AvitoAdsPage: React.FC = () => {
                             size={12}
                             style={{width: "100%", marginTop: 20}}
                         >
-                            <Text strong style={{ fontSize: 18}}>Опции категории</Text>
+                            <Text strong style={{fontSize: 18}}>Опции категории</Text>
 
                             {productOptionsError && (
                                 <Alert
