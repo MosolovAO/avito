@@ -234,11 +234,20 @@ AVITO_API_BASE_URL = os.environ.get("AVITO_API_BASE_URL", "https://api.avito.ru"
 AVITO_API_MIN_REQUEST_INTERVAL_SECONDS = float(
     os.environ.get("AVITO_API_MIN_REQUEST_INTERVAL_SECONDS", "0.5")
 )
+AVITO_API_CONNECT_TIMEOUT_SECONDS = float(
+    os.environ.get("AVITO_API_CONNECT_TIMEOUT_SECONDS", "10")
+)
+AVITO_API_READ_TIMEOUT_SECONDS = float(
+    os.environ.get("AVITO_API_READ_TIMEOUT_SECONDS", "60")
+)
 AVITO_API_MAX_RETRIES = int(
     os.environ.get("AVITO_API_MAX_RETRIES", "5")
 )
 AVITO_API_DEFAULT_RETRY_AFTER_SECONDS = int(
     os.environ.get("AVITO_API_DEFAULT_RETRY_AFTER_SECONDS", "60")
+)
+AVITO_AUTOLOAD_REPORT_MAX_PAGES = int(
+    os.environ.get("AVITO_AUTOLOAD_REPORT_MAX_PAGES", "1000")
 )
 
 EMAIL_BACKEND = os.environ.get(
@@ -249,4 +258,17 @@ DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@localhost")
 
 AVITO_SYNC_STALE_TIMEOUT_MINUTES = int(
     os.environ.get("AVITO_SYNC_STALE_TIMEOUT_MINUTES", "30")
+)
+
+AVITO_AUTOLOAD_SYNC_SOFT_TIME_LIMIT_SECONDS = int(
+    os.environ.get(
+        "AVITO_AUTOLOAD_SYNC_SOFT_TIME_LIMIT_SECONDS",
+        "900",
+    )
+)
+AVITO_AUTOLOAD_SYNC_TIME_LIMIT_SECONDS = int(
+    os.environ.get(
+        "AVITO_AUTOLOAD_SYNC_TIME_LIMIT_SECONDS",
+        "960",
+    )
 )

@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from django.db import transaction
 
-from avitotask.models import AvitoAccount, AvitoListing, AvitoListingDailyStats, AvitoOAuthToken
+from analytics.models import AvitoListingDailyStats
+from avitotask.models import AvitoListing, AvitoOAuthToken
 from avitotask.services.avito_api import AvitoApiClient, AvitoApiError
 
 
@@ -47,23 +49,44 @@ def import_avito_listing_daily_stats_for_account(
     created_stats = 0
     updated_stats = 0
 
+    date_from = normalize_date(date_from)
+    date_to = normalize_date(date_to)
+
     for listings_chunk in chunked(listings, 100):
-        items_ids = [int(listing.avito_id) for listing in listings_chunk]
-        payload = client.get_item_stats(
+        item_ids = [int(listing.avito_id) for listing in listings_chunk]
+
+        stats_payload = client.get_item_stats(
             token=token,
             user_id=avito_account.external_account_id,
-            item_ids=items_ids,
-            date_from=normalize_date(date_from),
-            date_to=normalize_date(date_to)
+            item_ids=item_ids,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        spend_payload = get_item_spending_payload(
+            client=client,
+            token=token,
+            user_id=avito_account.external_account_id,
+            item_ids=item_ids,
+            date_from=date_from,
+            date_to=date_to,
         )
 
-        for item in payload.get("result", {}).get("items", []):
+        spending_by_item_and_date = build_spending_by_item_and_date(spend_payload)
+
+        for item in stats_payload.get("result", {}).get("items", []):
             listing = listing_by_avito_id.get(str(item.get("itemId")))
             if listing is None:
                 continue
 
             for stat in item.get("stats") or []:
-                _, was_created = upsert_daily_stat(listing, stat)
+                stat_date = date.fromisoformat(stat["date"])
+                spending = spending_by_item_and_date.get((str(item.get("itemId")), stat_date))
+
+                _, was_created = upsert_daily_stat(
+                    listing=listing,
+                    stat=stat,
+                    total_spend=spending,
+                )
                 total_days += 1
 
                 if was_created:
@@ -103,8 +126,48 @@ def get_listings_for_stats(avito_account, listing_ids=None):
     return list(queryset)
 
 
-def upsert_daily_stat(listing, stat):
+def get_item_spending_payload(client, token, user_id, item_ids, date_from, date_to):
+    if not hasattr(client, "get_item_analytics"):
+        return {}
+
+    return client.get_item_analytics(
+        token=token,
+        user_id=user_id,
+        item_ids=item_ids,
+        date_from=date_from,
+        date_to=date_to,
+        metrics=["spending"],
+    )
+
+
+def build_spending_by_item_and_date(payload):
+    result = {}
+
+    for item in payload.get("result", {}).get("items", []):
+        item_id = str(item.get("itemId"))
+
+        for stat in item.get("stats") or []:
+            stat_date = date.fromisoformat(stat["date"])
+            spending = stat.get("spending")
+
+            if spending is None:
+                continue
+
+            result[(item_id, stat_date)] = money_from_kopecks(spending)
+
+    return result
+
+
+def money_from_kopecks(value):
+    return (Decimal(str(value)) / Decimal("100")).quantize(Decimal("0.01"))
+
+
+def upsert_daily_stat(listing, stat, total_spend=None):
     stat_date = date.fromisoformat(stat["date"])
+    raw_metrics = dict(stat)
+
+    if total_spend is not None:
+        raw_metrics["spending"] = int(total_spend * Decimal("100"))
 
     return AvitoListingDailyStats.objects.update_or_create(
         listing=listing,
@@ -116,8 +179,9 @@ def upsert_daily_stat(listing, stat):
             "favorites": int(stat.get("uniqFavorites") or 0),
             "calls": int(stat.get("calls") or 0),
             "messages": int(stat.get("messages") or 0),
-            "raw_metrics": stat,
-        }
+            "total_spend": total_spend,
+            "raw_metrics": raw_metrics,
+        },
     )
 
 

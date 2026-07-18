@@ -47,6 +47,11 @@ export interface Product {
     projects?: { id: number; project_name: string }[]
 }
 
+export interface ProductCategory {
+    id: number
+    name: string
+}
+
 export interface ProductSchedule {
     frequency: 1 | 2 | 3 | 4
     days: Array<string | null>
@@ -125,6 +130,7 @@ export interface ProductFormData {
 }
 
 export interface ProductBaseData {
+    Category?: string
     ListingFee?: string
     EMail?: string
     ContactPhone?: string

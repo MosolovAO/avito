@@ -256,7 +256,13 @@ def get_filtered_listings(
             workspace=workspace,
             avito_account=avito_account,
         )
-        .select_related("avito_account", "publication", "publication__creative")
+        .select_related(
+            "avito_account",
+            "option_category",
+            "publication",
+            "publication__creative",
+            "publication__creative__option_category",
+        )
         .order_by("-last_seen_at", "-created_at")
     )
 
@@ -312,7 +318,13 @@ def get_filtered_unlinked_publications(
             avito_account=avito_account,
             avito_listing__isnull=True,
         )
-        .select_related("avito_account", "creative", "task", "batch")
+        .select_related(
+            "avito_account",
+            "creative",
+            "creative__option_category",
+            "task",
+            "batch",
+        )
         .order_by("-created_at")
     )
 
@@ -346,6 +358,7 @@ def get_filtered_unlinked_publications(
 
 def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
     publication = listing.publication
+    option_category = publication.creative.option_category
     autoload_error = extract_listing_autoload_error(listing)
     date_end_payload = get_linked_ad_date_end_payload(listing)
 
@@ -355,6 +368,16 @@ def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> 
         "avito_account": listing.avito_account_id,
         "avito_account_name": listing.avito_account.name,
         "publication": publication.id,
+        "option_category_id": (
+            option_category.id
+            if option_category
+            else None
+        ),
+        "option_category": (
+            option_category.category
+            if option_category
+            else None
+        ),
         "publication_row_id": publication.row_id,
         "source": publication.source,
         "status": publication.status,
@@ -388,6 +411,7 @@ def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
     if listing.publication_id and listing.source == AvitoListing.Source.SERVICE:
         return serialize_linked_publication_listing_for_ads_page(listing)
 
+    option_category = listing.option_category
     autoload_error = extract_listing_autoload_error(listing)
     date_end_payload = get_listing_date_end_payload(listing)
 
@@ -423,12 +447,22 @@ def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
         "sort_at": listing.last_seen_at or listing.updated_at or listing.created_at,
         "date_end": date_end_payload["date_end"],
         "date_end_source": date_end_payload["date_end_source"],
+        "option_category_id": (
+            option_category.id
+            if option_category
+            else None
+        ),
+        "option_category": (
+            option_category.category
+            if option_category
+            else None
+        ),
     }
 
 
 def serialize_publication_for_ads_page(publication: AdPublication) -> dict[str, Any]:
+    option_category = publication.creative.option_category
     autoload_error = extract_publication_autoload_error(publication)
-
     date_end_payload = get_publication_date_end_payload(publication)
 
     return {
@@ -463,6 +497,16 @@ def serialize_publication_for_ads_page(publication: AdPublication) -> dict[str, 
         "sort_at": publication.updated_at or publication.created_at,
         "date_end": date_end_payload["date_end"],
         "date_end_source": date_end_payload["date_end_source"],
+        "option_category_id": (
+            option_category.id
+            if option_category
+            else None
+        ),
+        "option_category": (
+            option_category.category
+            if option_category
+            else None
+        ),
     }
 
 

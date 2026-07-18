@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from avitotask.services.ad_editing import update_ad_creative, update_ad_publication
 
 from unittest.mock import call, patch
@@ -13,6 +13,8 @@ from avitotask.services.ad_publication_dates import (
     get_publication_effective_date_end,
     inherit_creative_date_end_for_publication
 )
+
+from billiard.exceptions import SoftTimeLimitExceeded
 
 from io import BytesIO
 from openpyxl import Workbook
@@ -38,24 +40,28 @@ from avitotask.services.ad_schedule import (
     run_due_ad_generation_tasks,
 )
 from avitotask.services.avito_autoload_report_fetch import (
+    fetch_report_items,
     sync_last_completed_autoload_report_for_account,
 )
 from avitotask.services.ad_cleanup import archive_stale_publications
-from avitotask.services.avito_stats import import_avito_listing_daily_stats_for_account
 from avitotask.services.ad_export import (
     build_publication_export_row,
     export_avito_account_publications_to_csv,
 )
-from avitotask.tasks import export_avito_account_csv_task, export_dirty_avito_accounts_csv_task, \
-    import_avito_account_listings_task, link_avito_account_publications_task, import_avito_account_daily_stats_task, \
-    sync_last_completed_avito_autoload_report_task
+from avitotask.tasks import (
+    export_avito_account_csv_task,
+    export_dirty_avito_accounts_csv_task,
+    import_avito_account_listings_task,
+    link_avito_account_publications_task,
+    sync_last_completed_avito_autoload_report_task,
+    sync_last_completed_avito_autoload_reports_task,
+)
 
 from accounts.models import User, Workspace, WorkspaceMembership
 from avitotask.models import (
     AdBatch,
     AdCreative,
     AvitoListing,
-    AvitoListingDailyStats,
     AdGenerationTask,
     AdPublication,
     AvitoAccount,
@@ -78,8 +84,14 @@ from avitotask.services.avito_excel_import import (
     preview_avito_excel_file,
 )
 from avitotask.services.avito_autoload_report_sync import sync_avito_autoload_report
-from avitotask.services.avito_api import connect_avito_account_from_token, extract_avito_user_id
+from avitotask.services.avito_api import (
+    AvitoApiClient,
+    AvitoApiError,
+    connect_avito_account_from_token,
+    extract_avito_user_id,
+)
 
+import requests
 import csv
 import tempfile
 from pathlib import Path
@@ -87,7 +99,247 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
+@override_settings(
+    AVITO_API_CONNECT_TIMEOUT_SECONDS=10,
+    AVITO_API_READ_TIMEOUT_SECONDS=60,
+    AVITO_API_MIN_REQUEST_INTERVAL_SECONDS=0,
+    AVITO_API_MAX_RETRIES=0,
+)
+class AvitoApiClientResilienceTests(SimpleTestCase):
+
+    def test_autoload_report_sync_task_has_time_limits(self):
+        self.assertEqual(
+            sync_last_completed_avito_autoload_report_task.soft_time_limit,
+            900,
+        )
+        self.assertEqual(
+            sync_last_completed_avito_autoload_report_task.time_limit,
+            960,
+        )
+
+    @override_settings(AVITO_AUTOLOAD_REPORT_MAX_PAGES=2)
+    def test_fetch_report_items_stops_after_configured_page_limit(self):
+        class EndlessPaginationClient:
+            def __init__(self):
+                self.calls = 0
+
+            def get_autoload_report_items(
+                    self,
+                    token,
+                    report_id,
+                    page,
+                    per_page,
+            ):
+                self.calls += 1
+
+                if self.calls <= 2:
+                    return {
+                        "items": [{"id": f"row-{page}"}],
+                        "next": f"/reports/{report_id}/items?page={page + 1}",
+                    }
+
+                return {
+                    "items": [],
+                    "next": None,
+                }
+
+        client = EndlessPaginationClient()
+
+        with self.assertRaises(AvitoApiError):
+            fetch_report_items(
+                client=client,
+                token=object(),
+                report_id="REPORT-001",
+            )
+
+        self.assertEqual(client.calls, 2)
+
+    def test_request_raises_avito_api_error_for_server_error(self):
+        class ServerErrorResponse:
+            status_code = 500
+            text = "Internal Server Error"
+
+            def json(self):
+                return {
+                    "message": "Avito API temporarily unavailable",
+                }
+
+        class ServerErrorSession:
+            def request(self, method, url, **kwargs):
+                return ServerErrorResponse()
+
+        client = AvitoApiClient(session=ServerErrorSession())
+
+        with self.assertRaises(AvitoApiError) as caught:
+            client.request("GET", "/test")
+
+        self.assertEqual(caught.exception.status_code, 500)
+        self.assertEqual(
+            str(caught.exception),
+            "Avito API temporarily unavailable",
+        )
+
+    def test_request_token_converts_timeout_to_avito_api_error(self):
+        class TimeoutSession:
+            def request(self, method, url, **kwargs):
+                raise requests.Timeout("Token endpoint timeout")
+
+        client = AvitoApiClient(session=TimeoutSession())
+
+        with self.assertRaises(Exception) as caught:
+            client.request_token({
+                "grant_type": "client_credentials",
+                "client_id": "test-client",
+                "client_secret": "test-secret",
+            })
+
+        self.assertIsInstance(caught.exception, AvitoApiError)
+        self.assertIn("Avito API", str(caught.exception))
+
+    def test_request_converts_connection_error_to_avito_api_error(self):
+        class ConnectionErrorSession:
+            def request(self, method, url, **kwargs):
+                raise requests.ConnectionError("Connection refused")
+
+        client = AvitoApiClient(session=ConnectionErrorSession())
+
+        with self.assertRaises(Exception) as caught:
+            client.request("GET", "/test")
+
+        self.assertIsInstance(caught.exception, AvitoApiError)
+        self.assertIn("Avito API", str(caught.exception))
+
+    def test_request_converts_timeout_to_avito_api_error(self):
+        class TimeoutSession:
+            def request(self, method, url, **kwargs):
+                raise requests.Timeout("Avito API read timeout")
+
+        client = AvitoApiClient(session=TimeoutSession())
+
+        with self.assertRaises(Exception) as caught:
+            client.request("GET", "/test")
+
+        self.assertIsInstance(caught.exception, AvitoApiError)
+        self.assertIn("Avito API", str(caught.exception))
+
+    def test_request_uses_configured_default_timeout(self):
+        class FakeResponse:
+            status_code = 200
+            text = "json"
+
+            def json(self):
+                return {"status": "ok"}
+
+        class FakeSession:
+            def __init__(self):
+                self.timeout = None
+
+            def request(self, method, url, **kwargs):
+                self.timeout = kwargs.get("timeout")
+                return FakeResponse()
+
+        session = FakeSession()
+        client = AvitoApiClient(session=session)
+
+        result = client.request("GET", "/test")
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(session.timeout, (10.0, 60.0))
+
+
 class AvitoExcelImportFlowTests(TestCase):
+    def test_periodic_sync_requeues_syncing_account_without_started_at(self):
+        self.avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
+        self.avito_account.sync_started_at = None
+        self.avito_account.save(
+            update_fields=[
+                "sync_status",
+                "sync_started_at",
+                "updated_at",
+            ]
+        )
+
+        with patch(
+                "avitotask.tasks."
+                "sync_last_completed_avito_autoload_report_task.delay"
+        ) as delay_mock:
+            result = sync_last_completed_avito_autoload_reports_task(
+                limit=20,
+            )
+
+        self.assertEqual(result["queued"], 1)
+        delay_mock.assert_called_once_with(self.avito_account.id)
+
+    @override_settings(AVITO_SYNC_STALE_TIMEOUT_MINUTES=30)
+    def test_periodic_sync_does_not_requeue_fresh_syncing_account(self):
+        self.avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
+        self.avito_account.sync_started_at = (
+                timezone.now() - timedelta(minutes=5)
+        )
+        self.avito_account.save(
+            update_fields=[
+                "sync_status",
+                "sync_started_at",
+                "updated_at",
+            ]
+        )
+
+        with patch(
+                "avitotask.tasks."
+                "sync_last_completed_avito_autoload_report_task.delay"
+        ) as delay_mock:
+            result = sync_last_completed_avito_autoload_reports_task(
+                limit=20,
+            )
+
+        self.assertEqual(result["queued"], 0)
+        delay_mock.assert_not_called()
+
+    @override_settings(AVITO_SYNC_STALE_TIMEOUT_MINUTES=30)
+    def test_periodic_sync_requeues_stale_syncing_account(self):
+        self.avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
+        self.avito_account.sync_started_at = (
+                timezone.now() - timedelta(minutes=31)
+        )
+        self.avito_account.save(
+            update_fields=[
+                "sync_status",
+                "sync_started_at",
+                "updated_at",
+            ]
+        )
+
+        with patch(
+                "avitotask.tasks."
+                "sync_last_completed_avito_autoload_report_task.delay"
+        ) as delay_mock:
+            result = sync_last_completed_avito_autoload_reports_task(
+                limit=20,
+            )
+
+        self.assertEqual(result["queued"], 1)
+        delay_mock.assert_called_once_with(self.avito_account.id)
+
+    def test_autoload_report_sync_soft_timeout_sets_error_status(self):
+        with patch(
+                "avitotask.tasks.sync_last_completed_autoload_report_for_account",
+                side_effect=SoftTimeLimitExceeded(),
+        ):
+            with self.assertRaises(SoftTimeLimitExceeded):
+                sync_last_completed_avito_autoload_report_task(
+                    self.avito_account.id,
+                )
+
+        self.avito_account.refresh_from_db()
+
+        self.assertEqual(
+            self.avito_account.sync_status,
+            AvitoAccount.SyncStatus.ERROR,
+        )
+        self.assertEqual(
+            self.avito_account.sync_error,
+            "Превышено максимальное время синхронизации отчёта Avito.",
+        )
 
     def test_last_completed_autoload_report_sync_links_publication_to_avito_listing(self):
         publication = self.create_publication_for_autoload_report(
@@ -1451,7 +1703,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertNotIn("DateEnd", publication.overrides)
         self.assertEqual(response.data["effective_date_end"], "2099-05-30")
         self.assertEqual(response.data["date_end_source"], "creative")
-        
+
     def test_generate_ads_from_task_sets_creative_date_end_by_default(self):
         user = User.objects.create_user(email="auto-date-end-owner@example.com", password="test")
         workspace = Workspace.objects.create(
@@ -2634,7 +2886,10 @@ class AdGenerationServiceTests(TestCase):
 
         self.assertEqual(updated_creative.title, "New shared title")
         self.assertEqual(updated_creative.base_data["Price"], 900)
-        self.assertEqual(updated_creative.base_data["Category"], "Стройматериалы")
+        self.assertEqual(
+            updated_creative.base_data["Category"],
+            "Ремонт и строительство",
+        )
         self.assertEqual(updated_creative.option_data["Condition"], "Б/у")
 
         self.assertNotIn("Price", first_publication.overrides)
@@ -2682,7 +2937,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(row["ImageUrls"], "https://example.com/1.jpg | https://example.com/2.jpg")
         self.assertEqual(row["Address"], "Updated Address")
         self.assertEqual(row["Price"], 700)
-        self.assertEqual(row["Category"], "Стройматериалы")
+        self.assertEqual(row["Category"], "Ремонт и строительство")
         self.assertEqual(row["Condition"], "Новое")
         self.assertEqual(row["CustomField"], "Custom value")
 
@@ -3284,188 +3539,6 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(result["linked"], 1)
         self.assertEqual(result["created_listings"], 1)
         self.assertEqual(publication.avito_listing.avito_id, "24122251")
-
-    def test_import_avito_listing_daily_stats_for_account_upserts_daily_stats(self):
-        user = User.objects.create_user(email="avito-stats-owner@example.com", password="test")
-        workspace = Workspace.objects.create(
-            name="Avito stats workspace",
-            slug="avito-stats-workspace",
-            owner=user,
-        )
-        account = AvitoAccount.objects.create(
-            workspace=workspace,
-            name="Stats Account",
-            external_account_id="94235311",
-        )
-        AvitoOAuthToken.objects.create(
-            workspace=workspace,
-            avito_account=account,
-            access_token="stats-access-token",
-            refresh_token="stats-refresh-token",
-            scope="stats:read",
-        )
-
-        listing = AvitoListing.objects.create(
-            workspace=workspace,
-            avito_account=account,
-            avito_id="24122261",
-            status="active",
-            title="Stats listing",
-        )
-
-        class FakeResponse:
-            status_code = 200
-            text = "json"
-
-            def json(self):
-                return {
-                    "result": {
-                        "items": [
-                            {
-                                "itemId": "24122261",
-                                "stats": [
-                                    {
-                                        "date": "2026-05-01",
-                                        "uniqViews": 10,
-                                        "uniqContacts": 2,
-                                        "uniqFavorites": 1,
-                                    },
-                                    {
-                                        "date": "2026-05-02",
-                                        "uniqViews": 15,
-                                        "uniqContacts": 3,
-                                        "uniqFavorites": 4,
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                }
-
-        class FakeSession:
-            def __init__(self):
-                self.calls = []
-
-            def request(self, method, url, **kwargs):
-                self.calls.append((method, url, kwargs))
-                return FakeResponse()
-
-        session = FakeSession()
-
-        result = import_avito_listing_daily_stats_for_account(
-            avito_account=account,
-            date_from=date(2026, 5, 1),
-            date_to=date(2026, 5, 2),
-            session=session,
-        )
-
-        self.assertEqual(result.total_listings, 1)
-        self.assertEqual(result.total_days, 2)
-        self.assertEqual(result.created_stats, 2)
-        self.assertEqual(result.updated_stats, 0)
-
-        first_day = AvitoListingDailyStats.objects.get(
-            listing=listing,
-            date=date(2026, 5, 1),
-        )
-        self.assertEqual(first_day.views, 10)
-        self.assertEqual(first_day.contacts, 2)
-        self.assertEqual(first_day.favorites, 1)
-        self.assertEqual(first_day.raw_metrics["uniqViews"], 10)
-
-        self.assertEqual(session.calls[0][0], "POST")
-        self.assertEqual(
-            session.calls[0][1],
-            "https://api.avito.ru/stats/v1/accounts/94235311/items",
-        )
-        self.assertEqual(session.calls[0][2]["json"]["itemIds"], [24122261])
-        self.assertEqual(session.calls[0][2]["json"]["dateFrom"], "2026-05-01")
-        self.assertEqual(session.calls[0][2]["json"]["dateTo"], "2026-05-02")
-
-        second_result = import_avito_listing_daily_stats_for_account(
-            avito_account=account,
-            date_from=date(2026, 5, 1),
-            date_to=date(2026, 5, 2),
-            session=session,
-        )
-
-        self.assertEqual(second_result.created_stats, 0)
-        self.assertEqual(second_result.updated_stats, 2)
-        self.assertEqual(AvitoListingDailyStats.objects.filter(listing=listing).count(), 2)
-
-    def test_import_avito_account_daily_stats_task_imports_stats(self):
-        user = User.objects.create_user(email="avito-stats-task-owner@example.com", password="test")
-        workspace = Workspace.objects.create(
-            name="Avito stats task workspace",
-            slug="avito-stats-task-workspace",
-            owner=user,
-        )
-        account = AvitoAccount.objects.create(
-            workspace=workspace,
-            name="Stats Task Account",
-            external_account_id="94235311",
-        )
-        AvitoOAuthToken.objects.create(
-            workspace=workspace,
-            avito_account=account,
-            access_token="stats-task-access-token",
-            refresh_token="stats-task-refresh-token",
-            scope="stats:read",
-        )
-
-        listing = AvitoListing.objects.create(
-            workspace=workspace,
-            avito_account=account,
-            avito_id="24122271",
-            status="active",
-            title="Stats task listing",
-        )
-
-        class FakeResponse:
-            status_code = 200
-            text = "json"
-
-            def json(self):
-                return {
-                    "result": {
-                        "items": [
-                            {
-                                "itemId": "24122271",
-                                "stats": [
-                                    {
-                                        "date": "2026-05-03",
-                                        "uniqViews": 20,
-                                        "uniqContacts": 4,
-                                        "uniqFavorites": 2,
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                }
-
-        class FakeSession:
-            def request(self, method, url, **kwargs):
-                return FakeResponse()
-
-        result = import_avito_account_daily_stats_task(
-            account.id,
-            "2026-05-03",
-            "2026-05-03",
-            session=FakeSession(),
-        )
-
-        stats = AvitoListingDailyStats.objects.get(
-            listing=listing,
-            date=date(2026, 5, 3),
-        )
-
-        self.assertEqual(result["total_listings"], 1)
-        self.assertEqual(result["total_days"], 1)
-        self.assertEqual(result["created_stats"], 1)
-        self.assertEqual(stats.views, 20)
-        self.assertEqual(stats.contacts, 4)
-        self.assertEqual(stats.favorites, 2)
 
     def test_archive_stale_publications_archives_only_old_inactive_publications(self):
         user = User.objects.create_user(email="cleanup-owner@example.com", password="test")

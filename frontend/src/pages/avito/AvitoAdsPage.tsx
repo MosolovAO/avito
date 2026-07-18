@@ -1,4 +1,10 @@
-import React, {useCallback, useEffect, useMemo, useState} from "react";
+import React, {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import {useNavigate} from "react-router-dom";
 import {
     Alert,
@@ -16,6 +22,7 @@ import {
     Col,
     Row,
     Spin,
+    AutoComplete,
 } from "antd";
 import type {FormInstance, TablePaginationConfig, TableProps} from "antd";
 import {
@@ -24,9 +31,9 @@ import {
     LinkOutlined,
     SearchOutlined,
     EditOutlined,
-    CalendarOutlined,
     FilterOutlined,
 } from "@ant-design/icons";
+
 import {
     dateDeadlineColor,
     formatDate,
@@ -39,11 +46,9 @@ import {
     useRequestAvitoCsvExportMutation,
     useBulkUpdateAvitoAdsLifecycleMutation,
     useUpdateAvitoListingMutation,
-    useExtendAvitoListingMutation,
-    useExtendAdPublicationMutation,
     useUpdateAdPublicationMutation,
     useAdPublicationQuery,
-    AdLifecycleBulkActions
+    AdLifecycleBulkActions,
 } from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import type {
@@ -60,7 +65,30 @@ import {
     buildPublicationUpdateRequest,
 } from "../../features/avito/lib/adPublicationEditMapper";
 
+import {useQuery} from "@tanstack/react-query";
+import type {ProductOption} from "../../entities/product";
+import {useProductOptions} from "../../features/product/model/useProductOptions";
+import {getProductCategories} from "../../shared/api/products";
+import {AVITO_AUTOLOAD_CATEGORY_OPTIONS} from "../../shared/constants/avitoCategories";
+import {
+    buildOptionData,
+    buildOptionFormValues,
+    getCreativeAutoloadCategory,
+    mergeUnknownOptionData,
+    type EditableOptionValue,
+} from "../../features/avito/lib/adCreativeFormMapper";
+
+interface SelectedAdItem {
+    entity_type: AvitoAccountAd["entity_type"];
+    id: number;
+    canExtend: boolean;
+}
+
 interface ListingEditFormValues {
+    option_category_id?: number;
+    autoload_category: string;
+    options: Record<string, EditableOptionValue | undefined>;
+
     title: string;
     description: string;
     address: string;
@@ -78,6 +106,24 @@ interface AdEditFormValues extends ListingEditFormValues {
 type EditingAdState =
     | { type: "avito_listing"; item: AvitoAccountAd }
     | { type: "ad_publication"; item: AvitoAccountAd };
+
+const EMPTY_PRODUCT_OPTIONS: ProductOption[] = [];
+
+const canExtendAd = (item: AvitoAccountAd): boolean => {
+    if (item.entity_type === "ad_publication") {
+        return item.publication !== null;
+    }
+
+    if (item.source === "service") {
+        return item.publication !== null;
+    }
+
+    return (
+        item.source === "avito_excel" &&
+        item.management_status !== null &&
+        ["managed", "out_of_sync"].includes(item.management_status)
+    );
+};
 
 const stringifyJsonForForm = (value: JsonObject): string =>
     JSON.stringify(value ?? {}, null, 2);
@@ -172,6 +218,7 @@ interface JsonObjectInputsProps {
     name: JsonTextFieldName;
     title: string;
     emptyText: string;
+    excludedKeys?: string[];
 }
 
 
@@ -240,11 +287,14 @@ const JsonObjectInputs: React.FC<JsonObjectInputsProps> = ({
                                                                name,
                                                                title,
                                                                emptyText,
+                                                               excludedKeys = [],
                                                            }) => (
     <Form.Item noStyle shouldUpdate={(prev, next) => prev[name] !== next[name]}>
         {() => {
             const data = parseJsonObjectForInputs(form.getFieldValue(name) as string | undefined);
-            const entries = Object.entries(data);
+            const entries = Object.entries(data).filter(
+                ([key]) => !excludedKeys.includes(key),
+            );
 
             return (
                 <Space direction="vertical" size={12} style={{width: "100%"}}>
@@ -311,6 +361,64 @@ export const AvitoAdsPage: React.FC = () => {
     const updatePublicationMutation = useUpdateAdPublicationMutation();
     const publicationQuery = useAdPublicationQuery(editingPublicationId);
 
+
+    const initializedOptionsKeyRef = useRef<string | null>(null);
+
+    const categoriesQuery = useQuery({
+        queryKey: ["product-categories"],
+        queryFn: getProductCategories,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const watchedOptionCategoryId = Form.useWatch(
+        "option_category_id",
+        editForm,
+    );
+
+    const effectiveOptionCategoryId = (
+        watchedOptionCategoryId
+        ?? editingAd?.item.option_category_id
+        ?? null
+    );
+
+    const selectedOptionCategory = (
+        categoriesQuery.data ?? []
+    ).find(
+        (category) => category.id === effectiveOptionCategoryId,
+    );
+
+    const optionCategoryName = (
+        selectedOptionCategory?.name
+        ?? (
+            effectiveOptionCategoryId === editingAd?.item.option_category_id
+                ? editingAd?.item.option_category
+                : ""
+        )
+        ?? ""
+    );
+
+    const {
+        data: productOptionsData,
+        isFetching: productOptionsLoading,
+        error: productOptionsError,
+    } = useProductOptions(optionCategoryName);
+
+    const productOptions = productOptionsData ?? EMPTY_PRODUCT_OPTIONS;
+
+    const optionsInitializationKey = editingAd
+        ? [
+            editingAd.type,
+            editingAd.item.id,
+            effectiveOptionCategoryId ?? "empty",
+        ].join(":")
+        : null;
+
+    const isEditDataReady = (
+        !editingPublication
+        || Boolean(publicationQuery.data)
+    );
+
+
     const {currentWorkspace} = useCurrentWorkspace();
     const navigate = useNavigate();
     const [page, setPage] = useState(1);
@@ -326,10 +434,7 @@ export const AvitoAdsPage: React.FC = () => {
     const [dateEndOrdering, setDateEndOrdering] =
         useState<AvitoAccountAdsQueryParams["ordering"]>("");
     const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
-    const [selectedAdItems, setSelectedAdItems] = useState<Array<{
-        entity_type: AvitoAccountAd["entity_type"];
-        id: number;
-    }>>([]);
+    const [selectedAdItems, setSelectedAdItems] = useState<SelectedAdItem[]>([]);
 
     const [isExportPollingEnabled, setIsExportPollingEnabled] = useState(false);
 
@@ -337,12 +442,11 @@ export const AvitoAdsPage: React.FC = () => {
         refetchInterval: isExportPollingEnabled ? 3000 : false,
     });
 
-
+    // /Users/artem/Desktop/avito/frontend/src/pages/avito/AvitoAdsPage.tsx
     const requestCsvExportMutation = useRequestAvitoCsvExportMutation();
     const downloadCsvMutation = useDownloadAvitoCsvMutation();
     const bulkLifecycleMutation = useBulkUpdateAvitoAdsLifecycleMutation();
-    const extendListingMutation = useExtendAvitoListingMutation();
-    const extendPublicationMutation = useExtendAdPublicationMutation();
+
 
     const selectedAvitoAccount = (projectsQuery.data ?? []).find(
         (account) => account.id === avitoAccountId,
@@ -383,6 +487,8 @@ export const AvitoAdsPage: React.FC = () => {
         Boolean(selectedAvitoAccount.export_file_path);
 
     useEffect(() => {
+        initializedOptionsKeyRef.current = null;
+
         if (!editingAd) {
             editForm.resetFields();
             return;
@@ -394,18 +500,36 @@ export const AvitoAdsPage: React.FC = () => {
                 return;
             }
 
-            editForm.setFieldsValue(
-                buildPublicationEditInitialValues(
-                    editingAd.item,
-                    publicationQuery.data.overrides,
-                ),
+            const initialValues = buildPublicationEditInitialValues(
+                editingAd.item,
+                publicationQuery.data.overrides,
             );
+
+            const effectiveBaseData = parseJsonObjectForInputs(
+                initialValues.base_data_json,
+            );
+
+            editForm.setFieldsValue({
+                ...initialValues,
+                option_category_id:
+                    editingAd.item.option_category_id ?? undefined,
+                autoload_category:
+                    getCreativeAutoloadCategory(effectiveBaseData),
+                options: {},
+            });
+
             return;
         }
 
         const listing = editingAd.item;
 
         editForm.setFieldsValue({
+            option_category_id:
+                listing.option_category_id ?? undefined,
+            autoload_category:
+                getCreativeAutoloadCategory(listing.base_data),
+            options: {},
+
             title: listing.title ?? "",
             description: listing.description ?? "",
             address: listing.address ?? "",
@@ -415,7 +539,58 @@ export const AvitoAdsPage: React.FC = () => {
             base_data_json: stringifyJsonForForm(listing.base_data),
             option_data_json: stringifyJsonForForm(listing.option_data),
         });
-    }, [editForm, editingAd, publicationQuery.data]);
+    }, [
+        editForm,
+        editingAd,
+        publicationQuery.data,
+    ]);
+
+    useEffect(() => {
+        if (
+            !editingAd
+            || !isEditDataReady
+            || !optionsInitializationKey
+        ) {
+            return;
+        }
+
+        if (
+            optionCategoryName
+            && productOptionsData === undefined
+        ) {
+            return;
+        }
+
+        if (
+            initializedOptionsKeyRef.current
+            === optionsInitializationKey
+        ) {
+            return;
+        }
+
+        const currentOptionData = parseJsonObjectForInputs(
+            editForm.getFieldValue("option_data_json"),
+        );
+
+        editForm.setFieldValue(
+            "options",
+            buildOptionFormValues(
+                currentOptionData,
+                productOptions,
+            ),
+        );
+
+        initializedOptionsKeyRef.current =
+            optionsInitializationKey;
+    }, [
+        editForm,
+        editingAd,
+        isEditDataReady,
+        optionCategoryName,
+        optionsInitializationKey,
+        productOptions,
+        productOptionsData,
+    ]);
 
     useEffect(() => {
         if (isCsvExportInProgress && !isExportPollingEnabled) {
@@ -466,22 +641,32 @@ export const AvitoAdsPage: React.FC = () => {
         [selectedAdItems],
     );
 
-    const rowSelection = useMemo<TableProps<AvitoAccountAd>["rowSelection"]>(() => ({
-        selectedRowKeys: selectedAdKeys,
-        onChange: (_, selectedRows) => {
-            setSelectedAdItems(
-                selectedRows
-                    .filter((item) => item.avito_account === avitoAccountId)
-                    .map((item) => ({
-                        entity_type: item.entity_type,
-                        id: item.id,
-                    })),
-            );
-        },
-        getCheckboxProps: (item) => ({
-            disabled: item.avito_account !== avitoAccountId,
+    const extendableSelectedCount = useMemo(
+        () => selectedAdItems.filter((item) => item.canExtend).length,
+        [selectedAdItems],
+    );
+
+
+    const rowSelection = useMemo<TableProps<AvitoAccountAd>["rowSelection"]>(
+        () => ({
+            selectedRowKeys: selectedAdKeys,
+            onChange: (_, selectedRows) => {
+                setSelectedAdItems(
+                    selectedRows
+                        .filter((item) => item.avito_account === avitoAccountId)
+                        .map((item) => ({
+                            entity_type: item.entity_type,
+                            id: item.id,
+                            canExtend: canExtendAd(item),
+                        })),
+                );
+            },
+            getCheckboxProps: (item) => ({
+                disabled: item.avito_account !== avitoAccountId,
+            }),
         }),
-    }), [avitoAccountId, selectedAdKeys]);
+        [avitoAccountId, selectedAdKeys],
+    );
 
     const getEditAction = useCallback((item: AvitoAccountAd) => {
         if (item.entity_type === "ad_publication" && item.publication) {
@@ -538,19 +723,73 @@ export const AvitoAdsPage: React.FC = () => {
         setEditingAd(null);
     };
 
+    const handleEditFormValuesChange = (
+        changedValues: Partial<AdEditFormValues>,
+    ) => {
+        if ("option_category_id" in changedValues) {
+            editForm.setFieldValue("options", {});
+            initializedOptionsKeyRef.current = null;
+        }
+    };
+
     const handleSubmitEditListing = async () => {
+        const values = await editForm.validateFields();
+
+        let currentBaseData: JsonObject;
+        let currentOptionData: JsonObject;
+
+        try {
+            currentBaseData = parseJsonObject(
+                values.base_data_json,
+                "base_data",
+            );
+            currentOptionData = parseJsonObject(
+                values.option_data_json,
+                "option_data",
+            );
+        } catch (error) {
+            message.error(
+                error instanceof Error
+                    ? error.message
+                    : "Некорректный JSON",
+            );
+            return;
+        }
+
+        const autoloadCategory = values.autoload_category.trim();
+
+        const nextBaseData: JsonObject = {
+            ...currentBaseData,
+            Category: autoloadCategory,
+        };
+
+        const nextKnownOptionData = buildOptionData(
+            values.options ?? {},
+            productOptions,
+        );
+
         if (editingPublication) {
             if (!editingPublicationId || !publicationQuery.data) {
                 return;
             }
 
-            const values = await editForm.validateFields();
+            const nextOptionData = mergeUnknownOptionData(
+                currentOptionData,
+                nextKnownOptionData,
+                productOptions,
+            );
 
             try {
                 const payload = buildPublicationUpdateRequest(
                     editingPublication,
                     publicationQuery.data.overrides,
-                    values,
+                    {
+                        ...values,
+                        base_data_json:
+                            stringifyJsonForForm(nextBaseData),
+                        option_data_json:
+                            stringifyJsonForForm(nextOptionData),
+                    },
                 );
 
                 updatePublicationMutation.mutate(
@@ -565,7 +804,11 @@ export const AvitoAdsPage: React.FC = () => {
                     },
                 );
             } catch (error) {
-                message.error(error instanceof Error ? error.message : "Некорректные данные публикации");
+                message.error(
+                    error instanceof Error
+                        ? error.message
+                        : "Некорректные данные публикации",
+                );
             }
 
             return;
@@ -575,27 +818,29 @@ export const AvitoAdsPage: React.FC = () => {
             return;
         }
 
-        const values = await editForm.validateFields();
+        const optionCategoryChanged = (
+            typeof values.option_category_id === "number"
+            && editingListing.option_category_id
+            !== values.option_category_id
+        );
 
-        let baseData: JsonObject;
-        let optionData: JsonObject;
-
-        try {
-            baseData = parseJsonObject(values.base_data_json, "base_data");
-            optionData = parseJsonObject(values.option_data_json, "option_data");
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "Некорректный JSON");
-            return;
-        }
+        const nextOptionData = optionCategoryChanged
+            ? nextKnownOptionData
+            : mergeUnknownOptionData(
+                currentOptionData,
+                nextKnownOptionData,
+                productOptions,
+            );
 
         const payload: UpdateAvitoListingRequest = {
+            option_category_id: values.option_category_id,
             title: values.title,
             description: values.description,
             address: values.address,
             desired_status: values.desired_status,
             management_status: values.management_status,
-            base_data: baseData,
-            option_data: optionData,
+            base_data: nextBaseData,
+            option_data: nextOptionData,
             image_urls: parseImageUrls(values.image_urls_text),
         };
 
@@ -648,10 +893,21 @@ export const AvitoAdsPage: React.FC = () => {
             return;
         }
 
+        const items = selectedAdItems
+            .filter((item) => action !== "extend" || item.canExtend)
+            .map(({entity_type, id}) => ({
+                entity_type,
+                id,
+            }));
+
+        if (items.length === 0) {
+            return;
+        }
+
         bulkLifecycleMutation.mutate(
             {
                 avitoAccountId,
-                items: selectedAdItems,
+                items,
                 action,
             },
             {
@@ -687,7 +943,7 @@ export const AvitoAdsPage: React.FC = () => {
                     {item.row_id ? (
                         <Text
                             type="secondary"
-                            style={{fontSize: 11}}
+                            style={{fontSize: 9}}
                             copyable={{text: item.row_id}}
                         >
                             id: {item.row_id}
@@ -717,10 +973,16 @@ export const AvitoAdsPage: React.FC = () => {
             title: "Адрес",
             dataIndex: "address",
             key: "address",
-            width: 260,
+            width: 180,
             ellipsis: true,
-            render: (value: string | null) =>
-                value ? value : <Text type="secondary">Не указан</Text>,
+            render: (value: string | null) => (
+                <Text
+                    type={value ? undefined : "secondary"}
+                    style={{fontSize: 13}}
+                >
+                    {value || "Не указан"}
+                </Text>
+            ),
         },
         {
             title: "Окончание",
@@ -742,7 +1004,7 @@ export const AvitoAdsPage: React.FC = () => {
             title: "Статус",
             dataIndex: "status",
             key: "status",
-            width: 100,
+            width: 80,
             render: (value: string | null, item) => {
                 const errorMessage = getAutoloadErrorMessage(item);
 
@@ -804,9 +1066,9 @@ export const AvitoAdsPage: React.FC = () => {
                 value ? <Text>{value}</Text> : <Tag>Нет</Tag>,
         },
         {
-            title: "Действия",
+            title: "",
             key: "actions",
-            width: 80,
+            width: 37,
             fixed: "right",
             onHeaderCell: () => ({
                 style: {
@@ -822,58 +1084,18 @@ export const AvitoAdsPage: React.FC = () => {
                 const action = getEditAction(item);
 
                 return (
-                    <Space>
-                        <Tooltip title={action.tooltip}>
-                            <Button
-                                size="small"
-                                icon={<EditOutlined/>}
-                                disabled={action.disabled}
-                                onClick={action.onClick}
-                            >
-
-                            </Button>
-                        </Tooltip>
-                        <Tooltip title="Продлить на 30 дней">
-                            <Button
-                                size="small"
-                                icon={<CalendarOutlined/>}
-                                disabled={
-                                    item.entity_type === "avito_listing"
-                                        ? item.source !== "avito_excel" || item.management_status !== "managed"
-                                        : !item.publication
-                                }
-                                loading={
-                                    (item.entity_type === "avito_listing" &&
-                                        extendListingMutation.isPending &&
-                                        extendListingMutation.variables?.listingId === item.id) ||
-                                    (item.entity_type === "ad_publication" &&
-                                        extendPublicationMutation.isPending &&
-                                        extendPublicationMutation.variables === item.publication)
-                                }
-                                onClick={() => {
-                                    if (item.entity_type === "avito_listing") {
-                                        extendListingMutation.mutate({
-                                            listingId: item.id,
-                                            avitoAccountId: item.avito_account,
-                                        });
-                                        return;
-                                    }
-
-                                    if (item.publication) {
-                                        extendPublicationMutation.mutate(item.publication);
-                                    }
-                                }}
-                            />
-                        </Tooltip>
-
-                    </Space>
-
+                    <Tooltip title={action.tooltip}>
+                        <Button
+                            size="small"
+                            icon={<EditOutlined/>}
+                            disabled={action.disabled}
+                            onClick={action.onClick}
+                        />
+                    </Tooltip>
                 );
             },
         },
     ], [
-        extendListingMutation,
-        extendPublicationMutation,
         getEditAction,
     ]);
     ;
@@ -1012,6 +1234,7 @@ export const AvitoAdsPage: React.FC = () => {
 
                 <AdLifecycleBulkActions
                     selectedCount={selectedAdItems.length}
+                    extendableCount={extendableSelectedCount}
                     disabled={!avitoAccountId}
                     loading={bulkLifecycleMutation.isPending}
                     onAction={handleBulkLifecycle}
@@ -1093,6 +1316,7 @@ export const AvitoAdsPage: React.FC = () => {
                     <Form
                         form={editForm}
                         layout="vertical"
+                        onValuesChange={handleEditFormValuesChange}
                         disabled={updateListingMutation.isPending || updatePublicationMutation.isPending}
                     >
                         <Form.Item
@@ -1110,6 +1334,63 @@ export const AvitoAdsPage: React.FC = () => {
                         <Form.Item name="address" label="Адрес">
                             <Input/>
                         </Form.Item>
+
+                        <Row gutter={16}>
+                            <Col xs={24} md={12}>
+                                <Form.Item
+                                    name="option_category_id"
+                                    label="Категория для отбора опций"
+                                    extra={
+                                        editingPublication
+                                            ? "Категория наследуется от общего креатива."
+                                            : "Определяет набор доступных параметров объявления."
+                                    }
+                                >
+                                    <Select
+                                        showSearch
+                                        optionFilterProp="label"
+                                        loading={categoriesQuery.isLoading}
+                                        disabled={Boolean(editingPublication)}
+                                        placeholder="Выберите категорию"
+                                        options={(categoriesQuery.data ?? []).map(
+                                            (category) => ({
+                                                value: category.id,
+                                                label: category.name,
+                                            }),
+                                        )}
+                                    />
+                                </Form.Item>
+                            </Col>
+
+                            <Col xs={24} md={12}>
+                                <Form.Item
+                                    name="autoload_category"
+                                    label="Категория для файла автозагрузки"
+                                    rules={[
+                                        {
+                                            required: true,
+                                            message: "Укажите категорию автозагрузки",
+                                        },
+                                    ]}
+                                    extra={
+                                        editingPublication
+                                            ? "Категория наследуется от общего креатива."
+                                            : "Будет записана в колонку Category."
+                                    }
+                                >
+                                    <AutoComplete
+                                        disabled={Boolean(editingPublication)}
+                                        options={AVITO_AUTOLOAD_CATEGORY_OPTIONS}
+                                        placeholder="Например: Ремонт и строительство"
+                                        filterOption={(inputValue, option) =>
+                                            String(option?.value ?? "")
+                                                .toLowerCase()
+                                                .includes(inputValue.toLowerCase())
+                                        }
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
 
                         {editingPublication ? (
                             <Form.Item
@@ -1166,16 +1447,81 @@ export const AvitoAdsPage: React.FC = () => {
                         <JsonObjectInputs
                             form={editForm}
                             name="base_data_json"
-                            title="base_data"
-                            emptyText="base_data пустой"
+                            title="Базовые поля"
+                            emptyText="Нет дополнительных базовых полей"
+                            excludedKeys={["Category"]}
                         />
 
-                        <JsonObjectInputs
-                            form={editForm}
-                            name="option_data_json"
-                            title="option_data"
-                            emptyText="option_data пустой"
-                        />
+                        <Space
+                            direction="vertical"
+                            size={12}
+                            style={{width: "100%", marginTop: 20}}
+                        >
+                            <Text strong style={{ fontSize: 18}}>Опции категории</Text>
+
+                            {productOptionsError && (
+                                <Alert
+                                    type="error"
+                                    showIcon
+                                    message="Не удалось загрузить опции"
+                                    description={productOptionsError.message}
+                                />
+                            )}
+
+                            {productOptionsLoading ? (
+                                <Spin size="small"/>
+                            ) : !optionCategoryName ? (
+                                <Text type="secondary">
+                                    Выберите категорию для отбора опций.
+                                </Text>
+                            ) : productOptions.length === 0 ? (
+                                <Text type="secondary">
+                                    Для категории «{optionCategoryName}» нет дополнительных опций.
+                                </Text>
+                            ) : (
+                                <Row gutter={[16, 12]}>
+                                    {productOptions.map((option) => {
+                                        const allowMultiple = (
+                                            option.allow_multiple
+                                            ?? option.allow_multiple_options
+                                        );
+
+                                        const label = (
+                                            option.option_title
+                                            || option.option_title_ru
+                                            || option.option_title_en
+                                        );
+
+                                        return (
+                                            <Col key={option.id} xs={24} md={12}>
+                                                <Form.Item
+                                                    name={[
+                                                        "options",
+                                                        String(option.id),
+                                                    ]}
+                                                    label={label}
+                                                    style={{marginBottom: 0}}
+                                                >
+                                                    {allowMultiple ? (
+                                                        <Select
+                                                            mode="tags"
+                                                            allowClear
+                                                            tokenSeparators={[","]}
+                                                            placeholder={`Введите ${label}`}
+                                                        />
+                                                    ) : (
+                                                        <Input
+                                                            placeholder={`Введите ${label}`}
+                                                        />
+                                                    )}
+                                                </Form.Item>
+                                            </Col>
+                                        );
+                                    })}
+                                </Row>
+                            )}
+                        </Space>
+
                     </Form>
                 )}
             </Drawer>

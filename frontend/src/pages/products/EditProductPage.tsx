@@ -19,7 +19,9 @@ const normalizeDescriptions = (description: Product['descriptions']): string[] =
 }
 
 // Подготовка данных для формы
-const mapProductToFormData = (product: Product): Partial<ProductFormData> => ({
+const mapProductToFormData = (
+    product: Product,
+): Partial<ProductFormData> => ({
     name: product.name,
     price_randomization_enabled: product.price_randomization_enabled,
     titles: product.titles,
@@ -43,7 +45,10 @@ const mapProductToFormData = (product: Product): Partial<ProductFormData> => ({
     price_min: product.price_min,
     price_max: product.price_max,
     price_step: product.price_step,
-    avito_account_ids: product.avito_account_ids ?? product.avito_accounts?.map((account) => account.id) ?? [],
+    avito_account_ids:
+        product.avito_account_ids
+        ?? product.avito_accounts?.map((account) => account.id)
+        ?? [],
     options: product.options ?? [],
     schedule: product.schedule ?? {},
 })

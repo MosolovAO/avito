@@ -124,15 +124,18 @@ def build_publication_export_row(publication):
     if not row.get("DateEnd"):
         row["DateEnd"] = build_publication_date_end(publication)
 
+    row["Category"] = normalize_export_value(
+        (creative.base_data or {}).get("Category")
+    )
+
     return row
 
 
 def build_listing_export_row(listing):
     """
-    Собирает строку автозагрузки для объявления, импортированного из XLSX Avito.
+    Собирает строку автозагрузки для объявления, импортированного из XLSX.
 
-    Такие объявления не имеют AdPublication/AdCreative. Источник истины -
-    сам AvitoListing.
+    option_category может быть пустой и не влияет на исходную CSV-категорию.
     """
 
     row = {
@@ -148,25 +151,29 @@ def build_listing_export_row(listing):
     row.update(listing.base_data or {})
     row.update(listing.option_data or {})
 
+    # Сохраняем исходную категорию импортированного объявления.
+    row["Category"] = normalize_export_value(
+        (listing.base_data or {}).get("Category")
+    )
+
     return row
 
 
-def get_export_fieldnames(rows):
+def get_export_fieldnames(imported_listing_rows):
     """
-    Возвращает колонки экспорта.
+    Формирует разрешённые колонки CSV.
 
-    Базовый список берется из backend-справочника, но импортированные XLSX
-    объявления могут содержать уже нормализованные технические поля, которых
-    пока нет в ProductOptions. Их нельзя молча терять.
+    Для публикаций сервиса используется строгий backend whitelist.
+    Дополнительные колонки разрешаются только для импортированных
+    XLSX-объявлений, чтобы не потерять данные исходной выгрузки Avito.
     """
-
     fieldnames = get_backend_approved_csv_columns()
 
-    row_keys = []
-    for row in rows:
-        row_keys.extend(row.keys())
+    imported_row_keys = []
+    for row in imported_listing_rows:
+        imported_row_keys.extend(row.keys())
 
-    return merge_fieldnames(fieldnames, row_keys)
+    return merge_fieldnames(fieldnames, imported_row_keys)
 
 
 def export_avito_account_publications_to_csv(*,
@@ -190,15 +197,18 @@ def export_avito_account_publications_to_csv(*,
         avito_account=avito_account,
     )
 
-    raw_rows = []
+    publication_rows = [
+        build_publication_export_row(publication)
+        for publication in publications
+    ]
+    imported_listing_rows = [
+        build_listing_export_row(listing)
+        for listing in managed_imported_listings
+    ]
 
-    for publication in publications:
-        raw_rows.append(build_publication_export_row(publication))
+    raw_rows = publication_rows + imported_listing_rows
+    fieldnames = get_export_fieldnames(imported_listing_rows)
 
-    for listing in managed_imported_listings:
-        raw_rows.append(build_listing_export_row(listing))
-
-    fieldnames = get_export_fieldnames(raw_rows)
     rows = [
         filter_row_to_approved_columns(row, fieldnames)
         for row in raw_rows

@@ -1,7 +1,6 @@
 from django.urls import path
 
 from avitotask.avito_api_views import (
-    AvitoAccountImportDailyStatsView,
     AvitoAccountImportListingsView,
     AvitoAccountLinkPublicationsView,
     AvitoAccountVerifyConnectionView,
@@ -30,11 +29,6 @@ urlpatterns = [
         "accounts/<int:avito_account_id>/link-publications/",
         AvitoAccountLinkPublicationsView.as_view(),
         name="avito-account-link-publications",
-    ),
-    path(
-        "accounts/<int:avito_account_id>/import-daily-stats/",
-        AvitoAccountImportDailyStatsView.as_view(),
-        name="avito-account-import-daily-stats",
     ),
     path(
         "accounts/<int:avito_account_id>/verify-connection/",

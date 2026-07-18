@@ -3,10 +3,11 @@ import type {CreateManualMassPostingRequest, JsonObject} from "../../../entities
 import type {ProductOption, ProductOptionValue} from "../../../entities/product";
 
 export interface ManualMassPostingFormValues {
+    option_category_id: number;
+    autoload_category: string;
     avito_account_ids: number[];
     title: string;
     description: string;
-    category: string;
     price: number;
     addresses?: string[];
     options?: Record<string, ProductOptionValue | undefined>;
@@ -59,7 +60,7 @@ const addOptionalStringField = (
 
 export const buildManualPostingBaseData = (values: ManualMassPostingFormValues): JsonObject => {
     const baseData: JsonObject = {
-        Category: normalizeString(values.category),
+        Category: normalizeString(values.autoload_category),
         Price: values.price,
     };
 
@@ -102,11 +103,15 @@ export const buildManualMassPostingRequest = (
     values: ManualMassPostingFormValues,
     {imageUrls, productOptions}: BuildManualMassPostingRequestParams,
 ): CreateManualMassPostingRequest => ({
+    option_category_id: values.option_category_id,
     avito_account_ids: values.avito_account_ids,
     title: normalizeString(values.title),
     description: normalizeString(values.description),
     addresses: normalizeStringList(values.addresses),
     image_urls: normalizeStringList(imageUrls),
     base_data: buildManualPostingBaseData(values),
-    option_data: buildManualPostingOptionData(values.options, productOptions),
+    option_data: buildManualPostingOptionData(
+        values.options,
+        productOptions,
+    ),
 });

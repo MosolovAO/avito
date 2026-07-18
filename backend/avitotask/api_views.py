@@ -7,19 +7,20 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, parser_classes, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import FormParser, MultiPartParser
-from rest_framework.exceptions import PermissionDenied, ValidationError
+
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.fields import DateTimeField
+from rest_framework.exceptions import ValidationError
+
+from accounts.permissions import WorkspacePermission
+from accounts.workspace_context import get_request_workspace
 
 from django.shortcuts import get_object_or_404
 from django.db.models import Q, Count, Prefetch
 
 from django.core.files.storage import default_storage
-
-from accounts.models import WorkspaceMembership
-from accounts.permissions import WorkspacePermission, membership_has_permission
 
 from .models import (
     ProductOptions,
@@ -78,41 +79,6 @@ from .services.ad_schedule import (
 from .services.ad_task_runner import (
     run_autogeneration_task
 )
-
-
-def get_request_membership(request, required_permission=None):
-    memberships = WorkspaceMembership.objects.select_related("workspace").filter(
-        user=request.user,
-        status=WorkspaceMembership.Status.ACTIVE,
-    )
-
-    workspace_id = request.headers.get("X-Workspace-Id")
-
-    if workspace_id:
-        membership = memberships.filter(workspace_id=workspace_id).first()
-        if membership is None:
-            raise PermissionDenied("У вас нет доступа к этому кабинету.")
-    else:
-        count = memberships.count()
-
-        if count == 0:
-            raise PermissionDenied("У пользователя нет активного кабинета.")
-
-        if count > 1:
-            raise ValidationError({
-                "workspace": "Передайте X-Workspace-Id, потому что у пользователя несколько кабинетов."
-            })
-
-        membership = memberships.first()
-
-    if required_permission and not membership_has_permission(membership, required_permission):
-        raise PermissionDenied("Недостаточно прав для выполнения действия.")
-
-    return membership
-
-
-def get_request_workspace(request, required_permission=None):
-    return get_request_membership(request, required_permission).workspace
 
 
 class WorkspaceScopedModelViewSet(viewsets.ModelViewSet):
@@ -376,12 +342,29 @@ def toggle_product_active(request, product_id):
     })
 
 
-@api_view(['GET'])
+@api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_product_categories(request):
-    categories = list(Category.objects.order_by('category').values_list('category', flat=True))
+    categories = Category.objects.order_by("category")
 
-    return Response(categories)
+    detailed = (
+            request.query_params.get("detailed", "").strip().lower()
+            in {"1", "true", "yes"}
+    )
+
+    if detailed:
+        return Response([
+            {
+                "id": category.id,
+                "name": category.category,
+            }
+            for category in categories
+        ])
+
+    # Старый формат сохраняем для обратной совместимости.
+    return Response(
+        list(categories.values_list("category", flat=True))
+    )
 
 
 class StandardResultsSetPagination(PageNumberPagination):
@@ -402,7 +385,11 @@ class AvitoListingViewSet(WorkspaceScopedModelViewSet):
         queryset = (
             AvitoListing.objects
             .filter(workspace=self.get_workspace())
-            .select_related("avito_account", "publication")
+            .select_related(
+                "avito_account",
+                "publication",
+                "option_category",
+            )
             .order_by("-last_seen_at", "-created_at")
         )
 
@@ -630,9 +617,12 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
                 AdCreative.objects
                 .filter(workspace=self.get_workspace())
                 .exclude(source="import")
+                .select_related("option_category")
                 .only(
                     "id",
                     "workspace_id",
+                    "option_category_id",
+                    "option_category__category",
                     "title",
                     "description",
                     "image_urls",
@@ -646,7 +636,11 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
             AdCreative.objects
             .filter(workspace=self.get_workspace())
             .exclude(source="import")
-            .select_related("task", "batch")
+            .select_related(
+                "task",
+                "batch",
+                "option_category",
+            )
             .prefetch_related(
                 Prefetch(
                     "publications",
@@ -769,6 +763,7 @@ class ManualMassPostingView(APIView):
                 image_urls=serializer.validated_data.get("image_urls", []),
                 base_data=serializer.validated_data.get("base_data", {}),
                 option_data=serializer.validated_data.get("option_data", {}),
+                option_category=serializer.validated_data["option_category"],
                 user=request.user,
             )
         except AdGenerationError as exc:
@@ -786,6 +781,12 @@ class ManualMassPostingView(APIView):
                 "creative": {
                     "id": result.creative.id,
                     "title": result.creative.title,
+                    "option_category_id": result.creative.option_category_id,
+                    "option_category": (
+                        result.creative.option_category.category
+                        if result.creative.option_category
+                        else None
+                    ),
                 },
                 "publications": [
                     {

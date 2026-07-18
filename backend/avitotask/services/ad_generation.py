@@ -29,14 +29,6 @@ MAX_CREATIVE_GENERATION_ATTEMPTS = 50
 RECENT_CREATIVE_LOOKBACK_DAYS = 30
 DUPLICATE_CREATIVE_MATCH_THRESHOLD = 2
 
-AVITO_DEFAULT_CATEGORY = "Ремонт и строительство"
-
-
-def force_default_avito_category(base_data):
-    base_data = dict(base_data or {})
-    base_data["Category"] = AVITO_DEFAULT_CATEGORY
-    return base_data
-
 
 def force_default_creative_date_end(base_data):
     base_data = dict(base_data or {})
@@ -50,6 +42,23 @@ def force_default_creative_date_end(base_data):
 
 class AdGenerationError(Exception):
     """Ошибка генерации объявления из задачи."""
+
+
+def prepare_autoload_base_data(base_data):
+    base_data = dict(base_data or {})
+
+    autoload_category = str(
+        base_data.get("Category") or ""
+    ).strip()
+
+    if not autoload_category:
+        raise AdGenerationError(
+            "Не указана категория для файла автозагрузки Avito."
+        )
+
+    base_data["Category"] = autoload_category
+
+    return base_data
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,7 @@ def generate_ads_from_task(task_id, *, workspace, user=None, require_active=True
             workspace=workspace,
             task=task,
             batch=batch,
+            option_category=task.category,
             source=AdCreative.Source.AUTO,
             title=candidate.title,
             description=candidate.description,
@@ -153,6 +163,7 @@ def create_manual_mass_posting(
         image_urls=None,
         base_data=None,
         option_data=None,
+        option_category=None,
         user=None
 ):
     """
@@ -167,7 +178,7 @@ def create_manual_mass_posting(
 
     image_urls = list(image_urls or [])
     base_data = force_default_creative_date_end(
-        force_default_avito_category(base_data)
+        prepare_autoload_base_data(base_data)
     )
     option_data = dict(option_data or {})
 
@@ -192,6 +203,7 @@ def create_manual_mass_posting(
         creative = AdCreative.objects.create(
             workspace=workspace,
             task=None,
+            option_category=option_category,
             batch=batch,
             source=AdCreative.Source.MANUAL,
             title=title,
@@ -262,6 +274,14 @@ def get_generation_task(task_id, *, workspace):
 def validate_task_for_generation(task, *, require_active=True):
     if require_active and not task.is_active:
         raise AdGenerationError("Задача генерации не активна")
+    if not task.category_id:
+        raise AdGenerationError(
+            "У задачи не выбрана категория для отбора опций"
+        )
+    if not str((task.base_data or {}).get("Category") or "").strip():
+        raise AdGenerationError(
+            "У задачи не указана категория для файла автозагрузки Avito"
+        )
     if not task.titles:
         raise AdGenerationError("У задачи нет заголовков")
     if not task.descriptions:
@@ -387,7 +407,7 @@ def render_description(*, processed_template, title, sku):
 
 def build_base_data(task):
     base_data = force_default_creative_date_end(
-        force_default_avito_category(task.base_data)
+        prepare_autoload_base_data(task.base_data)
     )
 
     base_data.update({

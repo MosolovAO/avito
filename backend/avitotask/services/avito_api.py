@@ -8,7 +8,6 @@ from urllib.parse import urlencode
 
 from avitotask.models import AvitoAccount, AvitoOAuthToken
 from django.core import signing
-
 from avitotask.models import AvitoAccount
 
 
@@ -27,10 +26,32 @@ class AvitoApiClient:
     def __init__(self, session=None, base_url=None, timeout=None):
         self.session = session or requests.Session()
         self.base_url = (base_url or settings.AVITO_API_BASE_URL).rstrip("/")
-        self.timeout = timeout
+
+        if timeout is None:
+            self.timeout = (
+                settings.AVITO_API_CONNECT_TIMEOUT_SECONDS,
+                settings.AVITO_API_READ_TIMEOUT_SECONDS,
+            )
+        else:
+            self.timeout = timeout
+
         self.min_request_interval = settings.AVITO_API_MIN_REQUEST_INTERVAL_SECONDS
         self.max_retries = settings.AVITO_API_MAX_RETRIES
         self.default_retry_after = settings.AVITO_API_DEFAULT_RETRY_AFTER_SECONDS
+
+    def _send_request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+
+        try:
+            return self.session.request(method, url, **kwargs)
+        except requests.Timeout as exc:
+            raise AvitoApiError(
+                "Превышено время ожидания ответа Avito API."
+            ) from exc
+        except requests.RequestException as exc:
+            raise AvitoApiError(
+                "Ошибка соединения с Avito API."
+            ) from exc
 
     def get_current_user(self, token):
         return self.request("GET", "/core/v1/accounts/self", token=token)
@@ -109,6 +130,20 @@ class AvitoApiClient:
 
         )
 
+    def get_item_analytics(self, token, item_ids, user_id, date_from, date_to, metrics):
+        return self.request(
+            "POST",
+            f"/stats/v2/accounts/{user_id}/items",
+            token=token,
+            json={
+                "itemIds": item_ids,
+                "dateFrom": date_from.isoformat(),
+                "dateTo": date_to.isoformat(),
+                "metrics": metrics,
+                "grouping": "day",
+            },
+        )
+
     def refresh_access_token(self, token):
         avito_account = token.avito_account
 
@@ -159,12 +194,11 @@ class AvitoApiClient:
             if self.min_request_interval > 0:
                 time.sleep(self.min_request_interval)
 
-            response = self.session.request(
+            response = self._send_request(
                 method,
                 url,
                 headers=headers,
-                timeout=self.timeout,
-                **kwargs
+                **kwargs,
             )
 
             if (
@@ -205,7 +239,7 @@ class AvitoApiClient:
                     **kwargs,
                 )
 
-            if response.status_code == 400:
+            if response.status_code >= 400:
                 raise build_api_error(response)
 
             if not getattr(response, "text", ""):
@@ -222,7 +256,7 @@ class AvitoApiClient:
             if self.min_request_interval > 0:
                 time.sleep(self.min_request_interval)
 
-            response = self.session.request(
+            response = self._send_request(
                 "POST",
                 url,
                 data=data,
@@ -230,7 +264,6 @@ class AvitoApiClient:
                     "Accept": "application/json",
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
-                timeout=self.timeout,
             )
 
             if response.status_code == 429:

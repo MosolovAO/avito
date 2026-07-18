@@ -247,8 +247,20 @@ class ProductSerializer(serializers.ModelSerializer):
     def _resolve_category(self, value):
         if not value:
             return None
+
         category_name = str(value).strip()
-        category, _ = Category.objects.get_or_create(category=category_name)
+
+        category = (
+            Category.objects
+            .filter(category__iexact=category_name)
+            .first()
+        )
+
+        if category is None:
+            raise serializers.ValidationError({
+                "category": "Выбранная категория не найдена."
+            })
+
         return category
 
     def _replace_options(self, task, options_data):
@@ -324,6 +336,25 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def valid_additional_images(self, value):
         return self._valid_image_urls(value, 'additional_images')
+
+    def validate_base_data(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "base_data должен быть объектом."
+            )
+
+        base_data = dict(value)
+        autoload_category = str(
+            base_data.get("Category") or ""
+        ).strip()
+
+        if not autoload_category:
+            raise serializers.ValidationError(
+                "Укажите категорию для файла автозагрузки Avito."
+            )
+
+        base_data["Category"] = autoload_category
+        return base_data
 
     @transaction.atomic
     def create(self, validated_data):
@@ -602,6 +633,15 @@ class AvitoAccountSerializer(serializers.ModelSerializer):
 
 
 class AvitoListingSerializer(serializers.ModelSerializer):
+    option_category_id = serializers.IntegerField(
+        read_only=True,
+        allow_null=True,
+    )
+    option_category = serializers.CharField(
+        source="option_category.category",
+        read_only=True,
+        allow_null=True,
+    )
     avito_account_name = serializers.CharField(
         source="avito_account.name",
         read_only=True
@@ -636,6 +676,8 @@ class AvitoListingSerializer(serializers.ModelSerializer):
 
             "sheet_name",
             "category_path",
+            "option_category_id",
+            "option_category",
             "image_urls",
             "base_data",
             "option_data",
@@ -673,6 +715,12 @@ class AvitoListingSerializer(serializers.ModelSerializer):
 
 
 class AvitoListingUpdateSerializer(serializers.Serializer):
+    option_category_id = serializers.PrimaryKeyRelatedField(
+        source="option_category",
+        queryset=Category.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     title = serializers.CharField(required=False, allow_blank=False, max_length=255)
     description = serializers.CharField(required=False, allow_blank=True)
     address = serializers.CharField(required=False, allow_blank=True)
@@ -718,7 +766,7 @@ class AvitoAccountAdsBulkLifecycleItemSerializer(serializers.Serializer):
 
 class AvitoAccountAdsBulkLifecycleSerializer(serializers.Serializer):
     action = serializers.ChoiceField(
-        choices=["publish", "pause", "delete"],
+        choices=["publish", "pause", "delete", "extend"],
     )
     items = AvitoAccountAdsBulkLifecycleItemSerializer(
         many=True,
@@ -843,6 +891,15 @@ class AdBatchSerializer(serializers.ModelSerializer):
 
 
 class AdCreativeSerializer(serializers.ModelSerializer):
+    option_category_id = serializers.IntegerField(
+        read_only=True,
+        allow_null=True,
+    )
+    option_category = serializers.CharField(
+        source="option_category.category",
+        read_only=True,
+        allow_null=True,
+    )
     task_name = serializers.CharField(
         source="task.name",
         read_only=True,
@@ -868,6 +925,8 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "batch",
             "batch_source",
             "source",
+            "option_category_id",
+            "option_category",
             "title",
             "description",
             "image_urls",
@@ -930,10 +989,22 @@ class AdCreativeSerializer(serializers.ModelSerializer):
 
 
 class AdCreativeEditSerializer(serializers.ModelSerializer):
+    option_category_id = serializers.IntegerField(
+        read_only=True,
+        allow_null=True,
+    )
+    option_category = serializers.CharField(
+        source="option_category.category",
+        read_only=True,
+        allow_null=True,
+    )
+
     class Meta:
         model = AdCreative
         fields = [
             "id",
+            "option_category_id",
+            "option_category",
             "title",
             "description",
             "image_urls",
@@ -943,11 +1014,19 @@ class AdCreativeEditSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            "option_category_id",
+            "option_category",
             "updated_at",
         ]
 
 
 class AdCreativeUpdateSerializer(serializers.Serializer):
+    option_category_id = serializers.PrimaryKeyRelatedField(
+        source="option_category",
+        queryset=Category.objects.all(),
+        required=False,
+        allow_null=True,
+    )
     title = serializers.CharField(required=False, allow_blank=False, max_length=255)
     description = serializers.CharField(required=False, allow_blank=False)
     image_urls = serializers.ListField(
@@ -964,8 +1043,30 @@ class AdCreativeUpdateSerializer(serializers.Serializer):
 
     expected_updated_at = serializers.DateTimeField(required=False)
 
+    def validate_base_data(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "base_data должен быть объектом."
+            )
+
+        if "Category" in value:
+            autoload_category = str(
+                value.get("Category") or ""
+            ).strip()
+
+            if not autoload_category:
+                raise serializers.ValidationError(
+                    "Укажите категорию для файла автозагрузки Avito."
+                )
+
+            value = dict(value)
+            value["Category"] = autoload_category
+
+        return value
+
     def validate(self, attrs):
         editable_fields = {
+            "option_category",
             "title",
             "description",
             "image_urls",
@@ -996,6 +1097,11 @@ class AdPublicationUpdateSerializer(serializers.Serializer):
 
 
 class ManualMassPostingSerializer(serializers.Serializer):
+    option_category_id = serializers.PrimaryKeyRelatedField(
+        source="option_category",
+        queryset=Category.objects.all(),
+        required=False,
+    )
     avito_account_ids = serializers.ListField(
         child=serializers.IntegerField(),
         allow_empty=False,
@@ -1023,6 +1129,49 @@ class ManualMassPostingSerializer(serializers.Serializer):
             )
 
         return unique_ids
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        base_data = dict(attrs.get("base_data") or {})
+        autoload_category = str(
+            base_data.get("Category") or ""
+        ).strip()
+
+        if not autoload_category:
+            raise serializers.ValidationError({
+                "base_data": {
+                    "Category": (
+                        "Укажите категорию для файла автозагрузки Avito."
+                    )
+                }
+            })
+
+        base_data["Category"] = autoload_category
+        attrs["base_data"] = base_data
+
+        if attrs.get("option_category") is not None:
+            return attrs
+
+        # Временная совместимость со старым frontend. После обновления
+        # frontend option_category_id будет приходить явно.
+        legacy_category_name = autoload_category
+
+        option_category = (
+            Category.objects
+            .filter(category__iexact=legacy_category_name)
+            .first()
+        )
+
+        if option_category is not None:
+            attrs["option_category"] = option_category
+            return attrs
+
+        raise serializers.ValidationError({
+            "option_category_id": (
+                "Выберите категорию для отбора опций."
+            )
+        })
 
 
 def serialize_avito_excel_preview(result, rows_limit=20):

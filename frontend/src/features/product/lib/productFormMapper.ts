@@ -8,8 +8,9 @@ import type {ProductSchedule} from "../../../entities/product/types";
 
 export type ProductFormValues = Omit<
     ProductFormData,
-    'options' | 'main_images' | 'additional_images'
+    "options" | "main_images" | "additional_images"
 > & {
+    autoload_category?: string
     options?: Record<string, ProductOptionValue | undefined>
     main_images?: ProductImageValue[]
     additional_images?: ProductImageValue[]
@@ -59,7 +60,10 @@ const normalizeScheduleDays = (
     return normalizedDays
 }
 
-const buildBaseData = (values: ProductFormValues): ProductFormData['base_data'] => ({
+const buildBaseData = (
+    values: ProductFormValues,
+): ProductFormData["base_data"] => ({
+    Category: normalizeCategory(values.autoload_category),
     ListingFee: values.listingfee,
     EMail: values.email,
     ContactPhone: values.contactphone,
@@ -69,7 +73,7 @@ const buildBaseData = (values: ProductFormValues): ProductFormData['base_data'] 
     ContactMethod: values.contactmethod,
     AdType: values.adtype,
     Availability: values.availability,
-})
+});
 
 const toImageValues = (
     urls: string[] | undefined,
@@ -97,6 +101,7 @@ export const createProductInitialValues = (
 ): Partial<ProductFormValues> => ({
     ...data,
     name: data?.name ?? '',
+    autoload_category: data?.base_data?.Category ?? "",
     avito_account_ids: data?.avito_account_ids ?? [],
     price_randomization_enabled: data?.price_randomization_enabled ?? false,
     titles: normalizeStringList(data?.titles),
@@ -115,9 +120,14 @@ export const createProductInitialValues = (
 })
 
 
-export const buildProductFormData = (values: ProductFormValues, images: BuildProductFormDataParams): ProductFormData => {
-    const randomizationEnabled = Boolean(values.price_randomization_enabled)
+export const buildProductFormData = (
+    values: ProductFormValues,
+    images: BuildProductFormDataParams,
+): ProductFormData => {
+    const randomizationEnabled = Boolean(values.price_randomization_enabled);
 
+    const requestValues = {...values};
+    delete requestValues.autoload_category;
     const options = Object.entries(values.options ?? {}).flatMap(([optionId, value]) => {
         const normalizedValue = normalizeOptionValue(value)
         return normalizedValue === undefined ? [] : [{
@@ -127,7 +137,7 @@ export const buildProductFormData = (values: ProductFormValues, images: BuildPro
     })
 
     return {
-        ...values,
+        ...requestValues,
         base_data: buildBaseData(values),
         price_randomization_enabled: randomizationEnabled,
         titles: normalizeStringList(values.titles),

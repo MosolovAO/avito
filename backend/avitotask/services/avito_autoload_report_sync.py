@@ -308,6 +308,7 @@ def upsert_service_listing_from_publication(
         existing_listing.image_urls = defaults["image_urls"]
         existing_listing.base_data = defaults["base_data"]
         existing_listing.option_data = defaults["option_data"]
+        existing_listing.option_category = defaults["option_category"]
         existing_listing.imported_payload = defaults["imported_payload"]
         existing_listing.last_seen_at = defaults["last_seen_at"]
         existing_listing.save(
@@ -315,6 +316,7 @@ def upsert_service_listing_from_publication(
                 "publication",
                 "avito_id",
                 "source",
+                "option_category",
                 "management_status",
                 "row_id",
                 "status",
@@ -356,6 +358,7 @@ def build_listing_defaults_from_publication(
         "row_id": row.row_id,
         "status": row.status or AdPublication.Status.ACTIVE,
         "title": creative.title,
+        "option_category": creative.option_category,
         "description": creative.description,
         "address": publication.address,
         "image_urls": creative.image_urls or [],

@@ -50,16 +50,15 @@ from avitotask.services.avito_listing_remap import (
     remap_imported_avito_listings,
 )
 from avitotask.services.avito_autoload_report_sync import sync_avito_autoload_report
-from avitotask.api_views import get_request_workspace
+from accounts.workspace_context import get_request_workspace
 from avitotask.models import AvitoAccount, AvitoListing, AvitoOAuthToken
 
 from avitotask.tasks import (
-    import_avito_account_daily_stats_task,
     import_avito_account_listings_task,
     link_avito_account_publications_task,
     sync_last_completed_avito_autoload_report_task,
+    export_avito_account_csv_task
 )
-from avitotask.tasks import export_avito_account_csv_task
 
 from pathlib import Path
 
@@ -391,40 +390,6 @@ class AvitoAccountAutoloadReportSyncView(APIView):
         )
 
 
-class AvitoAccountImportDailyStatsView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, avito_account_id):
-        serializer = AvitoAccountImportDailyStatsSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        workspace = get_request_workspace(
-            request,
-            required_permission=WorkspacePermission.VIEW_ANALYTICS,
-        )
-        avito_account = get_object_or_404(
-            AvitoAccount,
-            id=avito_account_id,
-            workspace=workspace,
-        )
-
-        async_result = import_avito_account_daily_stats_task.delay(
-            avito_account.id,
-            serializer.validated_data["date_from"].isoformat(),
-            serializer.validated_data["date_to"].isoformat(),
-            serializer.validated_data.get("listing_ids"),
-        )
-
-        return Response(
-            {
-                "status": "queued",
-                "task_id": async_result.id,
-                "avito_account_id": avito_account.id,
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
-
-
 class AvitoListingLifecycleReportSerializer(serializers.Serializer):
     soon_days = serializers.IntegerField(
         required=False,
@@ -536,24 +501,6 @@ class AvitoExcelImportPreviewSerializer(serializers.Serializer):
             raise serializers.ValidationError("Загрузите файл XLSX.")
 
         return value
-
-
-class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
-    date_from = serializers.DateField()
-    date_to = serializers.DateField()
-    listing_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        required=False,
-        allow_empty=False
-    )
-
-    def validate(self, attrs):
-        if attrs["date_from"] > attrs["date_to"]:
-            raise serializers.ValidationError({
-                "date_to": "date_to должен быть больше или равен date_from."
-            })
-
-        return attrs
 
 
 class AvitoAccountVerifyConnectionView(APIView):

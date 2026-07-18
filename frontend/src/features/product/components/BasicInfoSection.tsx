@@ -1,13 +1,26 @@
 // /Users/artem/Desktop/avito/frontend/src/features/product/components/BasicInfoSection.tsx
 
 import React from "react";
-import {Card, Col, Form, InputNumber, Row, Select, Switch, Input} from 'antd'
-import type {AvitoAccount} from '../../../entities/avito/types'
-import type {ProductFormValues} from "../lib/productFormMapper.ts"
+import {
+    AutoComplete,
+    Card,
+    Col,
+    Form,
+    InputNumber,
+    Row,
+    Select,
+    Switch,
+} from "antd";
+import type {AvitoAccount} from "../../../entities/avito/types";
+import type {ProductCategory} from "../../../entities/product";
+import type {ProductFormValues} from "../lib/productFormMapper";
+import {
+    AVITO_AUTOLOAD_CATEGORY_OPTIONS,
+} from "../../../shared/constants/avitoCategories";
 
 interface BasicInfoSectionProps {
     avitoAccounts: AvitoAccount[]
-    categories: string[]
+    categories: ProductCategory[]
 }
 
 export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
@@ -20,21 +33,16 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
     return (
         <Card title="Основная информация" style={{marginBottom: '16px'}}>
             <Row gutter={16}>
-                <Col span={24}>
-                    <Form.Item
-                        name="name"
-                        label="Название продукта"
-                        rules={[{required: true, message: 'Введите название продукта'}]}
-                    >
-                        <Input placeholder="Например: iPhone 15 Pro Max"/>
-                    </Form.Item>
-                </Col>
-
-                <Col span={8}>
+                <Col xs={24} xl={6}>
                     <Form.Item
                         name="avito_account_ids"
                         label="Avito аккаунт"
-                        rules={[{required: true, message: 'Выберите хотя бы один Avito аккаунт'}]}
+                        rules={[
+                            {
+                                required: true,
+                                message: "Выберите хотя бы один Avito аккаунт",
+                            },
+                        ]}
                     >
                         <Select
                             mode="multiple"
@@ -47,31 +55,63 @@ export const BasicInfoSection: React.FC<BasicInfoSectionProps> = ({
                     </Form.Item>
                 </Col>
 
-                <Col span={8}>
+                <Col xs={24} xl={6}>
                     <Form.Item
                         name="category"
-                        label="Категория"
-                        rules={[{required: true, message: 'Введите категорию'}]}
+                        label="Категория для отбора опций"
+                        rules={[
+                            {
+                                required: true,
+                                message: "Выберите категорию для отбора опций",
+                            },
+                        ]}
                     >
                         <Select
                             showSearch
-                            placeholder="Выберите категорию"
+                            placeholder="Например: Плиты перекрытия"
                             optionFilterProp="label"
                             options={categories.map((category) => ({
-                                value: category,
-                                label: category,
+                                value: category.name,
+                                label: category.name,
                             }))}
                         />
                     </Form.Item>
                 </Col>
 
-                <Col span={8}>
+                <Col xs={24} xl={6}>
+                    <Form.Item
+                        name="autoload_category"
+                        label="Категория для файла Avito"
+                        rules={[
+                            {
+                                required: true,
+                                message: "Укажите категорию автозагрузки",
+                            },
+                        ]}
+                    >
+                        <AutoComplete
+                            options={AVITO_AUTOLOAD_CATEGORY_OPTIONS}
+                            placeholder="Например: Ремонт и строительство"
+                            filterOption={(inputValue, option) =>
+                                String(option?.value ?? "")
+                                    .toLowerCase()
+                                    .includes(inputValue.toLowerCase())
+                            }
+                        />
+                    </Form.Item>
+                </Col>
+
+                <Col xs={24} xl={6}>
                     <Form.Item
                         name="price"
                         label="Цена"
-                        rules={[{required: true, message: 'Введите цену'}]}
+                        rules={[{required: true, message: "Введите цену"}]}
                     >
-                        <InputNumber style={{width: '100%'}} min={0} placeholder="0"/>
+                        <InputNumber
+                            style={{width: "100%"}}
+                            min={0}
+                            placeholder="0"
+                        />
                     </Form.Item>
                 </Col>
             </Row>

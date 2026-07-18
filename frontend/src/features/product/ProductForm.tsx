@@ -1,12 +1,15 @@
 import React from 'react'
 import {Form, Button, Space, Row, Col, message} from 'antd'
-import type {ProductFormData} from '../../entities/product'
+import type {
+    ProductCategory,
+    ProductFormData,
+} from "../../entities/product";
 import {resolveProductImages} from './lib/resolveProductImages'
 import type {AvitoAccount} from '../../entities/avito/types'
 
 interface ProductFormProps {
     avitoAccounts: AvitoAccount[]
-    categories: string[]
+    categories: ProductCategory[]
     initialData?: Partial<ProductFormData>
     onSubmit: (data: ProductFormData) => Promise<void>
     onCancel: () => void

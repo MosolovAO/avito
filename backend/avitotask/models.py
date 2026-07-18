@@ -618,6 +618,14 @@ class AdCreative(models.Model):
         blank=True,
         related_name='creatives',
     )
+    option_category = models.ForeignKey(
+        Category,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ad_creatives",
+        help_text="Конечная категория, по которой выбираются разрешённые опции",
+    )
     batch = models.ForeignKey(
         AdBatch,
         on_delete=models.SET_NULL,
@@ -796,7 +804,17 @@ class AvitoListing(models.Model):
         blank=True,
         related_name='avito_listing',
     )
-
+    option_category = models.ForeignKey(
+        Category,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="avito_listings",
+        help_text=(
+            "Категория для отбора опций. "
+            "Для импортированного объявления первоначально не заполняется."
+        ),
+    )
     source = models.CharField(
         max_length=20,
         choices=Source.choices,
@@ -889,49 +907,6 @@ class AvitoListing(models.Model):
 
     def __str__(self):
         return str(self.avito_id)
-
-
-class AvitoListingDailyStats(models.Model):
-    """Дневная статистика объявления Avito."""
-    workspace = models.ForeignKey(
-        'accounts.Workspace',
-        on_delete=models.CASCADE,
-        related_name='avito_listing_daily_stats',
-    )
-    listing = models.ForeignKey(
-        AvitoListing,
-        on_delete=models.CASCADE,
-        related_name='daily_stats',
-    )
-
-    date = models.DateField()
-    views = models.PositiveIntegerField(default=0)
-    contacts = models.PositiveIntegerField(default=0)
-    favorites = models.PositiveIntegerField(default=0)
-    calls = models.PositiveIntegerField(default=0)
-    messages = models.PositiveIntegerField(default=0)
-
-    raw_metrics = MyJSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = "Дневная статистика Авито"
-        verbose_name_plural = "Дневная статистика Авито"
-        ordering = ['-date']
-        indexes = [
-            models.Index(fields=["listing", "date"], name="idx_avstats_listing_date"),
-            models.Index(fields=["workspace", "-date"], name="idx_avstats_ws_date")
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["listing", "date"],
-                name="uniq_avstats_listing_date"
-            )
-        ]
-
-    def __str__(self):
-        return f"{self.listing.avito_id} / {self.date}"
 
 
 class AvitoOAuthToken(models.Model):

@@ -1,4 +1,8 @@
-from avitotask.models import AdCreative, AdPublication
+from avitotask.models import (
+    AdCreative,
+    AdPublication,
+    AvitoListing,
+)
 from avitotask.services.ad_generation import AdGenerationError, normalize_address
 
 from django.db import transaction
@@ -77,6 +81,7 @@ def update_ad_creative(
         *,
         creative_id,
         workspace,
+        option_category=None,
         title=None,
         description=None,
         image_urls=None,
@@ -108,6 +113,15 @@ def update_ad_creative(
 
         update_fields = []
 
+        option_category_changed = (
+                option_category is not None
+                and creative.option_category_id != option_category.id
+        )
+
+        if option_category is not None:
+            creative.option_category = option_category
+            update_fields.append("option_category")
+
         if title is not None:
             creative.title = title
             update_fields.append("title")
@@ -133,11 +147,21 @@ def update_ad_creative(
 
         if option_data is not None:
             if not isinstance(option_data, dict):
-                raise AdEditingError("option_data должен быть словарем.")
-            current_option_data = dict(creative.option_data or {})
-            current_option_data.update(option_data)
+                raise AdEditingError(
+                    "option_data должен быть словарем."
+                )
 
-            creative.option_data = current_option_data
+            if option_category_changed:
+                # При смене категории полностью удаляем параметры старой
+                # категории. Frontend присылает полный набор параметров,
+                # разрешённых для новой категории.
+                creative.option_data = dict(option_data)
+            else:
+                # При обычном редактировании сохраняем неизвестные legacy-поля.
+                current_option_data = dict(creative.option_data or {})
+                current_option_data.update(option_data)
+                creative.option_data = current_option_data
+
             update_fields.append("option_data")
 
         if not update_fields:
@@ -145,6 +169,14 @@ def update_ad_creative(
 
         update_fields.append("updated_at")
         creative.save(update_fields=update_fields)
+
+        if option_category is not None:
+            AvitoListing.objects.filter(
+                source=AvitoListing.Source.SERVICE,
+                publication__creative=creative,
+            ).update(
+                option_category=option_category,
+            )
 
         if clear_publication_override_fields:
             clear_overrides_for_creative_publications(

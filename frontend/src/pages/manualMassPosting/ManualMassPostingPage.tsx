@@ -16,6 +16,7 @@ import {
     Upload,
     message,
     Table,
+    AutoComplete,
 } from "antd";
 import {useQuery} from "@tanstack/react-query";
 import {useNavigate} from "react-router-dom";
@@ -40,6 +41,10 @@ import {
     revokeTemporaryPreviewUrl,
 } from "../../features/avito/lib/adImageUpload";
 import {countCharsWithoutHtml, hasTextContent} from "../../shared/lib/htmlText";
+import {
+    AVITO_AUTOLOAD_CATEGORY_OPTIONS,
+} from "../../shared/constants/avitoCategories";
+
 
 const {Title, Text} = Typography;
 
@@ -63,19 +68,33 @@ export const ManualMassPostingPage: React.FC = () => {
     const {currentWorkspace, canManageAvitoAccounts} = useCurrentWorkspace();
     const projectsQuery = useAvitoProjectsQuery();
 
-    const watchedCategory = Form.useWatch("category", form);
-    const category = normalizeCategory(watchedCategory);
+    const categoriesQuery = useQuery({
+        queryKey: ["product-categories"],
+        queryFn: getProductCategories,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const watchedOptionCategoryId = Form.useWatch(
+        "option_category_id",
+        form,
+    );
+
+    const selectedOptionCategory = (
+        categoriesQuery.data ?? []
+    ).find(
+        (category) => category.id === watchedOptionCategoryId,
+    );
+
+    const category = normalizeCategory(
+        selectedOptionCategory?.name,
+    );
+
     const [isSubmitting, setIsSubmitting] = React.useState(false);
 
     const watchedAddresses = Form.useWatch("addresses", {form, preserve: true});
     const addresses = watchedAddresses ?? [];
     const [bulkAddressInput, setBulkAddressInput] = React.useState("");
 
-    const categoriesQuery = useQuery({
-        queryKey: ["product-categories"],
-        queryFn: getProductCategories,
-        staleTime: 5 * 60 * 1000,
-    });
 
     const createMassPostingMutation = useCreateManualMassPostingMutation();
 
@@ -137,13 +156,17 @@ export const ManualMassPostingPage: React.FC = () => {
             label: project.name,
         }));
 
-    const categoryOptions = (categoriesQuery.data ?? []).map((category) => ({
-        value: category,
-        label: category,
-    }));
+    const categoryOptions = (categoriesQuery.data ?? []).map(
+        (category) => ({
+            value: category.id,
+            label: category.name,
+        }),
+    );
 
-    const handleValuesChange = (changedValues: Partial<ManualMassPostingFormValues>) => {
-        if ("category" in changedValues) {
+    const handleValuesChange = (
+        changedValues: Partial<ManualMassPostingFormValues>,
+    ) => {
+        if ("option_category_id" in changedValues) {
             form.setFieldValue("options", {});
         }
     };
@@ -338,18 +361,46 @@ export const ManualMassPostingPage: React.FC = () => {
                             </Form.Item>
                         </Col>
 
-                        <Col xs={24} lg={8}>
+                        <Col xs={24} lg={6}>
                             <Form.Item
-                                name="category"
-                                label="Категория"
-                                rules={[{required: true, message: "Выберите категорию"}]}
+                                name="option_category_id"
+                                label="Категория для отбора опций"
+                                rules={[
+                                    {
+                                        required: true,
+                                        message: "Выберите категорию для отбора опций",
+                                    },
+                                ]}
                             >
                                 <Select
                                     showSearch
                                     loading={categoriesQuery.isLoading}
                                     options={categoryOptions}
                                     optionFilterProp="label"
-                                    placeholder="Выберите категорию"
+                                    placeholder="Например: Газобетонные блоки"
+                                />
+                            </Form.Item>
+                        </Col>
+
+                        <Col xs={24} lg={6}>
+                            <Form.Item
+                                name="autoload_category"
+                                label="Категория для файла Avito"
+                                rules={[
+                                    {
+                                        required: true,
+                                        message: "Укажите категорию автозагрузки",
+                                    },
+                                ]}
+                            >
+                                <AutoComplete
+                                    options={AVITO_AUTOLOAD_CATEGORY_OPTIONS}
+                                    placeholder="Например: Ремонт и строительство"
+                                    filterOption={(inputValue, option) =>
+                                        String(option?.value ?? "")
+                                            .toLowerCase()
+                                            .includes(inputValue.toLowerCase())
+                                    }
                                 />
                             </Form.Item>
                         </Col>

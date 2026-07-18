@@ -15,6 +15,7 @@ def update_avito_listing(
         *,
         listing_id,
         workspace,
+        option_category=None,
         title=None,
         description=None,
         address=None,
@@ -40,6 +41,15 @@ def update_avito_listing(
         raise AdEditingError("Это объявление не находится под управлением сервиса.")
 
     update_fields = []
+
+    option_category_changed = (
+            option_category is not None
+            and listing.option_category_id != option_category.id
+    )
+
+    if option_category is not None:
+        listing.option_category = option_category
+        update_fields.append("option_category")
 
     if title is not None:
         listing.title = title
@@ -74,9 +84,17 @@ def update_avito_listing(
     if option_data is not None:
         if not isinstance(option_data, dict):
             raise AdEditingError("option_data должен быть словарем.")
-        current_option_data = dict(listing.option_data or {})
-        current_option_data.update(option_data)
-        listing.option_data = current_option_data
+
+        if option_category_changed:
+            # Frontend присылает полный набор опций новой категории.
+            # Параметры предыдущей категории здесь больше не сохраняем.
+            listing.option_data = dict(option_data)
+        else:
+            # При обычном редактировании сохраняем неизвестные legacy-поля.
+            current_option_data = dict(listing.option_data or {})
+            current_option_data.update(option_data)
+            listing.option_data = current_option_data
+
         update_fields.append("option_data")
 
     if management_status is not None:
@@ -148,6 +166,7 @@ def bulk_update_avito_listing_management_status(
         avito_account,
         listing_ids,
         management_status,
+
 ):
     if avito_account.workspace_id != workspace.id:
         raise AdEditingError("Аккаунт Avito принадлежит другому workspace.")

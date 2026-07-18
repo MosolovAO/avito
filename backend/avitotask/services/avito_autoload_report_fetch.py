@@ -8,6 +8,7 @@ from avitotask.services.avito_autoload_report_sync import (
     AvitoAutoloadReportSyncResult,
     sync_avito_autoload_report,
 )
+from django.conf import settings
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ def fetch_report_items(client, token, report_id: str) -> list[dict[str, Any]]:
     rows = []
     page = 1
     per_page = 100
+    pages_fetched = 0
+    max_pages = settings.AVITO_AUTOLOAD_REPORT_MAX_PAGES
 
     while True:
         payload = client.get_autoload_report_items(
@@ -67,6 +70,7 @@ def fetch_report_items(client, token, report_id: str) -> list[dict[str, Any]]:
             page=page,
             per_page=per_page,
         )
+        pages_fetched += 1
 
         items = extract_items(payload)
         rows.extend(items)
@@ -78,6 +82,11 @@ def fetch_report_items(client, token, report_id: str) -> list[dict[str, Any]]:
 
         if next_page is None:
             break
+
+        if pages_fetched >= max_pages:
+            raise AvitoApiError(
+                "Превышен лимит страниц отчёта автозагрузки Avito."
+            )
 
         page = next_page
 

@@ -5,10 +5,14 @@ export type EditableOptionValue = string | string[];
 
 const HIDDEN_BASE_DATA_KEYS = new Set(["Category", "Price"]);
 
-export const getCreativeCategory = (baseData: JsonObject): string => {
+export const getCreativeAutoloadCategory = (
+    baseData: JsonObject,
+): string => {
     const category = baseData.Category;
 
-    return typeof category === "string" ? category.trim() : "";
+    return typeof category === "string"
+        ? category.trim()
+        : "";
 };
 
 export const getCreativePrice = (baseData: JsonObject): number | undefined => {
@@ -49,7 +53,10 @@ export const buildBaseData = (
     currentBaseData: JsonObject,
     formBaseData: Record<string, string | undefined>,
     price: number,
+    autoloadCategory: string,
 ): JsonObject => {
+    const normalizedAutoloadCategory = autoloadCategory.trim();
+
     return Object.entries(formBaseData).reduce<JsonObject>(
         (acc, [key, value]) => {
             if (HIDDEN_BASE_DATA_KEYS.has(key)) {
@@ -61,7 +68,7 @@ export const buildBaseData = (
         },
         {
             ...currentBaseData,
-            Category: getCreativeCategory(currentBaseData),
+            Category: normalizedAutoloadCategory,
             Price: price,
         },
     );

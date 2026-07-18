@@ -7,6 +7,7 @@ import {
     Col,
     Form,
     Input,
+    AutoComplete,
     InputNumber,
     Row,
     Select,
@@ -33,7 +34,7 @@ import {
     buildBaseDataFormValues,
     buildOptionData,
     buildOptionFormValues,
-    getCreativeCategory,
+    getCreativeAutoloadCategory,
     getCreativePrice,
     mergeUnknownOptionData,
     parseClearOverrideFields,
@@ -46,10 +47,18 @@ import {
     revokeTemporaryPreviewUrl,
 } from "../../features/avito/lib/adImageUpload";
 import {countCharsWithoutHtml, hasTextContent} from "../../shared/lib/htmlText";
+import {useQuery} from "@tanstack/react-query";
+import {getProductCategories} from "../../shared/api/products";
+import {
+    AVITO_AUTOLOAD_CATEGORY_OPTIONS,
+} from "../../shared/constants/avitoCategories";
+
 
 const {Title, Text} = Typography;
 
 interface CreativeFormValues {
+    option_category_id: number | undefined;
+    autoload_category: string;
     title: string;
     price: number;
     description: string;
@@ -94,15 +103,45 @@ export const EditAdCreativePage: React.FC = () => {
     const initializedCreativeIdRef = React.useRef<number | null>(null);
     const initializedOptionsCreativeIdRef = React.useRef<number | null>(null);
 
-    const creativeCategory = creativeQuery.data
-        ? getCreativeCategory(creativeQuery.data.base_data)
-        : "";
+    const categoriesQuery = useQuery({
+        queryKey: ["product-categories"],
+        queryFn: getProductCategories,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const watchedOptionCategoryId = Form.useWatch(
+        "option_category_id",
+        form,
+    );
+
+    const effectiveOptionCategoryId = (
+        watchedOptionCategoryId
+        ?? creativeQuery.data?.option_category_id
+        ?? null
+    );
+
+    const selectedOptionCategory = (
+        categoriesQuery.data ?? []
+    ).find(
+        (category) => category.id === effectiveOptionCategoryId,
+    );
+
+    const optionCategoryName = (
+        selectedOptionCategory?.name
+        ?? (
+            effectiveOptionCategoryId
+            === creativeQuery.data?.option_category_id
+                ? creativeQuery.data?.option_category
+                : ""
+        )
+        ?? ""
+    );
 
     const {
         data: productOptionsData,
         isFetching: productOptionsLoading,
         error: productOptionsError,
-    } = useProductOptions(creativeCategory);
+    } = useProductOptions(optionCategoryName);
 
     const productOptions = productOptionsData ?? EMPTY_PRODUCT_OPTIONS;
     const isSaving = isSubmitting || updateCreativeMutation.isPending;
@@ -119,6 +158,10 @@ export const EditAdCreativePage: React.FC = () => {
         initializedOptionsCreativeIdRef.current = null;
 
         form.setFieldsValue({
+            option_category_id: creative.option_category_id ?? undefined,
+            autoload_category: getCreativeAutoloadCategory(
+                creative.base_data,
+            ),
             title: creative.title,
             price: getCreativePrice(creative.base_data),
             description: creative.description,
@@ -133,20 +176,45 @@ export const EditAdCreativePage: React.FC = () => {
     useEffect(() => {
         const creative = creativeQuery.data;
 
-        if (!creative || initializedOptionsCreativeIdRef.current === creative.id) {
+        if (
+            !creative
+            || initializedOptionsCreativeIdRef.current === creative.id
+        ) {
             return;
         }
 
-        if (creativeCategory && productOptionsData === undefined) {
+        if (
+            optionCategoryName
+            && productOptionsData === undefined
+        ) {
             return;
         }
 
         form.setFieldValue(
             "options",
-            buildOptionFormValues(creative.option_data, productOptions),
+            buildOptionFormValues(
+                creative.option_data,
+                productOptions,
+            ),
         );
+
         initializedOptionsCreativeIdRef.current = creative.id;
-    }, [creativeCategory, creativeQuery.data, form, productOptions, productOptionsData]);
+    }, [
+        creativeQuery.data,
+        form,
+        optionCategoryName,
+        productOptions,
+        productOptionsData,
+    ]);
+
+    const handleValuesChange = (
+        changedValues: Partial<CreativeFormValues>,
+    ) => {
+        if ("option_category_id" in changedValues) {
+            form.setFieldValue("options", {});
+            initializedOptionsCreativeIdRef.current = null;
+        }
+    };
 
     const imageUploadProps: UploadProps = {
         multiple: true,
@@ -222,23 +290,40 @@ export const EditAdCreativePage: React.FC = () => {
                 creative.base_data,
                 values.base_data ?? {},
                 values.price,
+                values.autoload_category,
             );
+
+            const nextKnownOptionData = buildOptionData(
+                values.options ?? {},
+                productOptions,
+            );
+
+            const optionCategoryChanged = (
+                creative.option_category_id
+                !== values.option_category_id
+            );
+
+            const nextOptionData = optionCategoryChanged
+                ? nextKnownOptionData
+                : mergeUnknownOptionData(
+                    creative.option_data,
+                    nextKnownOptionData,
+                    productOptions,
+                );
 
             await updateCreativeMutation.mutateAsync({
                 creativeId,
                 data: {
+                    option_category_id: values.option_category_id,
                     title: values.title.trim(),
                     description: values.description,
                     image_urls: imageUrls,
                     base_data: baseData,
-                    option_data: mergeUnknownOptionData(
-                        creative.option_data,
-                        buildOptionData(values.options ?? {}, productOptions),
-                        productOptions,
-                    ),
-                    clear_publication_override_fields: parseClearOverrideFields(
-                        values.clear_publication_override_fields,
-                    ),
+                    option_data: nextOptionData,
+                    clear_publication_override_fields:
+                        parseClearOverrideFields(
+                            values.clear_publication_override_fields,
+                        ),
                     expected_updated_at: creative.updated_at,
                 },
             });
@@ -322,26 +407,42 @@ export const EditAdCreativePage: React.FC = () => {
                 </Text>
             </Space>
 
-            <Form form={form} layout="vertical">
+            <Form
+                form={form}
+                layout="vertical"
+                onValuesChange={handleValuesChange}
+            >
                 <Card title="Основная информация" style={{marginBottom: 16}}>
                     <Row gutter={16}>
-                        <Col xs={24} lg={8}>
+                        <Col xs={24} lg={6}>
                             <Form.Item
                                 name="title"
                                 label="Заголовок"
                                 rules={[
-                                    {required: true, message: "Введите заголовок"},
-                                    {max: 255, message: "Максимум 255 символов"},
+                                    {
+                                        required: true,
+                                        message: "Введите заголовок",
+                                    },
+                                    {
+                                        max: 255,
+                                        message: "Максимум 255 символов",
+                                    },
                                 ]}
                             >
                                 <Input placeholder="Введите заголовок"/>
                             </Form.Item>
                         </Col>
-                        <Col xs={24} lg={8}>
+
+                        <Col xs={24} lg={6}>
                             <Form.Item
                                 name="price"
                                 label="Цена"
-                                rules={[{required: true, message: "Введите цену"}]}
+                                rules={[
+                                    {
+                                        required: true,
+                                        message: "Введите цену",
+                                    },
+                                ]}
                             >
                                 <InputNumber
                                     min={0}
@@ -351,13 +452,55 @@ export const EditAdCreativePage: React.FC = () => {
                                 />
                             </Form.Item>
                         </Col>
-                        <Col xs={24} lg={8}>
-                            <Form.Item label="Категория">
-                                <Input value={creativeCategory || "Не указана"} disabled/>
+
+                        <Col xs={24} lg={6}>
+                            <Form.Item
+                                name="option_category_id"
+                                label="Категория для отбора опций"
+                                rules={[
+                                    {
+                                        required: true,
+                                        message: "Выберите категорию для отбора опций",
+                                    },
+                                ]}
+                            >
+                                <Select
+                                    showSearch
+                                    loading={categoriesQuery.isLoading}
+                                    options={(categoriesQuery.data ?? []).map(
+                                        (category) => ({
+                                            value: category.id,
+                                            label: category.name,
+                                        }),
+                                    )}
+                                    optionFilterProp="label"
+                                    placeholder="Выберите категорию"
+                                />
                             </Form.Item>
                         </Col>
 
-
+                        <Col xs={24} lg={6}>
+                            <Form.Item
+                                name="autoload_category"
+                                label="Категория для файла Avito"
+                                rules={[
+                                    {
+                                        required: true,
+                                        message: "Укажите категорию автозагрузки",
+                                    },
+                                ]}
+                            >
+                                <AutoComplete
+                                    options={AVITO_AUTOLOAD_CATEGORY_OPTIONS}
+                                    placeholder="Например: Ремонт и строительство"
+                                    filterOption={(inputValue, option) =>
+                                        String(option?.value ?? "")
+                                            .toLowerCase()
+                                            .includes(inputValue.toLowerCase())
+                                    }
+                                />
+                            </Form.Item>
+                        </Col>
                     </Row>
                 </Card>
 
@@ -434,13 +577,13 @@ export const EditAdCreativePage: React.FC = () => {
                         />
                     )}
 
-                    {!creativeCategory ? (
+                    {!optionCategoryName ? (
                         <Text type="secondary">
-                            У креатива не указана категория в base_data.Category.
+                            Выберите категорию для отбора опций.
                         </Text>
                     ) : productOptions.length === 0 ? (
                         <Text type="secondary">
-                            Для категории "{creativeCategory}" нет дополнительных опций.
+                            Для категории "{optionCategoryName}" нет дополнительных опций.
                         </Text>
                     ) : (
                         <Row gutter={16}>

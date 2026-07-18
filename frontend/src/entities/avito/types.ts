@@ -6,7 +6,7 @@ export type AvitoListingSource = "api" | "avito_excel" | "service";
 export type AvitoListingManagementStatus = "observed" | "managed" | "out_of_sync";
 export type AvitoListingDesiredStatus = "publish" | "pause" | "archive";
 export type AvitoAdEntityType = "avito_listing" | "ad_publication";
-export type AvitoAdLifecycleAction = "publish" | "pause" | "delete";
+export type AvitoAdLifecycleAction = "publish" | "pause" | "delete" | "extend";
 
 export interface AvitoAccount {
     id: number;
@@ -138,6 +138,8 @@ export interface AvitoListing {
 
     sheet_name: string;
     category_path: string;
+    option_category_id: number | null;
+    option_category: string | null;
     image_urls: string[];
     base_data: JsonObject;
     option_data: JsonObject;
@@ -162,6 +164,8 @@ export interface AvitoAccountAd {
     avito_account_name: string;
     publication: number | null;
     publication_row_id: string | null;
+    option_category_id: number | null;
+    option_category: string | null;
 
     date_end: string;
     date_end_source: "avito" | "publication" | "creative" | "default" | "none";
@@ -426,6 +430,8 @@ export type AdCreativeSource = "auto" | "manual";
 
 export interface AdCreativeEdit {
     id: number;
+    option_category_id: number | null;
+    option_category: string | null;
     title: string;
     description: string;
     image_urls: string[];
@@ -433,7 +439,6 @@ export interface AdCreativeEdit {
     option_data: JsonObject;
     updated_at: string;
 }
-
 export interface AdCreative {
     id: number;
     task: number | null;
@@ -441,6 +446,8 @@ export interface AdCreative {
     batch: number | null;
     batch_source: AdBatchSource | null;
     source: AdCreativeSource;
+    option_category_id: number | null;
+    option_category: string | null;
     title: string;
     description: string;
     image_urls: string[];
@@ -456,6 +463,7 @@ export interface AdCreative {
 }
 
 export interface UpdateAdCreativeRequest {
+    option_category_id?: number;
     title?: string;
     description?: string;
     image_urls?: string[];
@@ -491,6 +499,7 @@ export interface UpdateAdPublicationRequest {
 }
 
 export interface CreateManualMassPostingRequest {
+    option_category_id: number;
     avito_account_ids: number[];
     addresses: string[];
     title: string;
@@ -499,7 +508,6 @@ export interface CreateManualMassPostingRequest {
     base_data?: JsonObject;
     option_data?: JsonObject;
 }
-
 export interface ManualMassPostingResponse {
     batch: {
         id: number;
@@ -531,6 +539,7 @@ export interface UpdateAvitoListingRequest {
     management_status?: AvitoListingManagementStatus;
     base_data?: JsonObject;
     option_data?: JsonObject;
+    option_category_id?: number;
 }
 
 export interface AvitoListingUnmappedColumnSummary {

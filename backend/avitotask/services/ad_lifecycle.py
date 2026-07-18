@@ -9,6 +9,7 @@ from avitotask.services.ad_export_state import mark_avito_accounts_export_dirty
 from avitotask.services.ad_publication_dates import (
     DATE_END_FIELD,
     PUBLICATION_EXTENSION_DAYS,
+    extend_date_end,
     format_avito_date,
     get_publication_effective_date_end,
     parse_avito_date,
@@ -20,6 +21,7 @@ ENTITY_TYPE_AD_PUBLICATION = "ad_publication"
 ACTION_PUBLISH = "publish"
 ACTION_PAUSE = "pause"
 ACTION_DELETE = "delete"
+ACTION_EXTEND = "extend"
 
 PUBLICATION_STATUS_BY_ACTION = {
     ACTION_PUBLISH: AdPublication.Status.ACTIVE,
@@ -47,7 +49,7 @@ def bulk_update_ads_lifecycle(*, workspace, avito_account, items, action):
     if avito_account.workspace_id != workspace.id:
         raise AdEditingError("Аккаунт Avito принадлежит другому workspace.")
 
-    if action not in PUBLICATION_STATUS_BY_ACTION:
+    if action not in {*PUBLICATION_STATUS_BY_ACTION, ACTION_EXTEND}:
         raise AdEditingError("Некорректное действие.")
 
     publication_ids = {
@@ -70,18 +72,30 @@ def bulk_update_ads_lifecycle(*, workspace, avito_account, items, action):
 
         publication_ids.update(listing_split["publication_ids"])
 
-        publication_result = update_publications_lifecycle(
-            workspace=workspace,
-            avito_account=avito_account,
-            publication_ids=publication_ids,
-            action=action,
-        )
-        listing_result = update_imported_listings_lifecycle(
-            workspace=workspace,
-            avito_account=avito_account,
-            listing_ids=listing_split["imported_listing_ids"],
-            action=action,
-        )
+        if action == ACTION_EXTEND:
+            publication_result = extend_publications_date_end(
+                workspace=workspace,
+                avito_account=avito_account,
+                publication_ids=publication_ids,
+            )
+            listing_result = extend_imported_listings_date_end(
+                workspace=workspace,
+                avito_account=avito_account,
+                listing_ids=listing_split["imported_listing_ids"],
+            )
+        else:
+            publication_result = update_publications_lifecycle(
+                workspace=workspace,
+                avito_account=avito_account,
+                publication_ids=publication_ids,
+                action=action,
+            )
+            listing_result = update_imported_listings_lifecycle(
+                workspace=workspace,
+                avito_account=avito_account,
+                listing_ids=listing_split["imported_listing_ids"],
+                action=action,
+            )
 
     updated = publication_result["updated"] + listing_result["updated"]
 
@@ -98,7 +112,10 @@ def bulk_update_ads_lifecycle(*, workspace, avito_account, items, action):
             "requested": len(listing_ids),
             "matched": listing_split["matched"],
             "missing": listing_split["missing"],
-            "unsupported": listing_split["unsupported"],
+            "unsupported": (
+                    listing_split["unsupported"]
+                    + listing_result["unsupported"]
+            ),
             "redirected_to_publications": listing_split["redirected_to_publications"],
         },
     }
@@ -204,6 +221,7 @@ def update_imported_listings_lifecycle(*, workspace, avito_account, listing_ids,
         return {
             "matched": 0,
             "updated": 0,
+            "unsupported": 0,
         }
 
     desired_status = LISTING_DESIRED_STATUS_BY_ACTION[action]
@@ -239,6 +257,101 @@ def update_imported_listings_lifecycle(*, workspace, avito_account, listing_ids,
     return {
         "matched": len(listings),
         "updated": len(listings),
+        "unsupported": 0,
+    }
+
+
+def extend_publications_date_end(*, workspace, avito_account, publication_ids):
+    if not publication_ids:
+        return {
+            "requested": 0,
+            "matched": 0,
+            "updated": 0,
+            "missing": 0,
+        }
+
+    publications = list(
+        AdPublication.objects
+        .select_for_update()
+        .select_related("creative")
+        .filter(
+            workspace=workspace,
+            avito_account=avito_account,
+            id__in=publication_ids,
+        )
+    )
+    now = timezone.now()
+
+    for publication in publications:
+        overrides = dict(publication.overrides or {})
+        overrides[DATE_END_FIELD] = format_avito_date(
+            extend_date_end(get_publication_effective_date_end(publication))
+        )
+        publication.overrides = overrides
+        publication.updated_at = now
+
+    if publications:
+        AdPublication.objects.bulk_update(publications, ["overrides", "updated_at"])
+
+    return {
+        "requested": len(publication_ids),
+        "matched": len(publications),
+        "updated": len(publications),
+        "missing": len(publication_ids) - len(publications),
+    }
+
+
+def extend_imported_listings_date_end(*, workspace, avito_account, listing_ids):
+    if not listing_ids:
+        return {
+            "matched": 0,
+            "updated": 0,
+            "unsupported": 0,
+        }
+
+    listings = list(
+        AvitoListing.objects
+        .select_for_update()
+        .filter(
+            workspace=workspace,
+            avito_account=avito_account,
+            id__in=listing_ids,
+            source=AvitoListing.Source.AVITO_EXCEL,
+        )
+    )
+    extendable_listings = [
+        listing
+        for listing in listings
+        if listing.management_status in {
+            AvitoListing.ManagementStatus.MANAGED,
+            AvitoListing.ManagementStatus.OUT_OF_SYNC,
+        }
+    ]
+    now = timezone.now()
+
+    for listing in extendable_listings:
+        current_date_end = parse_avito_date(
+            (listing.base_data or {}).get(DATE_END_FIELD)
+            or (listing.raw_data or {}).get("AvitoDateEnd")
+        )
+        base_data = dict(listing.base_data or {})
+        base_data[DATE_END_FIELD] = format_avito_date(
+            extend_date_end(current_date_end)
+        )
+        listing.base_data = base_data
+        listing.desired_status = AvitoListing.DesiredStatus.PUBLISH
+        listing.updated_at = now
+
+    if extendable_listings:
+        AvitoListing.objects.bulk_update(
+            extendable_listings,
+            ["base_data", "desired_status", "updated_at"],
+        )
+
+    return {
+        "matched": len(listings),
+        "updated": len(extendable_listings),
+        "unsupported": len(listings) - len(extendable_listings),
     }
 
 

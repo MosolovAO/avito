@@ -1,5 +1,13 @@
 import api from "./axios.ts";
-import type {Product, Product1, ProductOption, ProductFormData, UploadImageResponse} from "../../entities/product";
+import type {
+    Product,
+    Product1,
+    ProductCategory,
+    ProductOption,
+    ProductFormData,
+    UploadImageResponse,
+} from "../../entities/product";
+
 import type {Project} from "../../entities/project";
 
 export interface GenerateProductResponse {
@@ -21,10 +29,15 @@ export const getProduct = async (id: number): Promise<Product> => {
     return response.data
 }
 
-export const getProductCategories = async (): Promise<string[]> => {
-    const response = await api.get<string[]>('/api/categories/')
-    return response.data
-}
+export const getProductCategories = async (): Promise<ProductCategory[]> => {
+    const response = await api.get<ProductCategory[]>("/api/categories/", {
+        params: {
+            detailed: 1,
+        },
+    });
+
+    return response.data;
+};
 
 // Получение опций
 export const getProductOptions = async (category?: string): Promise<ProductOption[]> => {

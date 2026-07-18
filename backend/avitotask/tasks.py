@@ -1,9 +1,14 @@
 from celery import shared_task
 
+from billiard.exceptions import SoftTimeLimitExceeded
+from datetime import timedelta
+
 import logging
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from django.db.models import Q
 
 from .services.avito_import import import_avito_listings_for_account
 
@@ -11,11 +16,13 @@ from .models import AvitoAccount
 from .services.ad_export import export_avito_account_publications_to_csv
 from .services.avito_autoload import link_publications_to_avito_ids_for_account
 from .services.ad_schedule import run_due_ad_generation_tasks as run_due_ad_generation_tasks_service
-from .services.avito_stats import import_avito_listing_daily_stats_for_account
 from .services.ad_cleanup import archive_stale_publications
 from .services.ad_export_state import mark_avito_account_exporting
 from .services.avito_autoload_report_fetch import sync_last_completed_autoload_report_for_account
-from .services.avito_sync_state import is_avito_account_sync_stale
+from .services.avito_sync_state import (
+    get_avito_sync_stale_timeout_minutes,
+    is_avito_account_sync_stale,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,45 +228,6 @@ def link_avito_account_publications_task(avito_account_id, row_ids=None, session
 
 
 @shared_task
-def import_avito_account_daily_stats_task(
-        avito_account_id,
-        date_from,
-        date_to,
-        listing_ids=None,
-        session=None,
-):
-    avito_account = (
-        AvitoAccount.objects
-        .select_related("workspace")
-        .get(id=avito_account_id)
-    )
-
-    result = import_avito_listing_daily_stats_for_account(
-        avito_account=avito_account,
-        date_from=date_from,
-        date_to=date_to,
-        listing_ids=listing_ids,
-        session=session
-    )
-
-    logger.info(
-        "Imported Avito daily stats for account_id=%s: listings=%s days=%s created=%s updated=%s",
-        avito_account.id,
-        result.total_listings,
-        result.total_days,
-        result.created_stats,
-        result.updated_stats,
-    )
-
-    return {
-        "total_listings": result.total_listings,
-        "total_days": result.total_days,
-        "created_stats": result.created_stats,
-        "updated_stats": result.updated_stats,
-    }
-
-
-@shared_task
 def archive_stale_publications_task(older_than_days=60, limit=1000):
     result = archive_stale_publications(
         older_than_days=older_than_days,
@@ -283,7 +251,10 @@ def run_due_ad_generation_tasks(limit=50):
     return run_due_ad_generation_tasks_service(limit=limit)
 
 
-@shared_task
+@shared_task(
+    soft_time_limit=settings.AVITO_AUTOLOAD_SYNC_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=settings.AVITO_AUTOLOAD_SYNC_TIME_LIMIT_SECONDS,
+)
 def sync_last_completed_avito_autoload_report_task(avito_account_id, session=None):
     with transaction.atomic():
         avito_account = (
@@ -321,6 +292,20 @@ def sync_last_completed_avito_autoload_report_task(avito_account_id, session=Non
             avito_account=avito_account,
             session=session,
         )
+    except SoftTimeLimitExceeded:
+        error_message = (
+            "Превышено максимальное время синхронизации отчёта Avito."
+        )
+        AvitoAccount.objects.filter(id=avito_account_id).update(
+            sync_status=AvitoAccount.SyncStatus.ERROR,
+            sync_error=error_message,
+            updated_at=timezone.now(),
+        )
+        logger.error(
+            "Avito autoload report sync timed out for account_id=%s",
+            avito_account_id,
+        )
+        raise
     except Exception as exc:
         AvitoAccount.objects.filter(id=avito_account_id).update(
             sync_status=AvitoAccount.SyncStatus.ERROR,
@@ -371,10 +356,18 @@ def sync_last_completed_avito_autoload_report_task(avito_account_id, session=Non
 
 @shared_task
 def sync_last_completed_avito_autoload_reports_task(limit=20):
+    stale_before = timezone.now() - timedelta(
+        minutes=get_avito_sync_stale_timeout_minutes()
+    )
+
     avito_accounts = (
         AvitoAccount.objects
         .filter(is_active=True)
-        .exclude(sync_status=AvitoAccount.SyncStatus.SYNCING)
+        .filter(
+            ~Q(sync_status=AvitoAccount.SyncStatus.SYNCING)
+            | Q(sync_started_at__isnull=True)
+            | Q(sync_started_at__lt=stale_before)
+        )
         .order_by("last_synced_at", "id")[:limit]
     )
 
