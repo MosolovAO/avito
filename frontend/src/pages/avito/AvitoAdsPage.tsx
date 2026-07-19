@@ -152,10 +152,6 @@ type JsonTextFieldName = "base_data_json" | "option_data_json";
 
 const pageSize = 30;
 
-const DEFAULT_DATE_END_ORDERING: NonNullable<
-    AvitoAccountAdsQueryParams["ordering"]
-> = "-date_end";
-
 const entityTypeLabel: Record<string, string> = {
     avito_listing: "Avito",
     ad_publication: "Публикация",
@@ -435,9 +431,7 @@ export const AvitoAdsPage: React.FC = () => {
     const [search, setSearch] = useState("");
     const [addressFilter, setAddressFilter] = useState("");
     const [dateEndOrdering, setDateEndOrdering] =
-        useState<AvitoAccountAdsQueryParams["ordering"]>(
-            DEFAULT_DATE_END_ORDERING,
-        );
+        useState<AvitoAccountAdsQueryParams["ordering"]>("");
     const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
     const [selectedAdItems, setSelectedAdItems] = useState<SelectedAdItem[]>([]);
 
@@ -464,9 +458,7 @@ export const AvitoAdsPage: React.FC = () => {
                 hasAvitoId,
                 hasErrors,
                 addressFilter.trim(),
-                dateEndOrdering === DEFAULT_DATE_END_ORDERING
-                    ? ""
-                    : "custom-ordering",
+                dateEndOrdering,
             ].filter(Boolean).length,
         [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors],
     );
@@ -481,7 +473,7 @@ export const AvitoAdsPage: React.FC = () => {
         setHasAvitoId("");
         setHasErrors("");
         setAddressFilter("");
-        setDateEndOrdering(DEFAULT_DATE_END_ORDERING);
+        setDateEndOrdering("");
         resetPage();
     }, [resetPage]);
 
