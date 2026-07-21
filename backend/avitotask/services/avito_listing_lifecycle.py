@@ -4,6 +4,7 @@ from datetime import timedelta
 from django.utils import timezone
 
 from avitotask.models import AvitoListing
+from avitotask.services.ad_publication_dates import format_avito_date
 
 
 @dataclass(frozen=True)
@@ -29,10 +30,10 @@ class AvitoListingLifecycleReport:
 
 
 def build_avito_listing_lifecycle_report(
-    *,
-    workspace,
-    avito_account,
-    soon_days=3,
+        *,
+        workspace,
+        avito_account,
+        soon_days=3,
 ) -> AvitoListingLifecycleReport:
     now = timezone.now()
 
@@ -48,26 +49,27 @@ def build_avito_listing_lifecycle_report(
         .order_by("id")
     )
 
+    today = timezone.localdate()
+
     items = []
     expired = 0
     expires_soon = 0
     active_ok = 0
 
-    for listing in listings.iterator():
-        date_end_raw = get_listing_date_end(listing)
-        date_end = parse_avito_date_end(date_end_raw)
+    for listing in listings.iterator(chunk_size=500):
+        published_end = listing.published_end
+        date_end_value = format_avito_date(published_end)
 
-        if date_end is None:
+        if published_end is None:
             action = "unknown_date_end"
             days_left = None
         else:
-            delta = date_end - now
-            days_left = delta.days
+            days_left = (published_end - today).days
 
-            if delta.total_seconds() < 0:
+            if days_left < 0:
                 action = "expired"
                 expired += 1
-            elif delta <= timedelta(days=soon_days):
+            elif days_left <= soon_days:
                 action = "expires_soon"
                 expires_soon += 1
             else:
@@ -82,7 +84,7 @@ def build_avito_listing_lifecycle_report(
                 title=listing.title or "",
                 status=listing.status or "",
                 desired_status=listing.desired_status,
-                date_end=date_end_raw,
+                date_end=date_end_value,
                 days_left=days_left,
                 action=action,
             )
@@ -95,21 +97,3 @@ def build_avito_listing_lifecycle_report(
         active_ok=active_ok,
         items=items,
     )
-
-
-def get_listing_date_end(listing):
-    return (
-        (listing.base_data or {}).get("DateEnd")
-        or (listing.raw_data or {}).get("AvitoDateEnd")
-        or ""
-    )
-
-
-def parse_avito_date_end(value):
-    if not value:
-        return None
-
-    try:
-        return timezone.datetime.fromisoformat(str(value))
-    except ValueError:
-        return None

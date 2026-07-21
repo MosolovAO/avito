@@ -5,6 +5,11 @@ import type {
     UpdateAdPublicationRequest,
 } from "../../../entities/avito/types";
 
+import {
+    isLegacyDateEndKey,
+    withoutLegacyDateEnd,
+} from "./legacyDateEnd";
+
 export interface PublicationEditFormValues {
     title: string;
     description: string;
@@ -32,7 +37,7 @@ const isPublicationStatus = (value: string | null): value is AdPublicationStatus
     publicationStatuses.includes(value as AdPublicationStatus);
 
 const stringifyJsonForForm = (value: JsonObject): string =>
-    JSON.stringify(value ?? {}, null, 2);
+    JSON.stringify(withoutLegacyDateEnd(value), null, 2);
 
 const areJsonValuesEqual = (left: unknown, right: unknown): boolean =>
     JSON.stringify(left) === JSON.stringify(right);
@@ -47,13 +52,13 @@ const getStringOverride = (
 };
 
 const parseJsonObject = (value: string, fieldLabel: string): JsonObject => {
-    const parsed = JSON.parse(value || "{}");
+    const parsed: unknown = JSON.parse(value || "{}");
 
     if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
         throw new Error(`${fieldLabel} должен быть JSON-объектом`);
     }
 
-    return parsed as JsonObject;
+    return withoutLegacyDateEnd(parsed as JsonObject);
 };
 
 const parseImageUrls = (value: string): string[] =>
@@ -83,10 +88,10 @@ const mergeKnownOverrides = (
     inheritedData: JsonObject,
     overrides: JsonObject,
 ): JsonObject => {
-    const result: JsonObject = {...inheritedData};
+    const result = withoutLegacyDateEnd(inheritedData);
 
-    Object.keys(inheritedData).forEach((key) => {
-        if (hasOwn(overrides, key)) {
+    Object.keys(result).forEach((key) => {
+        if (hasOwn(overrides, key) && !isLegacyDateEndKey(key)) {
             result[key] = overrides[key];
         }
     });
@@ -135,7 +140,10 @@ export const buildPublicationUpdateRequest = (
     const nextOverrides: JsonObject = {};
 
     Object.entries(existingOverrides).forEach(([key, value]) => {
-        if (!controlledKeys.has(key)) {
+        if (
+            !controlledKeys.has(key) &&
+            !isLegacyDateEndKey(key)
+        ) {
             nextOverrides[key] = value;
         }
     });

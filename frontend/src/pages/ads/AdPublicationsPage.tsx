@@ -211,7 +211,7 @@ export const AdPublicationsPage: React.FC = () => {
             width: 150,
             render: (_, publication) => {
                 const deadline = getDateDeadlinePresentation(
-                    publication.effective_date_end,
+                    publication.published_end,
                 );
 
                 return (

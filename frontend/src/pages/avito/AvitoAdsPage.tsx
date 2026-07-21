@@ -77,6 +77,10 @@ import {
     type EditableOptionValue,
 } from "../../features/avito/lib/adCreativeFormMapper";
 
+import {
+    withoutLegacyDateEnd,
+} from "../../features/avito/lib/legacyDateEnd";
+
 interface SelectedAdItem {
     entity_type: AvitoAccountAd["entity_type"];
     id: number;
@@ -125,16 +129,19 @@ const canExtendAd = (item: AvitoAccountAd): boolean => {
 };
 
 const stringifyJsonForForm = (value: JsonObject): string =>
-    JSON.stringify(value ?? {}, null, 2);
+    JSON.stringify(withoutLegacyDateEnd(value), null, 2);
 
-const parseJsonObject = (value: string, fieldLabel: string): JsonObject => {
-    const parsed = JSON.parse(value || "{}");
+const parseJsonObject = (
+    value: string,
+    fieldLabel: string,
+): JsonObject => {
+    const parsed: unknown = JSON.parse(value || "{}");
 
     if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
         throw new Error(`${fieldLabel} должен быть JSON-объектом`);
     }
 
-    return parsed as JsonObject;
+    return withoutLegacyDateEnd(parsed as JsonObject);
 };
 
 const stringifyImageUrlsForForm = (imageUrls: string[]): string =>
@@ -151,6 +158,7 @@ const {Title, Text} = Typography;
 type JsonTextFieldName = "base_data_json" | "option_data_json";
 
 const pageSize = 30;
+const DEFAULT_DATE_END_ORDERING = "-date_end" as const;
 
 const entityTypeLabel: Record<string, string> = {
     avito_listing: "Avito",
@@ -431,7 +439,9 @@ export const AvitoAdsPage: React.FC = () => {
     const [search, setSearch] = useState("");
     const [addressFilter, setAddressFilter] = useState("");
     const [dateEndOrdering, setDateEndOrdering] =
-        useState<AvitoAccountAdsQueryParams["ordering"]>("");
+        useState<AvitoAccountAdsQueryParams["ordering"]>(
+            DEFAULT_DATE_END_ORDERING,
+        );
     const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
     const [selectedAdItems, setSelectedAdItems] = useState<SelectedAdItem[]>([]);
 
@@ -458,7 +468,7 @@ export const AvitoAdsPage: React.FC = () => {
                 hasAvitoId,
                 hasErrors,
                 addressFilter.trim(),
-                dateEndOrdering,
+                dateEndOrdering === "date_end" ? dateEndOrdering : "",
             ].filter(Boolean).length,
         [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors],
     );
@@ -473,7 +483,7 @@ export const AvitoAdsPage: React.FC = () => {
         setHasAvitoId("");
         setHasErrors("");
         setAddressFilter("");
-        setDateEndOrdering("");
+        setDateEndOrdering(DEFAULT_DATE_END_ORDERING);
         resetPage();
     }, [resetPage]);
 
@@ -921,21 +931,10 @@ export const AvitoAdsPage: React.FC = () => {
     const columns = useMemo<TableProps<AvitoAccountAd>["columns"]>
     (() => [
         {
-            title: "Тип",
-            dataIndex: "entity_type",
-            key: "entity_type",
-            width: 90,
-            render: (value: string) => (
-                <Tag color={entityTypeColor[value] ?? "default"}>
-                    {entityTypeLabel[value] ?? value}
-                </Tag>
-            ),
-        },
-        {
             title: "Заголовок",
             dataIndex: "title",
             key: "title",
-            width: 300,
+            width: 250,
             render: (value: string | null, item) => (
                 <Space orientation="vertical" size={0}>
                     <Text strong>{value || "Без названия"}</Text>
@@ -988,7 +987,9 @@ export const AvitoAdsPage: React.FC = () => {
             key: "date_end",
             width: 100,
             render: (_, item) => {
-                const deadline = getDateDeadlinePresentation(item.date_end);
+                const deadline = getDateDeadlinePresentation(
+                    item.published_end,
+                );
 
                 return (
                     <Tooltip
@@ -1003,6 +1004,17 @@ export const AvitoAdsPage: React.FC = () => {
                     </Tooltip>
                 );
             },
+        },
+        {
+            title: "Тип",
+            dataIndex: "entity_type",
+            key: "entity_type",
+            width: 90,
+            render: (value: string) => (
+                <Tag color={entityTypeColor[value] ?? "default"}>
+                    {entityTypeLabel[value] ?? value}
+                </Tag>
+            ),
         },
         {
             title: "Статус",
@@ -1453,7 +1465,11 @@ export const AvitoAdsPage: React.FC = () => {
                             name="base_data_json"
                             title="Базовые поля"
                             emptyText="Нет дополнительных базовых полей"
-                            excludedKeys={["Category"]}
+                            excludedKeys={[
+                                "Category",
+                                "DateEnd",
+                                "date_end",
+                            ]}
                         />
 
                         <Space
@@ -1588,9 +1604,14 @@ export const AvitoAdsPage: React.FC = () => {
                         style={{width: "100%"}}
                         value={dateEndOrdering}
                         options={[
-                            {label: "Без сортировки", value: ""},
-                            {label: "Окончание: сначала ранние", value: "date_end"},
-                            {label: "Окончание: сначала поздние", value: "-date_end"},
+                            {
+                                label: "Окончание: сначала поздние",
+                                value: "-date_end",
+                            },
+                            {
+                                label: "Окончание: сначала ранние",
+                                value: "date_end",
+                            },
                         ]}
                         onChange={(value) => {
                             setDateEndOrdering(value);

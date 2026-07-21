@@ -1,13 +1,20 @@
-from avitotask.models import AvitoListing
-from avitotask.services.ad_editing import AdEditingError
-from avitotask.services.ad_export_state import mark_avito_accounts_export_dirty
+from django.db import transaction
 from django.utils import timezone
 
+from avitotask.models import AvitoListing
+from avitotask.services.ad_editing import (
+    AdEditingError,
+    extract_date_end_patch,
+    remove_legacy_date_end,
+)
+from avitotask.services.ad_export_state import (
+    mark_avito_accounts_export_dirty,
+)
 from avitotask.services.ad_publication_dates import (
-    DATE_END_FIELD,
     extend_date_end,
-    format_avito_date,
+    get_legacy_date_end,
     parse_avito_date,
+    set_legacy_date_end,
 )
 
 
@@ -26,105 +33,167 @@ def update_avito_listing(
         management_status=None,
         desired_status=None,
 ):
-    listing = AvitoListing.objects.select_related("avito_account").get(
-        id=listing_id,
-        workspace=workspace,
-    )
+    with transaction.atomic():
+        listing = (
+            AvitoListing.objects
+            .select_for_update()
+            .select_related("avito_account")
+            .get(
+                id=listing_id,
+                workspace=workspace,
+            )
+        )
 
-    if listing.source != AvitoListing.Source.AVITO_EXCEL:
-        raise AdEditingError("Редактировать напрямую можно только объявления, импортированные из XLSX Avito.")
+        if listing.source != AvitoListing.Source.AVITO_EXCEL:
+            raise AdEditingError("Редактировать напрямую можно только объявления, импортированные из XLSX Avito.")
 
-    if listing.management_status not in [
-        AvitoListing.ManagementStatus.MANAGED,
-        AvitoListing.ManagementStatus.OUT_OF_SYNC,
-    ]:
-        raise AdEditingError("Это объявление не находится под управлением сервиса.")
+        if listing.management_status not in [
+            AvitoListing.ManagementStatus.MANAGED,
+            AvitoListing.ManagementStatus.OUT_OF_SYNC,
+        ]:
+            raise AdEditingError("Это объявление не находится под управлением сервиса.")
 
-    update_fields = []
+        base_has_date_end, base_date_end = extract_date_end_patch(
+            base_data,
+        )
+        option_has_date_end, option_date_end = extract_date_end_patch(
+            option_data,
+        )
 
-    option_category_changed = (
-            option_category is not None
-            and listing.option_category_id != option_category.id
-    )
+        has_date_end = base_has_date_end or option_has_date_end
+        incoming_date_end = (
+            base_date_end
+            if base_has_date_end
+            else option_date_end
+        )
 
-    if option_category is not None:
-        listing.option_category = option_category
-        update_fields.append("option_category")
+        if has_date_end and incoming_date_end is None:
+            raise AdEditingError(
+                "DateEnd нельзя очистить у управляемого объявления."
+            )
 
-    if title is not None:
-        listing.title = title
-        update_fields.append("title")
+        update_fields = []
 
-    if description is not None:
-        listing.description = description
-        update_fields.append("description")
+        option_category_changed = (
+                option_category is not None
+                and listing.option_category_id != option_category.id
+        )
 
-    if address is not None:
-        listing.address = address
-        update_fields.append("address")
+        if option_category is not None:
+            listing.option_category = option_category
+            update_fields.append("option_category")
 
-    if status is not None:
-        listing.status = status
-        update_fields.append("status")
+        if title is not None:
+            listing.title = title
+            update_fields.append("title")
 
-    if image_urls is not None:
-        if not isinstance(image_urls, list):
-            raise AdEditingError("image_urls должен быть списком.")
-        listing.image_urls = image_urls
-        update_fields.append("image_urls")
+        if description is not None:
+            listing.description = description
+            update_fields.append("description")
 
-    if base_data is not None:
-        if not isinstance(base_data, dict):
-            raise AdEditingError("base_data должен быть словарем.")
-        current_base_data = dict(listing.base_data or {})
-        current_base_data.update(base_data)
-        listing.base_data = current_base_data
-        update_fields.append("base_data")
+        if address is not None:
+            listing.address = address
+            update_fields.append("address")
 
-    if option_data is not None:
-        if not isinstance(option_data, dict):
-            raise AdEditingError("option_data должен быть словарем.")
+        if status is not None:
+            listing.status = status
+            update_fields.append("status")
 
-        if option_category_changed:
-            # Frontend присылает полный набор опций новой категории.
-            # Параметры предыдущей категории здесь больше не сохраняем.
-            listing.option_data = dict(option_data)
-        else:
-            # При обычном редактировании сохраняем неизвестные legacy-поля.
-            current_option_data = dict(listing.option_data or {})
-            current_option_data.update(option_data)
-            listing.option_data = current_option_data
+        if image_urls is not None:
+            if not isinstance(image_urls, list):
+                raise AdEditingError("image_urls должен быть списком.")
+            listing.image_urls = image_urls
+            update_fields.append("image_urls")
 
-        update_fields.append("option_data")
+        if base_data is not None:
+            if not isinstance(base_data, dict):
+                raise AdEditingError("base_data должен быть словарем.")
+            current_base_data = dict(listing.base_data or {})
+            current_base_data.update(base_data)
+            listing.base_data = current_base_data
+            update_fields.append("base_data")
 
-    if management_status is not None:
-        if management_status not in AvitoListing.ManagementStatus.values:
-            raise AdEditingError("Некорректный статус управления объявлением.")
-        listing.management_status = management_status
-        update_fields.append("management_status")
+        if option_data is not None:
+            if not isinstance(option_data, dict):
+                raise AdEditingError("option_data должен быть словарем.")
 
-    if desired_status is not None:
-        if desired_status not in AvitoListing.DesiredStatus.values:
-            raise AdEditingError("Некорректное желаемое состояние объявления.")
-        listing.desired_status = desired_status
-        update_fields.append("desired_status")
+            if option_category_changed:
+                # Frontend присылает полный набор опций новой категории.
+                # Параметры предыдущей категории здесь больше не сохраняем.
+                listing.option_data = dict(option_data)
+            else:
+                # При обычном редактировании сохраняем неизвестные legacy-поля.
+                current_option_data = dict(listing.option_data or {})
+                current_option_data.update(option_data)
+                listing.option_data = current_option_data
 
-    if not update_fields:
-        raise AdEditingError("Нет данных для обновления объявления.")
+            update_fields.append("option_data")
 
-    update_fields.append("updated_at")
-    listing.save(update_fields=update_fields)
+        if has_date_end:
+            listing.published_end = incoming_date_end
+            listing.base_data = set_legacy_date_end(
+                listing.base_data,
+                incoming_date_end,
+            )
+            listing.option_data = remove_legacy_date_end(
+                listing.option_data,
+            )
 
-    mark_avito_accounts_export_dirty([listing.avito_account_id])
+            update_fields.extend([
+                "published_end",
+                "base_data",
+                "option_data",
+            ])
 
-    return listing
+        if management_status is not None:
+            if management_status not in AvitoListing.ManagementStatus.values:
+                raise AdEditingError("Некорректный статус управления объявлением.")
+            listing.management_status = management_status
+            update_fields.append("management_status")
+
+        if desired_status is not None:
+            if desired_status not in AvitoListing.DesiredStatus.values:
+                raise AdEditingError("Некорректное желаемое состояние объявления.")
+            listing.desired_status = desired_status
+            update_fields.append("desired_status")
+
+        if not update_fields:
+            raise AdEditingError("Нет данных для обновления объявления.")
+
+        update_fields.append("updated_at")
+        listing.save(
+            update_fields=list(dict.fromkeys(update_fields)),
+        )
+
+        mark_avito_accounts_export_dirty([
+            listing.avito_account_id,
+        ])
+
+        return listing
 
 
 def get_avito_listing_date_end(listing):
-    return parse_avito_date(
-        (listing.base_data or {}).get(DATE_END_FIELD)
-        or (listing.raw_data or {}).get("AvitoDateEnd")
+    if listing.published_end is not None:
+        return listing.published_end
+
+    legacy_date_end = (
+            get_legacy_date_end(listing.base_data)
+            or get_legacy_date_end(listing.option_data)
+            or parse_avito_date(
+        (listing.raw_data or {}).get("AvitoDateEnd")
     )
+    )
+
+    if legacy_date_end is not None:
+        return legacy_date_end
+
+    if (
+            listing.source == AvitoListing.Source.SERVICE
+            and listing.publication_id
+    ):
+        return listing.publication.published_end
+
+    return None
 
 
 def get_avito_listing_date_end_source(listing):
@@ -132,32 +201,57 @@ def get_avito_listing_date_end_source(listing):
 
 
 def extend_avito_listing_date_end(*, listing_id, workspace):
-    listing = AvitoListing.objects.select_related("avito_account").get(
-        id=listing_id,
-        workspace=workspace,
-    )
+    with transaction.atomic():
+        listing = (
+            AvitoListing.objects
+            .select_for_update()
+            .select_related("avito_account")
+            .get(
+                id=listing_id,
+                workspace=workspace,
+            )
+        )
 
-    if listing.source != AvitoListing.Source.AVITO_EXCEL:
-        raise AdEditingError("Продлевать напрямую можно только объявления, импортированные из XLSX Avito.")
+        if listing.source != AvitoListing.Source.AVITO_EXCEL:
+            raise AdEditingError(
+                "Продлевать напрямую можно только объявления, "
+                "импортированные из XLSX Avito."
+            )
 
-    if listing.management_status not in [
-        AvitoListing.ManagementStatus.MANAGED,
-        AvitoListing.ManagementStatus.OUT_OF_SYNC,
-    ]:
-        raise AdEditingError("Это объявление не находится под управлением сервиса.")
+        if listing.management_status not in [
+            AvitoListing.ManagementStatus.MANAGED,
+            AvitoListing.ManagementStatus.OUT_OF_SYNC,
+        ]:
+            raise AdEditingError(
+                "Это объявление не находится под управлением сервиса."
+            )
 
-    next_date_end = extend_date_end(get_avito_listing_date_end(listing))
+        next_published_end = extend_date_end(
+            get_avito_listing_date_end(listing),
+        )
 
-    base_data = dict(listing.base_data or {})
-    base_data[DATE_END_FIELD] = format_avito_date(next_date_end)
+        listing.published_end = next_published_end
+        listing.base_data = set_legacy_date_end(
+            listing.base_data,
+            next_published_end,
+        )
+        listing.desired_status = (
+            AvitoListing.DesiredStatus.PUBLISH
+        )
+        listing.save(
+            update_fields=[
+                "published_end",
+                "base_data",
+                "desired_status",
+                "updated_at",
+            ],
+        )
 
-    listing.base_data = base_data
-    listing.desired_status = AvitoListing.DesiredStatus.PUBLISH
-    listing.save(update_fields=["base_data", "desired_status", "updated_at"])
+        mark_avito_accounts_export_dirty([
+            listing.avito_account_id,
+        ])
 
-    mark_avito_accounts_export_dirty([listing.avito_account_id])
-
-    return listing
+        return listing
 
 
 def bulk_update_avito_listing_management_status(

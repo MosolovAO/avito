@@ -628,6 +628,7 @@ class AdCreativeViewSet(WorkspaceScopedModelViewSet):
                     "image_urls",
                     "base_data",
                     "option_data",
+                    "published_end",
                     "updated_at",
                 )
             )

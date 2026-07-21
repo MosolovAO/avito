@@ -4,6 +4,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from avitotask.models import AvitoListing, ProductOptions
+from avitotask.services.ad_publication_dates import parse_avito_date
 
 from django.db import transaction
 from django.utils import timezone
@@ -423,7 +424,12 @@ def import_avito_excel_file(*, workspace, avito_account, file_obj) -> AvitoExcel
             skipped_rows += 1
             continue
 
-        model_data, base_data, option_data = split_mapped_data(row.mapped_data)
+        model_data, base_data, option_data = split_mapped_data(
+            row.mapped_data,
+        )
+        published_end = parse_avito_date(
+            base_data.get("DateEnd"),
+        )
 
         avito_id = model_data.get("avito_id")
         if not avito_id:
@@ -447,6 +453,7 @@ def import_avito_excel_file(*, workspace, avito_account, file_obj) -> AvitoExcel
                 "image_urls": model_data.get("image_urls") or [],
                 "base_data": base_data,
                 "option_data": option_data,
+                "published_end": published_end,
                 "raw_data": row.raw_data,
                 "unmapped_data": row.unmapped_data,
                 "sheet_name": row.sheet_name,

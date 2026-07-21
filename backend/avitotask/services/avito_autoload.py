@@ -3,8 +3,13 @@ from dataclasses import dataclass
 from django.db import transaction
 from django.utils import timezone
 
-from avitotask.models import AdPublication, AvitoAccount, AvitoListing, AvitoOAuthToken
+from avitotask.models import AdPublication, AvitoListing, AvitoOAuthToken
 from avitotask.services.avito_api import AvitoApiClient, AvitoApiError
+
+from avitotask.services.ad_publication_dates import (
+    get_publication_effective_date_end,
+    set_legacy_date_end,
+)
 
 
 @dataclass(frozen=True)
@@ -116,15 +121,48 @@ def get_publications_for_avito_id_linking(avito_account, row_ids=None):
     return list(queryset)
 
 
-def upsert_listing_for_publication(publication, avito_id, payload):
+def upsert_listing_for_publication(
+        publication,
+        avito_id,
+        payload,
+):
+    creative = publication.creative
+    published_end = (
+            publication.published_end
+            or get_publication_effective_date_end(publication)
+    )
+
+    base_data = set_legacy_date_end(
+        creative.base_data,
+        published_end,
+    )
+    option_data = dict(creative.option_data or {})
+    option_data.pop("DateEnd", None)
+    option_data.pop("date_end", None)
+
     return AvitoListing.objects.update_or_create(
         workspace=publication.workspace,
         avito_account=publication.avito_account,
         avito_id=str(avito_id),
         defaults={
+            "source": AvitoListing.Source.SERVICE,
+            "management_status": (
+                AvitoListing.ManagementStatus.MANAGED
+            ),
+            "desired_status": (
+                AvitoListing.DesiredStatus.PUBLISH
+            ),
+            "row_id": publication.row_id,
             "status": "published",
-            "title": publication.creative.title,
+            "title": creative.title,
+            "description": creative.description,
+            "address": publication.address,
+            "image_urls": creative.image_urls or [],
+            "base_data": base_data,
+            "option_data": option_data,
+            "option_category": creative.option_category,
+            "published_end": published_end,
             "imported_payload": payload,
-            "last_seen_at": timezone.now()
-        }
+            "last_seen_at": timezone.now(),
+        },
     )

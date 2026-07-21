@@ -155,7 +155,7 @@ export const AdCreativesPage: React.FC = () => {
             width: 120,
             render: (_, creative) => {
                 const deadline = getDateDeadlinePresentation(
-                    creative.effective_date_end,
+                    creative.published_end,
                 );
 
                 return (

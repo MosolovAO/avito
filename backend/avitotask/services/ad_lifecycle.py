@@ -7,12 +7,11 @@ from avitotask.models import AdPublication, AvitoListing
 from avitotask.services.ad_editing import AdEditingError
 from avitotask.services.ad_export_state import mark_avito_accounts_export_dirty
 from avitotask.services.ad_publication_dates import (
-    DATE_END_FIELD,
     PUBLICATION_EXTENSION_DAYS,
     extend_date_end,
-    format_avito_date,
     get_publication_effective_date_end,
-    parse_avito_date,
+    set_legacy_date_end,
+    sync_linked_listings_published_end,
 )
 
 ENTITY_TYPE_AVITO_LISTING = "avito_listing"
@@ -169,7 +168,13 @@ def split_listing_lifecycle_targets(*, workspace, avito_account, listing_ids):
     }
 
 
-def update_publications_lifecycle(*, workspace, avito_account, publication_ids, action):
+def update_publications_lifecycle(
+        *,
+        workspace,
+        avito_account,
+        publication_ids,
+        action,
+):
     if not publication_ids:
         return {
             "requested": 0,
@@ -181,7 +186,7 @@ def update_publications_lifecycle(*, workspace, avito_account, publication_ids, 
     status = PUBLICATION_STATUS_BY_ACTION[action]
     now = timezone.now()
 
-    queryset = (
+    publications = list(
         AdPublication.objects
         .select_for_update()
         .select_related("creative")
@@ -191,8 +196,6 @@ def update_publications_lifecycle(*, workspace, avito_account, publication_ids, 
             id__in=publication_ids,
         )
     )
-
-    publications = list(queryset)
     matched = len(publications)
 
     for publication in publications:
@@ -205,8 +208,17 @@ def update_publications_lifecycle(*, workspace, avito_account, publication_ids, 
     if publications:
         AdPublication.objects.bulk_update(
             publications,
-            ["status", "overrides", "updated_at"],
+            [
+                "status",
+                "published_end",
+                "published_end_source",
+                "overrides",
+                "updated_at",
+            ],
         )
+
+        if action == ACTION_PUBLISH:
+            sync_linked_listings_published_end(publications)
 
     return {
         "requested": len(publication_ids),
@@ -216,7 +228,13 @@ def update_publications_lifecycle(*, workspace, avito_account, publication_ids, 
     }
 
 
-def update_imported_listings_lifecycle(*, workspace, avito_account, listing_ids, action):
+def update_imported_listings_lifecycle(
+        *,
+        workspace,
+        avito_account,
+        listing_ids,
+        action,
+):
     if not listing_ids:
         return {
             "matched": 0,
@@ -243,16 +261,26 @@ def update_imported_listings_lifecycle(*, workspace, avito_account, listing_ids,
         listing.updated_at = now
 
         if action == ACTION_PUBLISH:
-            listing.management_status = AvitoListing.ManagementStatus.MANAGED
+            listing.management_status = (
+                AvitoListing.ManagementStatus.MANAGED
+            )
             ensure_listing_has_active_date_end(listing)
 
-    update_fields = ["desired_status", "base_data", "updated_at"]
+    update_fields = [
+        "desired_status",
+        "published_end",
+        "base_data",
+        "updated_at",
+    ]
 
     if action == ACTION_PUBLISH:
         update_fields.append("management_status")
 
     if listings:
-        AvitoListing.objects.bulk_update(listings, update_fields)
+        AvitoListing.objects.bulk_update(
+            listings,
+            update_fields,
+        )
 
     return {
         "matched": len(listings),
@@ -261,7 +289,12 @@ def update_imported_listings_lifecycle(*, workspace, avito_account, listing_ids,
     }
 
 
-def extend_publications_date_end(*, workspace, avito_account, publication_ids):
+def extend_publications_date_end(
+        *,
+        workspace,
+        avito_account,
+        publication_ids,
+):
     if not publication_ids:
         return {
             "requested": 0,
@@ -283,15 +316,31 @@ def extend_publications_date_end(*, workspace, avito_account, publication_ids):
     now = timezone.now()
 
     for publication in publications:
-        overrides = dict(publication.overrides or {})
-        overrides[DATE_END_FIELD] = format_avito_date(
-            extend_date_end(get_publication_effective_date_end(publication))
+        next_published_end = extend_date_end(
+            get_publication_effective_date_end(publication),
         )
-        publication.overrides = overrides
+
+        publication.published_end = next_published_end
+        publication.published_end_source = (
+            AdPublication.PublishedEndSource.PUBLICATION
+        )
+        publication.overrides = set_legacy_date_end(
+            publication.overrides,
+            next_published_end,
+        )
         publication.updated_at = now
 
     if publications:
-        AdPublication.objects.bulk_update(publications, ["overrides", "updated_at"])
+        AdPublication.objects.bulk_update(
+            publications,
+            [
+                "published_end",
+                "published_end_source",
+                "overrides",
+                "updated_at",
+            ],
+        )
+        sync_linked_listings_published_end(publications)
 
     return {
         "requested": len(publication_ids),
@@ -301,7 +350,12 @@ def extend_publications_date_end(*, workspace, avito_account, publication_ids):
     }
 
 
-def extend_imported_listings_date_end(*, workspace, avito_account, listing_ids):
+def extend_imported_listings_date_end(
+        *,
+        workspace,
+        avito_account,
+        listing_ids,
+):
     if not listing_ids:
         return {
             "matched": 0,
@@ -330,22 +384,25 @@ def extend_imported_listings_date_end(*, workspace, avito_account, listing_ids):
     now = timezone.now()
 
     for listing in extendable_listings:
-        current_date_end = parse_avito_date(
-            (listing.base_data or {}).get(DATE_END_FIELD)
-            or (listing.raw_data or {}).get("AvitoDateEnd")
+        next_published_end = extend_date_end(
+            listing.published_end,
         )
-        base_data = dict(listing.base_data or {})
-        base_data[DATE_END_FIELD] = format_avito_date(
-            extend_date_end(current_date_end)
+
+        listing.published_end = next_published_end
+        listing.base_data = set_legacy_date_end(
+            listing.base_data,
+            next_published_end,
         )
-        listing.base_data = base_data
-        listing.desired_status = AvitoListing.DesiredStatus.PUBLISH
-        listing.updated_at = now
 
     if extendable_listings:
         AvitoListing.objects.bulk_update(
             extendable_listings,
-            ["base_data", "desired_status", "updated_at"],
+            [
+                "published_end",
+                "base_data",
+                "desired_status",
+                "updated_at",
+            ],
         )
 
     return {
@@ -356,31 +413,46 @@ def extend_imported_listings_date_end(*, workspace, avito_account, listing_ids):
 
 
 def ensure_publication_has_active_date_end(publication):
-    current_date_end = get_publication_effective_date_end(publication)
+    current_published_end = get_publication_effective_date_end(
+        publication,
+    )
 
-    if current_date_end and current_date_end >= timezone.localdate():
+    if (
+            current_published_end
+            and current_published_end >= timezone.localdate()
+    ):
         return
 
-    overrides = dict(publication.overrides or {})
-    overrides[DATE_END_FIELD] = build_next_active_date_end()
-    publication.overrides = overrides
+    next_published_end = build_next_active_date_end()
+
+    publication.published_end = next_published_end
+    publication.published_end_source = (
+        AdPublication.PublishedEndSource.PUBLICATION
+    )
+    publication.overrides = set_legacy_date_end(
+        publication.overrides,
+        next_published_end,
+    )
 
 
 def ensure_listing_has_active_date_end(listing):
-    current_date_end = parse_avito_date(
-        (listing.base_data or {}).get(DATE_END_FIELD)
-        or (listing.raw_data or {}).get("AvitoDateEnd")
+    current_published_end = listing.published_end
+
+    if (
+        current_published_end is None
+        or current_published_end < timezone.localdate()
+    ):
+        current_published_end = build_next_active_date_end()
+
+    listing.published_end = current_published_end
+    listing.base_data = set_legacy_date_end(
+        listing.base_data,
+        current_published_end,
     )
-
-    if current_date_end and current_date_end >= timezone.localdate():
-        return
-
-    base_data = dict(listing.base_data or {})
-    base_data[DATE_END_FIELD] = build_next_active_date_end()
-    listing.base_data = base_data
 
 
 def build_next_active_date_end():
-    return format_avito_date(
-        timezone.localdate() + timedelta(days=PUBLICATION_EXTENSION_DAYS)
+    return (
+            timezone.localdate()
+            + timedelta(days=PUBLICATION_EXTENSION_DAYS)
     )

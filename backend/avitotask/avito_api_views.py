@@ -461,7 +461,7 @@ class AvitoAccountAdsListSerializer(serializers.Serializer):
         choices=["", "date_end", "-date_end"],
         required=False,
         allow_blank=True,
-        default="",
+        default="-date_end",
     )
     page = serializers.IntegerField(
         required=False,

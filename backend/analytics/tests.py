@@ -1,14 +1,19 @@
-from datetime import date
+from datetime import date, datetime, timezone as dt_timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
 from rest_framework.test import APIClient
 
 from accounts.models import User, Workspace, WorkspaceMembership
-from analytics.models import AvitoListingDailyStats
+from analytics.models import AvitoListingDailyStats, AvitoStatsSyncState
 from analytics.selectors.avito_stats import build_avito_listing_stats_report
-from analytics.services.avito_stats import import_avito_listing_daily_stats_for_account
+from analytics.services.avito_stats import (
+    import_avito_listing_daily_stats_for_account,
+    resolve_stats_sync_range,
+)
+from analytics.tasks import import_avito_account_daily_stats_task
 from avitotask.models import AvitoAccount, AvitoListing, AvitoOAuthToken
 from avitotask.services.avito_api import AvitoApiClient
 
@@ -145,7 +150,7 @@ class AnalyticsReportTests(TestCase):
         client = APIClient()
         client.force_authenticate(self.user)
 
-        with patch("analytics.api_views.import_avito_account_daily_stats_task.delay") as delay:
+        with patch("analytics.tasks.import_avito_account_daily_stats_task.delay") as delay:
             delay.return_value.id = "analytics-task-id"
 
             response = client.post(
@@ -161,6 +166,12 @@ class AnalyticsReportTests(TestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["status"], "queued")
         self.assertEqual(response.data["task_id"], "analytics-task-id")
+        sync_state = AvitoStatsSyncState.objects.get(
+            avito_account=self.avito_account,
+        )
+        self.assertEqual(sync_state.status, AvitoStatsSyncState.Status.QUEUED)
+        self.assertEqual(sync_state.requested_date_from, date(2026, 5, 1))
+        self.assertEqual(sync_state.requested_date_to, date(2026, 5, 2))
         delay.assert_called_once_with(
             self.avito_account.id,
             "2026-05-01",
@@ -216,6 +227,80 @@ class AnalyticsReportTests(TestCase):
         self.assertEqual(response.data["totals"]["cost_per_contact"], "6.25")
         self.assertEqual(response.data["listings"][0]["avito_id"], "24122261")
 
+    def test_ads_api_returns_accumulated_stats_and_sync_state(self):
+        AvitoStatsSyncState.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            status=AvitoStatsSyncState.Status.SUCCESS,
+            coverage_from=date(2026, 5, 1),
+            coverage_to=date(2026, 5, 2),
+            last_successful_at=datetime(2026, 5, 3, 8, 0, tzinfo=dt_timezone.utc),
+        )
+        AvitoListingDailyStats.objects.create(
+            workspace=self.workspace,
+            listing=self.listing,
+            date=date(2026, 5, 1),
+            views=10,
+            contacts=2,
+        )
+        AvitoListingDailyStats.objects.create(
+            workspace=self.workspace,
+            listing=self.listing,
+            date=date(2026, 5, 2),
+            views=5,
+            contacts=1,
+        )
+
+        client = APIClient()
+        client.force_authenticate(self.user)
+        response = client.get(
+            f"/api/avito/accounts/{self.avito_account.id}/ads/",
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["stats_sync"]["status"], "success")
+        self.assertEqual(response.data["stats_sync"]["coverage_from"], "2026-05-01")
+        listing_row = next(
+            item for item in response.data["results"]
+            if item["avito_id"] == self.listing.avito_id
+        )
+        self.assertEqual(listing_row["avito_listing_id"], self.listing.id)
+        self.assertEqual(listing_row["stats"]["status"], "ready")
+        self.assertEqual(listing_row["stats"]["views"], 15)
+        self.assertEqual(listing_row["stats"]["contacts"], 3)
+
+    def test_ads_api_distinguishes_processing_from_confirmed_zero(self):
+        client = APIClient()
+        client.force_authenticate(self.user)
+
+        response = client.get(
+            f"/api/avito/accounts/{self.avito_account.id}/ads/",
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+        listing_row = response.data["results"][0]
+        self.assertEqual(response.data["stats_sync"]["status"], "not_started")
+        self.assertEqual(listing_row["stats"]["status"], "processing")
+        self.assertIsNone(listing_row["stats"]["views"])
+        self.assertIsNone(listing_row["stats"]["contacts"])
+
+        AvitoStatsSyncState.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            status=AvitoStatsSyncState.Status.SUCCESS,
+            coverage_from=date(2026, 5, 1),
+            coverage_to=date(2026, 5, 2),
+            last_successful_at=datetime(2026, 5, 3, 8, 0, tzinfo=dt_timezone.utc),
+        )
+        response = client.get(
+            f"/api/avito/accounts/{self.avito_account.id}/ads/",
+            HTTP_X_WORKSPACE_ID=str(self.workspace.id),
+        )
+        listing_row = response.data["results"][0]
+        self.assertEqual(listing_row["stats"]["status"], "ready")
+        self.assertEqual(listing_row["stats"]["views"], 0)
+        self.assertEqual(listing_row["stats"]["contacts"], 0)
+
 
 class AvitoAnalyticsImportTests(TestCase):
     def setUp(self):
@@ -248,7 +333,7 @@ class AvitoAnalyticsImportTests(TestCase):
             title="Analytics import listing",
         )
 
-    def test_import_daily_stats_saves_spending_as_total_spend_in_rubles(self):
+    def test_import_daily_stats_saves_views_and_contacts_without_spending_request(self):
         class FakeResponse:
             status_code = 200
             text = "json"
@@ -260,7 +345,11 @@ class AvitoAnalyticsImportTests(TestCase):
                 return self.payload
 
         class FakeSession:
+            def __init__(self):
+                self.urls = []
+
             def request(self, method, url, **kwargs):
+                self.urls.append(url)
                 if url.endswith("/stats/v1/accounts/94235311/items"):
                     return FakeResponse({
                         "result": {
@@ -280,30 +369,14 @@ class AvitoAnalyticsImportTests(TestCase):
                         },
                     })
 
-                if url.endswith("/stats/v2/accounts/94235311/items"):
-                    return FakeResponse({
-                        "result": {
-                            "items": [
-                                {
-                                    "itemId": "24122261",
-                                    "stats": [
-                                        {
-                                            "date": "2026-05-01",
-                                            "spending": 1250,
-                                        },
-                                    ],
-                                },
-                            ],
-                        },
-                    })
-
                 return FakeResponse({})
 
+        session = FakeSession()
         result = import_avito_listing_daily_stats_for_account(
             avito_account=self.avito_account,
             date_from=date(2026, 5, 1),
             date_to=date(2026, 5, 1),
-            session=FakeSession(),
+            session=session,
         )
 
         stat = AvitoListingDailyStats.objects.get(
@@ -315,8 +388,101 @@ class AvitoAnalyticsImportTests(TestCase):
         self.assertEqual(stat.views, 10)
         self.assertEqual(stat.contacts, 2)
         self.assertEqual(stat.favorites, 1)
-        self.assertEqual(stat.total_spend, Decimal("12.50"))
-        self.assertEqual(stat.raw_metrics["spending"], 1250)
+        self.assertIsNone(stat.total_spend)
+        self.assertEqual(len(session.urls), 1)
+        self.assertTrue(session.urls[0].endswith("/stats/v1/accounts/94235311/items"))
+
+    def test_sync_range_uses_full_backfill_then_two_day_overlap(self):
+        sync_state = AvitoStatsSyncState(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+        )
+        self.assertEqual(
+            resolve_stats_sync_range(
+                sync_state=sync_state,
+                today=date(2026, 7, 21),
+            ),
+            (date(2025, 7, 22), date(2026, 7, 21)),
+        )
+
+        sync_state.last_successful_at = datetime(
+            2026, 7, 20, 8, 0, tzinfo=dt_timezone.utc,
+        )
+        self.assertEqual(
+            resolve_stats_sync_range(
+                sync_state=sync_state,
+                today=date(2026, 7, 21),
+            ),
+            (date(2026, 7, 20), date(2026, 7, 21)),
+        )
+
+    def test_task_updates_sync_state_on_success_and_error(self):
+        sync_state = AvitoStatsSyncState.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            status=AvitoStatsSyncState.Status.QUEUED,
+            requested_date_from=date(2026, 5, 1),
+            requested_date_to=date(2026, 5, 1),
+        )
+
+        with patch(
+            "analytics.tasks.import_avito_listing_daily_stats_for_account",
+            return_value=SimpleNamespace(
+                total_listings=1,
+                total_days=1,
+                created_stats=1,
+                updated_stats=0,
+            ),
+        ):
+            result = import_avito_account_daily_stats_task(
+                self.avito_account.id,
+                "2026-05-01",
+                "2026-05-01",
+            )
+
+        sync_state.refresh_from_db()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(sync_state.status, AvitoStatsSyncState.Status.SUCCESS)
+        self.assertEqual(sync_state.coverage_from, date(2026, 5, 1))
+        self.assertEqual(sync_state.coverage_to, date(2026, 5, 1))
+        self.assertIsNotNone(sync_state.last_successful_at)
+
+        sync_state.status = AvitoStatsSyncState.Status.QUEUED
+        sync_state.save(update_fields=["status", "updated_at"])
+        with patch(
+            "analytics.tasks.import_avito_listing_daily_stats_for_account",
+            side_effect=RuntimeError("Avito unavailable"),
+        ):
+            with self.assertRaises(RuntimeError):
+                import_avito_account_daily_stats_task(
+                    self.avito_account.id,
+                    "2026-05-01",
+                    "2026-05-01",
+                )
+
+        sync_state.refresh_from_db()
+        self.assertEqual(sync_state.status, AvitoStatsSyncState.Status.ERROR)
+        self.assertIn("Avito unavailable", sync_state.error)
+
+    def test_running_task_is_not_started_twice(self):
+        AvitoStatsSyncState.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            status=AvitoStatsSyncState.Status.RUNNING,
+            started_at=datetime.now(tz=dt_timezone.utc),
+        )
+
+        with patch(
+            "analytics.tasks.import_avito_listing_daily_stats_for_account",
+        ) as importer:
+            result = import_avito_account_daily_stats_task(
+                self.avito_account.id,
+                "2026-05-01",
+                "2026-05-01",
+            )
+
+        self.assertEqual(result["status"], "skipped")
+        importer.assert_not_called()
 
 
 class AvitoApiClientAnalyticsTests(TestCase):

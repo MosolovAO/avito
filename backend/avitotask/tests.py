@@ -1,4 +1,6 @@
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from avitotask.services.ad_editing import update_ad_creative, update_ad_publication
 
 from unittest.mock import call, patch
@@ -14,6 +16,11 @@ from avitotask.services.ad_publication_dates import (
     inherit_creative_date_end_for_publication
 )
 
+from io import BytesIO, StringIO
+
+from django.core.management import call_command
+from django.core.management.base import CommandError
+
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from io import BytesIO
@@ -22,8 +29,14 @@ from openpyxl import Workbook
 from avitotask.services.avito_import import import_avito_listings_for_account, upsert_avito_listing
 from avitotask.services.avito_listing_editing import (
     bulk_update_avito_listing_management_status,
+    extend_avito_listing_date_end,
+    update_avito_listing,
 )
 from avitotask.services.ad_lifecycle import bulk_update_ads_lifecycle
+from avitotask.services.avito_ads import (
+    AvitoAdListFilters,
+    list_avito_account_ads,
+)
 from avitotask.services.avito_listing_lifecycle import build_avito_listing_lifecycle_report
 
 from avitotask.services.avito_autoload import link_publications_to_avito_ids_for_account
@@ -45,6 +58,7 @@ from avitotask.services.avito_autoload_report_fetch import (
 )
 from avitotask.services.ad_cleanup import archive_stale_publications
 from avitotask.services.ad_export import (
+    build_listing_export_row,
     build_publication_export_row,
     export_avito_account_publications_to_csv,
 )
@@ -70,6 +84,7 @@ from avitotask.models import (
     AdGenerationTaskOptionAssignment,
     AdGenerationTaskRun,
     AdImageAsset,
+    Category,
 )
 from avitotask.services.ad_generation import (
     create_manual_mass_posting,
@@ -105,6 +120,88 @@ from zoneinfo import ZoneInfo
     AVITO_API_MIN_REQUEST_INTERVAL_SECONDS=0,
     AVITO_API_MAX_RETRIES=0,
 )
+class PublishedEndAuditCommandTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="published-end-audit@example.com",
+            password="test",
+        )
+        self.workspace = Workspace.objects.create(
+            name="Published end audit",
+            slug="published-end-audit",
+            owner=self.user,
+        )
+        self.avito_account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="Published end audit account",
+        )
+        self.creative = AdCreative.objects.create(
+            workspace=self.workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Audit creative",
+            description="Description",
+            base_data={"DateEnd": "2099-05-30"},
+            published_end=date(2099, 5, 30),
+            published_end_source=AdCreative.PublishedEndSource.CREATIVE,
+        )
+        self.publication = AdPublication.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            creative=self.creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.ACTIVE,
+            address="Москва",
+            published_end=date(2099, 5, 30),
+            published_end_source=AdPublication.PublishedEndSource.CREATIVE,
+        )
+        self.listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            publication=self.publication,
+            source=AvitoListing.Source.SERVICE,
+            avito_id="audit-listing",
+            base_data={"DateEnd": "2099-05-30"},
+            published_end=date(2099, 5, 30),
+        )
+
+    def test_audit_passes_for_consistent_data(self):
+        stdout = StringIO()
+
+        call_command(
+            "audit_published_end",
+            workspace_id=self.workspace.id,
+            stdout=stdout,
+        )
+
+        self.assertIn('"critical": 0', stdout.getvalue())
+
+    def test_audit_fails_for_publication_mismatch(self):
+        self.publication.published_end = date(2099, 6, 1)
+        self.publication.save(update_fields=["published_end", "updated_at"])
+
+        with self.assertRaises(CommandError):
+            call_command(
+                "audit_published_end",
+                workspace_id=self.workspace.id,
+                stdout=StringIO(),
+            )
+
+    def test_no_fail_only_reports_problems(self):
+        self.creative.published_end = None
+        self.creative.save(update_fields=["published_end", "updated_at"])
+        stdout = StringIO()
+
+        call_command(
+            "audit_published_end",
+            workspace_id=self.workspace.id,
+            no_fail=True,
+            stdout=stdout,
+        )
+
+        self.assertIn('"null": 1', stdout.getvalue())
+
+
 class AvitoApiClientResilienceTests(SimpleTestCase):
 
     def test_autoload_report_sync_task_has_time_limits(self):
@@ -248,6 +345,74 @@ class AvitoApiClientResilienceTests(SimpleTestCase):
 
 
 class AvitoExcelImportFlowTests(TestCase):
+    def test_lifecycle_report_uses_published_end_instead_of_stale_json(self):
+        import_avito_excel_file(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            file_obj=self.build_excel_file(),
+        )
+
+        listing = AvitoListing.objects.get(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            avito_id="8036155996",
+        )
+        canonical_date = timezone.localdate() + timedelta(days=10)
+        listing.published_end = canonical_date
+        listing.base_data = {
+            **listing.base_data,
+            "DateEnd": "2000-01-01",
+        }
+        listing.save(
+            update_fields=[
+                "published_end",
+                "base_data",
+                "updated_at",
+            ],
+        )
+
+        report = build_avito_listing_lifecycle_report(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            soon_days=3,
+        )
+
+        self.assertEqual(report.expired, 0)
+        self.assertEqual(report.expires_soon, 0)
+        self.assertEqual(report.active_ok, 1)
+        self.assertEqual(
+            report.items[0].date_end,
+            canonical_date.isoformat(),
+        )
+
+    def test_lifecycle_report_treats_end_date_as_active_for_whole_day(self):
+        import_avito_excel_file(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            file_obj=self.build_excel_file(),
+        )
+
+        listing = AvitoListing.objects.get(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            avito_id="8036155996",
+        )
+        listing.published_end = timezone.localdate()
+        listing.save(
+            update_fields=["published_end", "updated_at"],
+        )
+
+        report = build_avito_listing_lifecycle_report(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            soon_days=3,
+        )
+
+        self.assertEqual(report.expired, 0)
+        self.assertEqual(report.expires_soon, 1)
+        self.assertEqual(report.items[0].days_left, 0)
+        self.assertEqual(report.items[0].action, "expires_soon")
+
     def test_periodic_sync_requeues_syncing_account_without_started_at(self):
         self.avito_account.sync_status = AvitoAccount.SyncStatus.SYNCING
         self.avito_account.sync_started_at = None
@@ -630,10 +795,18 @@ class AvitoExcelImportFlowTests(TestCase):
         self.assertEqual(len(linked_publication_rows), 1)
         self.assertEqual(linked_publication_rows[0]["entity_type"], "ad_publication")
         self.assertEqual(linked_publication_rows[0]["avito_id"], "9999999999")
+        self.assertEqual(
+            linked_publication_rows[0]["published_end"],
+            "2099-05-30",
+        )
 
         self.assertEqual(len(unlinked_publication_rows), 1)
         self.assertEqual(unlinked_publication_rows[0]["entity_type"], "ad_publication")
         self.assertIsNone(unlinked_publication_rows[0]["avito_id"])
+        self.assertEqual(
+            unlinked_publication_rows[0]["published_end"],
+            "2099-05-30",
+        )
 
     def test_ads_api_filters_by_ad_publication_entity_type(self):
         linked_publication = self.create_publication_for_autoload_report()
@@ -908,6 +1081,177 @@ class AvitoExcelImportFlowTests(TestCase):
         listing = AvitoListing.objects.get(publication=publication)
         self.assertEqual(listing.avito_id, "2222222222")
 
+    def create_listing_for_date_ordering(self, *, avito_id, published_end):
+        return AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            avito_id=avito_id,
+            title=f"Listing {avito_id}",
+            published_end=published_end,
+        )
+
+    def test_ads_api_defaults_to_latest_published_end_first(self):
+        later_listing = self.create_listing_for_date_ordering(
+            avito_id="DATE-DEFAULT-LATER",
+            published_end=date(2099, 6, 30),
+        )
+        earlier_listing = self.create_listing_for_date_ordering(
+            avito_id="DATE-DEFAULT-EARLIER",
+            published_end=date(2099, 4, 1),
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.defaults["HTTP_X_WORKSPACE_ID"] = str(self.workspace.id)
+
+        response = client.get(
+            reverse(
+                "avito-account-ads-list",
+                kwargs={"avito_account_id": self.avito_account.id},
+            ),
+            {
+                "entity_type": "avito_listing",
+                "page": 1,
+                "page_size": 20,
+            },
+            HTTP_HOST="localhost",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in response.json()["results"]],
+            [later_listing.id, earlier_listing.id],
+        )
+
+    def test_ads_date_ordering_keeps_null_last_in_both_directions(self):
+        self.create_listing_for_date_ordering(
+            avito_id="DATE-NULL",
+            published_end=None,
+        )
+        self.create_listing_for_date_ordering(
+            avito_id="DATE-EARLY",
+            published_end=date(2099, 4, 1),
+        )
+        self.create_listing_for_date_ordering(
+            avito_id="DATE-LATE",
+            published_end=date(2099, 6, 30),
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.defaults["HTTP_X_WORKSPACE_ID"] = str(self.workspace.id)
+        url = reverse(
+            "avito-account-ads-list",
+            kwargs={"avito_account_id": self.avito_account.id},
+        )
+
+        ascending = client.get(
+            url,
+            {
+                "entity_type": "avito_listing",
+                "ordering": "date_end",
+                "page_size": 20,
+            },
+            HTTP_HOST="localhost",
+        ).json()["results"]
+        descending = client.get(
+            url,
+            {
+                "entity_type": "avito_listing",
+                "ordering": "-date_end",
+                "page_size": 20,
+            },
+            HTTP_HOST="localhost",
+        ).json()["results"]
+
+        self.assertEqual(
+            [item["published_end"] for item in ascending],
+            ["2099-04-01", "2099-06-30", ""],
+        )
+        self.assertEqual(
+            [item["published_end"] for item in descending],
+            ["2099-06-30", "2099-04-01", ""],
+        )
+
+    def test_ads_date_ordering_is_stable_across_pages(self):
+        listings = [
+            self.create_listing_for_date_ordering(
+                avito_id=f"DATE-SAME-{index}",
+                published_end=date(2099, 5, 30),
+            )
+            for index in range(3)
+        ]
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        client.defaults["HTTP_X_WORKSPACE_ID"] = str(self.workspace.id)
+        url = reverse(
+            "avito-account-ads-list",
+            kwargs={"avito_account_id": self.avito_account.id},
+        )
+
+        page_one = client.get(
+            url,
+            {
+                "entity_type": "avito_listing",
+                "ordering": "-date_end",
+                "page": 1,
+                "page_size": 2,
+            },
+            HTTP_HOST="localhost",
+        ).json()["results"]
+        page_two = client.get(
+            url,
+            {
+                "entity_type": "avito_listing",
+                "ordering": "-date_end",
+                "page": 2,
+                "page_size": 2,
+            },
+            HTTP_HOST="localhost",
+        ).json()["results"]
+
+        self.assertEqual(
+            [item["id"] for item in page_one + page_two],
+            [listing.id for listing in listings],
+        )
+
+    def test_ads_date_ordering_limits_each_model_queryset(self):
+        self.create_listing_for_date_ordering(
+            avito_id="DATE-LIMIT-LISTING",
+            published_end=date(2099, 6, 30),
+        )
+        self.create_publication_for_autoload_report(
+            row_id="DATE-LIMIT-PUBLICATION",
+        )
+
+        with CaptureQueriesContext(connection) as queries:
+            list_avito_account_ads(
+                workspace=self.workspace,
+                avito_account=self.avito_account,
+                filters=AvitoAdListFilters(ordering="-date_end"),
+                page=1,
+                page_size=2,
+            )
+
+        selection_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if "COUNT(" not in query["sql"].upper()
+               and (
+                       'FROM "avitotask_avitolisting"' in query["sql"]
+                       or 'FROM "avitotask_adpublication"' in query["sql"]
+               )
+        ]
+
+        self.assertEqual(len(selection_queries), 2)
+        self.assertTrue(
+            all("LIMIT 2" in query.upper() for query in selection_queries),
+        )
+
     def create_publication_for_autoload_report(self, row_id="SERVICE-ROW-001", address="Москва"):
         batch = AdBatch.objects.create(
             workspace=self.workspace,
@@ -926,10 +1270,13 @@ class AvitoExcelImportFlowTests(TestCase):
             base_data={
                 "Category": "Ремонт и строительство",
                 "Price": "1000",
+                "DateEnd": "2099-05-30",
             },
             option_data={
                 "TargetAudience": "Частные лица и бизнес",
             },
+            published_end=date(2099, 5, 30),
+            published_end_source=AdCreative.PublishedEndSource.CREATIVE,
         )
 
         return AdPublication.objects.create(
@@ -941,6 +1288,8 @@ class AvitoExcelImportFlowTests(TestCase):
             status=AdPublication.Status.ACTIVE,
             row_id=row_id,
             address=address,
+            published_end=date(2099, 5, 30),
+            published_end_source=AdPublication.PublishedEndSource.CREATIVE,
         )
 
     def test_autoload_report_sync_links_publication_to_avito_listing(self):
@@ -981,6 +1330,8 @@ class AvitoExcelImportFlowTests(TestCase):
         self.assertEqual(listing.address, "Москва")
         self.assertEqual(listing.base_data["Price"], "1000")
         self.assertEqual(listing.option_data["TargetAudience"], "Частные лица и бизнес")
+        self.assertEqual(listing.published_end, date(2099, 5, 30))
+        self.assertEqual(listing.base_data["DateEnd"], "2099-05-30")
 
     def test_autoload_report_sync_is_idempotent_for_same_avito_id(self):
         publication = self.create_publication_for_autoload_report()
@@ -998,6 +1349,21 @@ class AvitoExcelImportFlowTests(TestCase):
             avito_account=self.avito_account,
             report_rows=report_rows,
         )
+
+        publication.published_end = date(2099, 6, 15)
+        publication.published_end_source = (
+            AdPublication.PublishedEndSource.PUBLICATION
+        )
+        publication.overrides = {"DateEnd": "2099-06-15"}
+        publication.save(
+            update_fields=[
+                "published_end",
+                "published_end_source",
+                "overrides",
+                "updated_at",
+            ],
+        )
+
         second_result = sync_avito_autoload_report(
             workspace=self.workspace,
             avito_account=self.avito_account,
@@ -1007,6 +1373,14 @@ class AvitoExcelImportFlowTests(TestCase):
         self.assertEqual(first_result.created_listings, 1)
         self.assertEqual(second_result.created_listings, 0)
         self.assertEqual(second_result.updated_listings, 1)
+
+        listing = AvitoListing.objects.get(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            avito_id="9999999999",
+        )
+        self.assertEqual(listing.published_end, date(2099, 6, 15))
+        self.assertEqual(listing.base_data["DateEnd"], "2099-06-15")
 
         self.assertEqual(
             AvitoListing.objects.filter(
@@ -1323,6 +1697,8 @@ class AvitoExcelImportFlowTests(TestCase):
         self.assertEqual(listing["desired_status"], "publish")
         self.assertEqual(listing["avito_id"], "8036155996")
         self.assertEqual(listing["row_id"], "ROW-001")
+        self.assertEqual(listing["published_end"], "2026-06-01")
+        self.assertEqual(listing["date_end"], "2026-06-01")
 
     def test_lifecycle_report_marks_listing_as_expires_soon(self):
         date_end = timezone.now() + timedelta(days=2)
@@ -1440,6 +1816,7 @@ class AvitoExcelImportFlowTests(TestCase):
         self.assertEqual(listing.status, "Активно")
         self.assertEqual(listing.base_data["ContactPhone"], "74993919801")
         self.assertEqual(listing.base_data["Price"], "4340")
+        self.assertEqual(listing.published_end, date(2026, 6, 1))
         self.assertEqual(listing.option_data["TargetAudience"], "Частные лица и бизнес")
         self.assertEqual(listing.option_data["MinSaleQuantity"], "4")
         self.assertEqual(listing.unmapped_data, {})
@@ -1448,13 +1825,21 @@ class AvitoExcelImportFlowTests(TestCase):
         import_avito_excel_file(
             workspace=self.workspace,
             avito_account=self.avito_account,
-            file_obj=self.build_excel_file(title="Старое название", price="4340"),
+            file_obj=self.build_excel_file(
+                title="Старое название",
+                price="4340",
+                date_end="2026-06-01T10:00:00+03:00",
+            ),
         )
 
         result = import_avito_excel_file(
             workspace=self.workspace,
             avito_account=self.avito_account,
-            file_obj=self.build_excel_file(title="Новое название", price="4500"),
+            file_obj=self.build_excel_file(
+                title="Новое название",
+                price="4500",
+                date_end="2026-07-15T10:00:00+03:00",
+            ),
         )
 
         self.assertEqual(result.created_listings, 0)
@@ -1471,6 +1856,7 @@ class AvitoExcelImportFlowTests(TestCase):
         listing = listings.get()
         self.assertEqual(listing.title, "Новое название")
         self.assertEqual(listing.base_data["Price"], "4500")
+        self.assertEqual(listing.published_end, date(2026, 7, 15))
 
     def test_api_import_updates_only_observed_fields_for_excel_listing(self):
         import_avito_excel_file(
@@ -1514,6 +1900,236 @@ class AvitoExcelImportFlowTests(TestCase):
             updated_listing.imported_payload["api"]["title"],
             "API title must not overwrite Excel title",
         )
+
+
+class PublishedEndLifecycleTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="published-end-lifecycle@example.com",
+            password="test",
+        )
+        self.workspace = Workspace.objects.create(
+            name="Published end lifecycle",
+            slug="published-end-lifecycle",
+            owner=self.user,
+        )
+        self.avito_account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="Published end account",
+        )
+
+        self.creative = AdCreative.objects.create(
+            workspace=self.workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Published end creative",
+            description="Description",
+            base_data={
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
+            published_end=date(2099, 5, 30),
+            published_end_source=AdCreative.PublishedEndSource.CREATIVE,
+        )
+        self.publication = AdPublication.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            creative=self.creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.ACTIVE,
+            row_id="PUBLISHED-END-001",
+            address="Москва",
+            published_end=date(2099, 5, 30),
+            published_end_source=AdPublication.PublishedEndSource.CREATIVE,
+        )
+        self.service_listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            publication=self.publication,
+            source=AvitoListing.Source.SERVICE,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            avito_id="published-end-service",
+            base_data={"DateEnd": "2099-05-30"},
+            published_end=date(2099, 5, 30),
+        )
+        self.imported_listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            avito_id="published-end-excel",
+            base_data={
+                "Category": "Стройматериалы",
+                "DateEnd": "2000-01-01",
+            },
+            published_end=date(2099, 5, 30),
+        )
+
+    def test_bulk_extend_materializes_publication_and_linked_listing_date(self):
+        result = bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "ad_publication",
+                "id": self.publication.id,
+            }],
+            action="extend",
+        )
+
+        self.assertEqual(result["updated"], 1)
+
+        self.publication.refresh_from_db()
+        self.service_listing.refresh_from_db()
+
+        expected_date = date(2099, 6, 29)
+
+        self.assertEqual(self.publication.published_end, expected_date)
+        self.assertEqual(
+            self.publication.published_end_source,
+            AdPublication.PublishedEndSource.PUBLICATION,
+        )
+        self.assertEqual(
+            self.publication.overrides["DateEnd"],
+            "2099-06-29",
+        )
+        self.assertEqual(self.service_listing.published_end, expected_date)
+        self.assertEqual(
+            self.service_listing.base_data["DateEnd"],
+            "2099-06-29",
+        )
+
+    def test_republish_expired_publication_updates_field_and_listing(self):
+        expired_date = date(2000, 1, 1)
+
+        self.publication.published_end = expired_date
+        self.publication.overrides = {"DateEnd": expired_date.isoformat()}
+        self.publication.save(
+            update_fields=["published_end", "overrides", "updated_at"],
+        )
+
+        self.service_listing.published_end = expired_date
+        self.service_listing.base_data = {
+            "DateEnd": expired_date.isoformat(),
+        }
+        self.service_listing.save(
+            update_fields=["published_end", "base_data", "updated_at"],
+        )
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "ad_publication",
+                "id": self.publication.id,
+            }],
+            action="publish",
+        )
+
+        self.publication.refresh_from_db()
+        self.service_listing.refresh_from_db()
+
+        expected_date = timezone.localdate() + timedelta(days=30)
+
+        self.assertEqual(self.publication.published_end, expected_date)
+        self.assertEqual(
+            self.publication.published_end_source,
+            AdPublication.PublishedEndSource.PUBLICATION,
+        )
+        self.assertEqual(
+            self.publication.overrides["DateEnd"],
+            expected_date.isoformat(),
+        )
+        self.assertEqual(self.service_listing.published_end, expected_date)
+
+    def test_bulk_extend_imported_listing_uses_published_end_field(self):
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": self.imported_listing.id,
+            }],
+            action="extend",
+        )
+
+        self.imported_listing.refresh_from_db()
+
+        self.assertEqual(
+            self.imported_listing.published_end,
+            date(2099, 6, 29),
+        )
+        self.assertEqual(
+            self.imported_listing.base_data["DateEnd"],
+            "2099-06-29",
+        )
+
+    def test_legacy_listing_edit_updates_canonical_field(self):
+        updated_listing = update_avito_listing(
+            listing_id=self.imported_listing.id,
+            workspace=self.workspace,
+            base_data={
+                "DateEnd": "2099-06-15",
+                "Price": 1500,
+            },
+        )
+
+        self.assertEqual(updated_listing.published_end, date(2099, 6, 15))
+        self.assertEqual(
+            updated_listing.base_data["DateEnd"],
+            "2099-06-15",
+        )
+        self.assertEqual(updated_listing.base_data["Price"], 1500)
+
+    def test_listing_extend_uses_field_instead_of_stale_json(self):
+        updated_listing = extend_avito_listing_date_end(
+            listing_id=self.imported_listing.id,
+            workspace=self.workspace,
+        )
+
+        self.assertEqual(updated_listing.published_end, date(2099, 6, 29))
+        self.assertEqual(
+            updated_listing.base_data["DateEnd"],
+            "2099-06-29",
+        )
+
+    def test_publication_export_uses_field_over_conflicting_json(self):
+        self.creative.base_data = {
+            "Category": "Стройматериалы",
+            "DateEnd": "2000-01-01",
+        }
+        self.creative.option_data = {
+            "DateEnd": "2001-01-01",
+        }
+        self.creative.save(
+            update_fields=["base_data", "option_data", "updated_at"],
+        )
+
+        self.publication.published_end = date(2099, 5, 30)
+        self.publication.overrides = {
+            "DateEnd": "2002-01-01",
+        }
+        self.publication.save(
+            update_fields=["published_end", "overrides", "updated_at"],
+        )
+
+        row = build_publication_export_row(self.publication)
+
+        self.assertEqual(row["DateEnd"], "2099-05-30")
+
+    def test_listing_export_uses_field_over_conflicting_json(self):
+        self.imported_listing.published_end = date(2099, 5, 30)
+        self.imported_listing.base_data = {
+            "Category": "Стройматериалы",
+            "DateEnd": "2000-01-01",
+        }
+        self.imported_listing.option_data = {
+            "DateEnd": "2001-01-01",
+        }
+
+        row = build_listing_export_row(self.imported_listing)
+
+        self.assertEqual(row["DateEnd"], "2099-05-30")
 
 
 class AdScheduleCalculationTests(TestCase):
@@ -1619,6 +2235,11 @@ class AdScheduleCalculationTests(TestCase):
 
 class AdGenerationServiceTests(TestCase):
 
+    def setUp(self):
+        self.category = Category.objects.create(
+            category="Стройматериалы",
+        )
+
     def test_inherit_creative_date_end_removes_publication_override(self):
         user = User.objects.create_user(email="inherit-date-end-owner@example.com", password="test")
         workspace = Workspace.objects.create(
@@ -1640,7 +2261,11 @@ class AdGenerationServiceTests(TestCase):
             title="Inherit DateEnd title",
             description="Inherit DateEnd description",
             image_urls=["https://example.com/inherit-date-end.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1683,7 +2308,11 @@ class AdGenerationServiceTests(TestCase):
             title="Inherit DateEnd API title",
             description="Inherit DateEnd API description",
             image_urls=["https://example.com/inherit-date-end-api.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1715,13 +2344,14 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Auto DateEnd task",
             is_active=True,
             titles=["Auto DateEnd title"],
             descriptions={"1": "Auto DateEnd description"},
             addresses=["Auto DateEnd Address"],
             price=500,
-            base_data={},
         )
         self.attach_task_images(task, main_urls=["https://example.com/auto-date-end.jpg"])
         task.avito_accounts.add(account)
@@ -1751,7 +2381,7 @@ class AdGenerationServiceTests(TestCase):
             title="Manual DateEnd title",
             description="Manual DateEnd description",
             image_urls=["https://example.com/manual-date-end.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -1761,7 +2391,7 @@ class AdGenerationServiceTests(TestCase):
 
         self.assertEqual(result.creative.base_data["DateEnd"], expected_date_end)
 
-    def test_build_publication_export_row_sets_default_date_end_as_date_only(self):
+    def test_build_publication_export_row_formats_published_end_as_date_only(self):
         user = User.objects.create_user(email="date-default-owner@example.com", password="test")
         workspace = Workspace.objects.create(
             name="Date default workspace",
@@ -1778,21 +2408,15 @@ class AdGenerationServiceTests(TestCase):
             title="Date title",
             description="Date description",
             image_urls=["https://example.com/date.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
-        creative_base_data = dict(result.creative.base_data or {})
-        creative_base_data.pop("DateEnd", None)
-        result.creative.base_data = creative_base_data
-        result.creative.save(update_fields=["base_data", "updated_at"])
-
         publication = result.publications[0]
-        publication.created_at = timezone.make_aware(
-            datetime(2099, 5, 1, 12, 0, 0),
-            timezone.get_current_timezone(),
+        publication.published_end = date(2099, 5, 31)
+        publication.save(
+            update_fields=["published_end", "updated_at"],
         )
-        publication.save(update_fields=["created_at"])
 
         row = build_publication_export_row(publication)
 
@@ -1819,7 +2443,11 @@ class AdGenerationServiceTests(TestCase):
             title="Extend title",
             description="Extend description",
             image_urls=["https://example.com/extend.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1874,7 +2502,11 @@ class AdGenerationServiceTests(TestCase):
             title="Publication extend title",
             description="Publication extend description",
             image_urls=["https://example.com/publication-extend.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1905,7 +2537,11 @@ class AdGenerationServiceTests(TestCase):
             title="Paused title",
             description="Paused description",
             image_urls=["https://example.com/paused.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1963,7 +2599,11 @@ class AdGenerationServiceTests(TestCase):
             title="Publication API extend title",
             description="Publication API extend description",
             image_urls=["https://example.com/publication-api-extend.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -1976,6 +2616,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(result.publications[0].overrides["DateEnd"], "2099-06-29")
         self.assertEqual(response.data["effective_date_end"], "2099-06-29")
+        self.assertEqual(response.data["published_end"], "2099-06-29")
         self.assertEqual(response.data["date_end_source"], "publication")
 
     def test_extend_ad_creative_api_updates_shared_date_end(self):
@@ -1995,7 +2636,11 @@ class AdGenerationServiceTests(TestCase):
             title="Creative API extend title",
             description="Creative API extend description",
             image_urls=["https://example.com/creative-api-extend.jpg"],
-            base_data={"Price": 500, "DateEnd": "2099-05-30"},
+            base_data={
+                "Price": 500,
+                "Category": "Стройматериалы",
+                "DateEnd": "2099-05-30",
+            },
             option_data={},
         )
 
@@ -2008,6 +2653,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(result.creative.base_data["DateEnd"], "2099-06-29")
         self.assertEqual(response.data["base_data"]["DateEnd"], "2099-06-29")
+        self.assertEqual(response.data["published_end"], "2099-06-29")
 
     def test_build_option_data_normalizes_single_and_multiple_option_values(self):
         user = User.objects.create_user(email="option-data-normalize@example.com", password="test")
@@ -2019,11 +2665,12 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Option data normalize task",
             titles=["Title"],
             descriptions=["Description"],
             addresses=["Address"],
-            base_data={"Category": "Ремонт и строительство"},
             price=100,
         )
 
@@ -2112,6 +2759,8 @@ class AdGenerationServiceTests(TestCase):
             reverse("product-api-list"),
             {
                 "name": "No legacy task",
+                "category": "Стройматериалы",
+                "base_data": {"Category": "Стройматериалы"},
                 "activate": False,
                 "price": 1000,
                 "titles": ["No legacy title"],
@@ -2160,6 +2809,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Patch schedule task",
             is_active=True,
             titles=["Patch title"],
@@ -2251,6 +2902,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Patch anchor task",
             is_active=True,
             schedule={
@@ -2295,6 +2948,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Invalid patch task",
             is_active=True,
             schedule={
@@ -2340,6 +2995,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Export queue task",
             is_active=False,
             titles=["Export queue title"],
@@ -2384,6 +3041,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Export duplicate task",
             is_active=True,
             titles=["Export duplicate title"],
@@ -2440,6 +3099,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Scheduler runner task",
             is_active=True,
             titles=["Scheduler runner title"],
@@ -2491,6 +3152,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Scheduler frequency task",
             is_active=True,
             titles=["Frequency title"],
@@ -2535,6 +3198,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Scheduler duplicate task",
             is_active=True,
             titles=["Scheduler duplicate title"],
@@ -2577,6 +3242,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Manual runner task",
             is_active=False,
             titles=["Runner title"],
@@ -2628,6 +3295,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Duplicate runner task",
             is_active=True,
             titles=["Duplicate title"],
@@ -2676,6 +3345,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Inactive schedule runner task",
             is_active=False,
             schedule={
@@ -2728,6 +3399,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Test task",
             is_active=True,
             titles=["Title 1"],
@@ -2888,7 +3561,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(updated_creative.base_data["Price"], 900)
         self.assertEqual(
             updated_creative.base_data["Category"],
-            "Ремонт и строительство",
+            "Стройматериалы",
         )
         self.assertEqual(updated_creative.option_data["Condition"], "Б/у")
 
@@ -2937,7 +3610,7 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(row["ImageUrls"], "https://example.com/1.jpg | https://example.com/2.jpg")
         self.assertEqual(row["Address"], "Updated Address")
         self.assertEqual(row["Price"], 700)
-        self.assertEqual(row["Category"], "Ремонт и строительство")
+        self.assertEqual(row["Category"], "Стройматериалы")
         self.assertEqual(row["Condition"], "Новое")
         self.assertEqual(row["CustomField"], "Custom value")
 
@@ -3117,7 +3790,7 @@ class AdGenerationServiceTests(TestCase):
             title="Dirty title",
             description="Dirty description",
             image_urls=["https://example.com/dirty.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -3163,7 +3836,7 @@ class AdGenerationServiceTests(TestCase):
             title="Celery title",
             description="Celery description",
             image_urls=["https://example.com/celery.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -3401,7 +4074,7 @@ class AdGenerationServiceTests(TestCase):
             title="Autoload title",
             description="Autoload description",
             image_urls=["https://example.com/autoload.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -3454,7 +4127,20 @@ class AdGenerationServiceTests(TestCase):
         listing = AvitoListing.objects.get(avito_id="24122241")
         self.assertEqual(listing.publication, first_publication)
         self.assertEqual(listing.avito_account, account)
+        self.assertEqual(listing.source, AvitoListing.Source.SERVICE)
+        self.assertEqual(
+            listing.management_status,
+            AvitoListing.ManagementStatus.MANAGED,
+        )
         self.assertEqual(listing.status, "published")
+        self.assertEqual(
+            listing.published_end,
+            first_publication.published_end,
+        )
+        self.assertEqual(
+            listing.base_data["DateEnd"],
+            first_publication.published_end.isoformat(),
+        )
         self.assertEqual(first_publication.avito_listing, listing)
 
         self.assertFalse(hasattr(second_publication, "avito_listing"))
@@ -3504,7 +4190,7 @@ class AdGenerationServiceTests(TestCase):
             title="Task link title",
             description="Task link description",
             image_urls=["https://example.com/task-link.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -3655,6 +4341,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Manual API task",
             is_active=False,
             titles=["Manual API title"],
@@ -3706,6 +4394,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Invalid manual API task",
             is_active=False,
             titles=[],
@@ -3742,6 +4432,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Inactive task",
             is_active=False,
             titles=["Toggle title"],
@@ -3792,6 +4484,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Active task",
             is_active=True,
             schedule={
@@ -3831,6 +4525,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Invalid schedule task",
             is_active=False,
             schedule={
@@ -3868,6 +4564,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="New generation task",
             is_active=True,
             url="https://example.com/new-task",
@@ -3943,6 +4641,8 @@ class AdGenerationServiceTests(TestCase):
                 reverse("product-api-list"),
                 {
                     "name": "Created generation task",
+                    "category": "Стройматериалы",
+                    "base_data": {"Category": "Стройматериалы"},
                     "url": "https://example.com/created-task",
                     "activate": True,
                     "price": 1000,
@@ -4026,7 +4726,7 @@ class AdGenerationServiceTests(TestCase):
             title="Manual creative",
             description="Manual description",
             image_urls=["https://example.com/manual.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -4048,7 +4748,7 @@ class AdGenerationServiceTests(TestCase):
             title="Same title",
             description="Same description",
             image_urls=["https://example.com/first.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -4061,7 +4761,7 @@ class AdGenerationServiceTests(TestCase):
                 title="Same title",
                 description="Same description",
                 image_urls=["https://example.com/second.jpg"],
-                base_data={"Price": 700},
+                base_data={"Price": 700, "Category": "Стройматериалы"},
                 option_data={},
             )
 
@@ -4081,7 +4781,7 @@ class AdGenerationServiceTests(TestCase):
             title="Same title",
             description="Same description",
             image_urls=["https://example.com/first.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -4097,7 +4797,7 @@ class AdGenerationServiceTests(TestCase):
             title="Same title",
             description="Same description",
             image_urls=["https://example.com/second.jpg"],
-            base_data={"Price": 700},
+            base_data={"Price": 700, "Category": "Стройматериалы"},
             option_data={},
         )
 
@@ -4111,6 +4811,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Dedupe task",
             is_active=True,
             titles=["Same title", "Fresh title"],
@@ -4159,6 +4861,8 @@ class AdGenerationServiceTests(TestCase):
 
         task = AdGenerationTask.objects.create(
             workspace=workspace,
+            category=self.category,
+            base_data={"Category": "Стройматериалы"},
             name="Dedupe task",
             is_active=True,
             titles=["Same title", "Fresh title"],
@@ -4434,7 +5138,7 @@ class AdGenerationServiceTests(TestCase):
             title="Searchable Creative Title",
             description="Description",
             image_urls=["https://example.com/search.jpg"],
-            base_data={"Price": 500},
+            base_data={"Price": 500, "Category": "Стройматериалы"},
             option_data={},
         )
 

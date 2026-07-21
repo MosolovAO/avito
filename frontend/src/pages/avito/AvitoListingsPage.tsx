@@ -64,6 +64,9 @@ import type {
     TableProps,
 } from "antd";
 import type {TableRowSelection} from "antd/es/table/interface";
+import {
+    withoutLegacyDateEnd,
+} from "../../features/avito/lib/legacyDateEnd";
 
 const {Title, Text} = Typography;
 
@@ -107,16 +110,19 @@ interface ListingEditFormValues {
 }
 
 const stringifyJsonForForm = (value: JsonObject): string =>
-    JSON.stringify(value ?? {}, null, 2);
+    JSON.stringify(withoutLegacyDateEnd(value), null, 2);
 
-const parseJsonObject = (value: string, fieldLabel: string): JsonObject => {
-    const parsed = JSON.parse(value || "{}");
+const parseJsonObject = (
+    value: string,
+    fieldLabel: string,
+): JsonObject => {
+    const parsed: unknown = JSON.parse(value || "{}");
 
     if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
         throw new Error(`${fieldLabel} должен быть JSON-объектом`);
     }
 
-    return parsed as JsonObject;
+    return withoutLegacyDateEnd(parsed as JsonObject);
 };
 
 const stringifyImageUrlsForForm = (imageUrls: string[]): string =>
@@ -312,7 +318,9 @@ export const AvitoListingsPage: React.FC = () => {
                 key: "date_end",
                 width: 150,
                 render: (_, listing) => {
-                    const deadline = getDateDeadlinePresentation(listing.date_end);
+                    const deadline = getDateDeadlinePresentation(
+                        listing.published_end,
+                    );
 
                     return (
                         <Tooltip

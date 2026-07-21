@@ -606,6 +606,10 @@ class AdCreative(models.Model):
         AUTO = "auto", "Автогенерация"
         MANUAL = "manual", "Ручное создание"
 
+    class PublishedEndSource(models.TextChoices):
+        DEFAULT = "default", "30 дней"
+        CREATIVE = "creative", "Креатив"
+
     workspace = models.ForeignKey(
         'accounts.Workspace',
         on_delete=models.CASCADE,
@@ -656,6 +660,16 @@ class AdCreative(models.Model):
         help_text="Хэш набора title/description/images/options для быстрой проверки дублей.",
     )
 
+    published_end = models.DateField(
+        null=True,
+        blank=True,
+    )
+    published_end_source = models.CharField(
+        max_length=20,
+        choices=PublishedEndSource.choices,
+        default=PublishedEndSource.DEFAULT,
+    )
+
     dedupe_title = models.CharField(max_length=255, blank=True, db_index=True)
     dedupe_description = models.TextField(blank=True)
     dedupe_images_hash = models.CharField(max_length=64, blank=True, db_index=True)
@@ -668,6 +682,10 @@ class AdCreative(models.Model):
         verbose_name_plural = "Креативы объявлений"
         ordering = ['-created_at']
         indexes = [
+            models.Index(
+                fields=["workspace", "published_end", "id"],
+                name="idx_adcreative_ws_pubend",
+            ),
             models.Index(fields=["workspace", "task", "-created_at"], name="idx_adcreative_ws_task"),
             models.Index(fields=["workspace", "batch"], name="idx_adcreative_ws_batch"),
             models.Index(fields=["workspace", "identity_hash"], name="idx_adcreative_ws_hash"),
@@ -684,6 +702,11 @@ class AdPublication(models.Model):
         AUTO = "auto", "Автогенерация"
         MANUAL = "manual", "Ручной масс-постинг"
         AVITO_EXCEL = "avito_excel", "Импорт из XLSX Avito"
+
+    class PublishedEndSource(models.TextChoices):
+        DEFAULT = "default", "30 дней"
+        CREATIVE = "creative", "Креатив"
+        PUBLICATION = "publication", "Публикация"
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Черновик"
@@ -736,6 +759,15 @@ class AdPublication(models.Model):
 
     overrides = MyJSONField(default=dict, blank=True,
                             help_text="Индивидуальные изменения этой публикации поверх AdCreative.base_data.", )
+    published_end = models.DateField(
+        null=True,
+        blank=True,
+    )
+    published_end_source = models.CharField(
+        max_length=20,
+        choices=PublishedEndSource.choices,
+        default=PublishedEndSource.DEFAULT,
+    )
     published_at = models.DateTimeField(null=True, blank=True)
     last_exported_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
@@ -748,14 +780,21 @@ class AdPublication(models.Model):
         verbose_name_plural = "Публикации объявлений"
         ordering = ['-created_at']
         indexes = [
+            models.Index(
+                fields=["workspace", "avito_account", "published_end", "id"],
+                name="idx_adpub_acc_pubend",
+            ),
             models.Index(fields=["workspace", "avito_account", "status"], name="idx_adpub_ws_acc_status"),
             models.Index(fields=["workspace", "creative"], name="idx_adpub_ws_creative"),
             models.Index(fields=["workspace", "task", "status"], name="idx_adpub_ws_task_status"),
             models.Index(fields=["workspace", "batch"], name="idx_adpub_ws_batch"),
             models.Index(fields=["workspace", "avito_account", "row_id"], name="idx_adpub_ws_row"),
             models.Index(fields=["workspace", "avito_account", "-created_at"], name="idx_adpub_ws_created"),
-            models.Index(fields=["workspace", "avito_account"], name="idx_adpub_active_export",
-                         condition=Q(status='active')),
+            models.Index(
+                fields=["workspace", "avito_account"],
+                name="idx_adpub_active_export",
+                condition=Q(status='active'),
+            ),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -872,6 +911,7 @@ class AvitoListing(models.Model):
     )
 
     imported_payload = MyJSONField(default=dict, blank=True)
+    published_end = models.DateField(null=True, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
@@ -884,6 +924,10 @@ class AvitoListing(models.Model):
         ordering = ['-created_at']
 
         indexes = [
+            models.Index(
+                fields=["workspace", "avito_account", "published_end", "id"],
+                name="idx_avlisting_acc_pubend",
+            ),
             models.Index(fields=["workspace", "avito_account", "avito_id"], name="idx_avlisting_acc_id"),
             models.Index(fields=["publication"], name="idx_avlisting_pub"),
             models.Index(fields=["workspace", "-last_seen_at"], name="idx_avlisting_ws_seen"),

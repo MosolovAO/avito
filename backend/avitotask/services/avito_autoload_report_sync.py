@@ -6,6 +6,11 @@ from django.utils import timezone
 
 from avitotask.models import AdPublication, AvitoAccount, AvitoListing
 
+from avitotask.services.ad_publication_dates import (
+    get_publication_effective_date_end,
+    set_legacy_date_end,
+)
+
 REJECTED_STATUSES = {
     "error",
     "failed",
@@ -271,11 +276,11 @@ def is_rejected_report_row(row: NormalizedAutoloadReportRow) -> bool:
 
 
 def upsert_service_listing_from_publication(
-    *,
-    workspace,
-    avito_account: AvitoAccount,
-    publication: AdPublication,
-    row: NormalizedAutoloadReportRow,
+        *,
+        workspace,
+        avito_account: AvitoAccount,
+        publication: AdPublication,
+        row: NormalizedAutoloadReportRow,
 ):
     existing_listing = AvitoListing.objects.filter(
         workspace=workspace,
@@ -308,6 +313,7 @@ def upsert_service_listing_from_publication(
         existing_listing.image_urls = defaults["image_urls"]
         existing_listing.base_data = defaults["base_data"]
         existing_listing.option_data = defaults["option_data"]
+        existing_listing.published_end = defaults["published_end"]
         existing_listing.option_category = defaults["option_category"]
         existing_listing.imported_payload = defaults["imported_payload"]
         existing_listing.last_seen_at = defaults["last_seen_at"]
@@ -326,6 +332,7 @@ def upsert_service_listing_from_publication(
                 "image_urls",
                 "base_data",
                 "option_data",
+                "published_end",
                 "imported_payload",
                 "last_seen_at",
                 "updated_at",
@@ -349,12 +356,28 @@ def build_listing_defaults_from_publication(
         row: NormalizedAutoloadReportRow,
 ) -> dict[str, Any]:
     creative = publication.creative
+    published_end = (
+            publication.published_end
+            or get_publication_effective_date_end(publication)
+    )
+
+    base_data = set_legacy_date_end(
+        creative.base_data,
+        published_end,
+    )
+    option_data = dict(creative.option_data or {})
+    option_data.pop("DateEnd", None)
+    option_data.pop("date_end", None)
 
     return {
         "publication": publication,
         "source": AvitoListing.Source.SERVICE,
-        "management_status": AvitoListing.ManagementStatus.MANAGED,
-        "desired_status": AvitoListing.DesiredStatus.PUBLISH,
+        "management_status": (
+            AvitoListing.ManagementStatus.MANAGED
+        ),
+        "desired_status": (
+            AvitoListing.DesiredStatus.PUBLISH
+        ),
         "row_id": row.row_id,
         "status": row.status or AdPublication.Status.ACTIVE,
         "title": creative.title,
@@ -362,12 +385,16 @@ def build_listing_defaults_from_publication(
         "description": creative.description,
         "address": publication.address,
         "image_urls": creative.image_urls or [],
-        "base_data": creative.base_data or {},
-        "option_data": creative.option_data or {},
+        "base_data": base_data,
+        "option_data": option_data,
+        "published_end": published_end,
         "imported_payload": {
             "autoload_report": row.raw_data,
         },
-        "published_at": publication.published_at or timezone.now(),
+        "published_at": (
+                publication.published_at
+                or timezone.now()
+        ),
         "last_seen_at": timezone.now(),
     }
 

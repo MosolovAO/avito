@@ -121,6 +121,7 @@ export interface AvitoListing {
     avito_account_name: string;
     publication: number | null;
     publication_row_id: string | null;
+    published_end: string | null;
     date_end: string;
     date_end_source: "avito" | "none";
 
@@ -167,8 +168,10 @@ export interface AvitoAccountAd {
     option_category_id: number | null;
     option_category: string | null;
 
+    published_end: string | null;
     date_end: string;
     date_end_source: "avito" | "publication" | "creative" | "default" | "none";
+
 
     source: AvitoListingSource | AdPublicationSource;
     status: string | null;
@@ -380,6 +383,7 @@ export interface AdPublication {
     archived_at: string | null;
     created_at: string;
     updated_at: string;
+    published_end: string | null;
     effective_date_end: string;
     date_end_source: "publication" | "creative" | "default";
 }
@@ -458,6 +462,7 @@ export interface AdCreative {
     projects: AdCreativeProject[];
     created_at: string;
     updated_at: string;
+    published_end: string | null;
     effective_date_end: string;
     date_end_source: "creative" | "default";
 }

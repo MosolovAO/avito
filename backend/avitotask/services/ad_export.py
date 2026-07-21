@@ -7,8 +7,7 @@ from django.conf import settings
 from django.utils.text import slugify
 
 from avitotask.models import AdPublication, AvitoListing, ProductOptions
-from datetime import timedelta
-from django.utils import timezone
+
 from avitotask.services.ad_export_state import (
     mark_avito_account_export_clean,
     mark_avito_account_export_error,
@@ -16,8 +15,8 @@ from avitotask.services.ad_export_state import (
 )
 
 from avitotask.services.ad_publication_dates import (
-    build_publication_default_date_end,
     format_avito_date,
+    get_publication_effective_date_end,
 )
 
 IMAGE_URLS_SEPARATOR = " | "
@@ -94,7 +93,12 @@ def filter_row_to_approved_columns(row, approved_columns):
 
 
 def build_publication_date_end(publication):
-    return format_avito_date(build_publication_default_date_end(publication))
+    published_end = (
+            publication.published_end
+            or get_publication_effective_date_end(publication)
+    )
+
+    return format_avito_date(published_end)
 
 
 def build_publication_export_row(publication):
@@ -121,8 +125,7 @@ def build_publication_export_row(publication):
     row.update(creative.option_data or {})
     row.update(publication.overrides or {})
 
-    if not row.get("DateEnd"):
-        row["DateEnd"] = build_publication_date_end(publication)
+    row["DateEnd"] = build_publication_date_end(publication)
 
     row["Category"] = normalize_export_value(
         (creative.base_data or {}).get("Category")
@@ -150,6 +153,10 @@ def build_listing_export_row(listing):
 
     row.update(listing.base_data or {})
     row.update(listing.option_data or {})
+
+    row["DateEnd"] = format_avito_date(
+        listing.published_end,
+    )
 
     # Сохраняем исходную категорию импортированного объявления.
     row["Category"] = normalize_export_value(

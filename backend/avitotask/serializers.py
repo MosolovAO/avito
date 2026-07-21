@@ -682,6 +682,7 @@ class AvitoListingSerializer(serializers.ModelSerializer):
             "base_data",
             "option_data",
             "unmapped_data",
+            "published_end",
             "date_end",
             "date_end_source",
 
@@ -696,6 +697,7 @@ class AvitoListingSerializer(serializers.ModelSerializer):
             "avito_account_name",
             "publication",
             "publication_row_id",
+            "published_end",
             "source",
             "avito_id",
             "created_at",
@@ -832,6 +834,7 @@ class AdPublicationSerializer(serializers.ModelSerializer):
             "row_id",
             "address",
             "overrides",
+            "published_end",
             "effective_date_end",
             "date_end_source",
             "avito_listing_id",
@@ -935,6 +938,7 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "identity_hash",
             "publications_count",
             "projects",
+            "published_end",
             "created_at",
             "updated_at",
             "effective_date_end",
@@ -950,6 +954,7 @@ class AdCreativeSerializer(serializers.ModelSerializer):
             "identity_hash",
             "publications_count",
             "projects",
+            "published_end",
             "created_at",
             "updated_at",
             "effective_date_end",
@@ -1010,12 +1015,14 @@ class AdCreativeEditSerializer(serializers.ModelSerializer):
             "image_urls",
             "base_data",
             "option_data",
+            "published_end",
             "updated_at",
         ]
         read_only_fields = [
             "id",
             "option_category_id",
             "option_category",
+            "published_end",
             "updated_at",
         ]
 

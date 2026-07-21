@@ -5,6 +5,7 @@ import re
 import string
 from dataclasses import dataclass
 
+from datetime import date
 from datetime import timedelta
 from django.utils import timezone
 
@@ -21,23 +22,13 @@ from avitotask.models import (
 
 from avitotask.services.ad_publication_dates import (
     DATE_END_FIELD,
-    PUBLICATION_EXTENSION_DAYS,
-    format_avito_date,
+    resolve_initial_creative_published_end,
+    set_legacy_date_end,
 )
 
 MAX_CREATIVE_GENERATION_ATTEMPTS = 50
 RECENT_CREATIVE_LOOKBACK_DAYS = 30
 DUPLICATE_CREATIVE_MATCH_THRESHOLD = 2
-
-
-def force_default_creative_date_end(base_data):
-    base_data = dict(base_data or {})
-
-    if not base_data.get(DATE_END_FIELD):
-        date_end = timezone.localdate() + timedelta(days=PUBLICATION_EXTENSION_DAYS)
-        base_data[DATE_END_FIELD] = format_avito_date(date_end)
-
-    return base_data
 
 
 class AdGenerationError(Exception):
@@ -68,6 +59,8 @@ class CreativeCandidate:
     image_urls: list[str]
     base_data: dict
     option_data: dict
+    published_end: date
+    published_end_source: str
     identity_hash: str
     dedupe_title: str
     dedupe_description: str
@@ -128,6 +121,8 @@ def generate_ads_from_task(task_id, *, workspace, user=None, require_active=True
             image_urls=candidate.image_urls,
             base_data=candidate.base_data,
             option_data=candidate.option_data,
+            published_end=candidate.published_end,
+            published_end_source=candidate.published_end_source,
             identity_hash=candidate.identity_hash,
             dedupe_title=candidate.dedupe_title,
             dedupe_description=candidate.dedupe_description,
@@ -177,10 +172,19 @@ def create_manual_mass_posting(
     )
 
     image_urls = list(image_urls or [])
-    base_data = force_default_creative_date_end(
-        prepare_autoload_base_data(base_data)
-    )
+    base_data = prepare_autoload_base_data(base_data)
     option_data = dict(option_data or {})
+
+    published_end, published_end_source = (
+        resolve_initial_creative_published_end(
+            base_data=base_data,
+            option_data=option_data,
+        )
+    )
+    base_data = set_legacy_date_end(
+        base_data,
+        published_end,
+    )
 
     dedupe_data = build_creative_dedupe_data(
         title=title,
@@ -211,6 +215,8 @@ def create_manual_mass_posting(
             image_urls=image_urls,
             base_data=base_data,
             option_data=option_data,
+            published_end=published_end,
+            published_end_source=published_end_source,
             identity_hash=build_identity_hash(
                 title=title,
                 description=description,
@@ -335,6 +341,17 @@ def build_creative_candidate(task):
     base_data = build_base_data(task)
     option_data = build_option_data(task)
 
+    published_end, published_end_source = (
+        resolve_initial_creative_published_end(
+            base_data=base_data,
+            option_data=option_data,
+        )
+    )
+    base_data = set_legacy_date_end(
+        base_data,
+        published_end,
+    )
+
     identity_hash = build_identity_hash(
         title=title,
         description=description_for_hash,
@@ -355,6 +372,8 @@ def build_creative_candidate(task):
         image_urls=image_urls,
         base_data=base_data,
         option_data=option_data,
+        published_end=published_end,
+        published_end_source=published_end_source,
         identity_hash=identity_hash,
         dedupe_title=dedupe_data["dedupe_title"],
         dedupe_description=dedupe_data["dedupe_description"],
@@ -406,9 +425,7 @@ def render_description(*, processed_template, title, sku):
 
 
 def build_base_data(task):
-    base_data = force_default_creative_date_end(
-        prepare_autoload_base_data(task.base_data)
-    )
+    base_data = prepare_autoload_base_data(task.base_data)
 
     base_data.update({
         "Price": task.price or 0,
@@ -473,6 +490,8 @@ def create_publications_for_creative(*, task, batch, creative):
                     address=address_text,
                     address_data=address_data,
                     overrides={},
+                    published_end=creative.published_end,
+                    published_end_source=creative.published_end_source,
                 )
             )
     return AdPublication.objects.bulk_create(publications)
@@ -508,6 +527,8 @@ def create_manual_publications_for_creative(
                     address=address_text,
                     address_data=address_data,
                     overrides={},
+                    published_end=creative.published_end,
+                    published_end_source=creative.published_end_source,
                 )
             )
 

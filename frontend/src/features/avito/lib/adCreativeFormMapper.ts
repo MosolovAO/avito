@@ -1,9 +1,18 @@
 import type {JsonObject} from "../../../entities/avito/types";
 import type {ProductOption} from "../../../entities/product";
+import {
+    isLegacyDateEndKey,
+    withoutLegacyDateEnd,
+} from "./legacyDateEnd";
 
 export type EditableOptionValue = string | string[];
 
-const HIDDEN_BASE_DATA_KEYS = new Set(["Category", "Price"]);
+const HIDDEN_BASE_DATA_KEYS = new Set([
+    "Category",
+    "Price",
+    "DateEnd",
+    "date_end",
+]);
 
 export const getCreativeAutoloadCategory = (
     baseData: JsonObject,
@@ -33,21 +42,21 @@ export const getCreativePrice = (baseData: JsonObject): number | undefined => {
 
 export const buildBaseDataFormValues = (
     baseData: JsonObject,
-): Record<string, string> => {
-    return Object.entries(baseData).reduce<Record<string, string>>((acc, [key, value]) => {
+): Record<string, string> =>
+    Object.entries(
+        withoutLegacyDateEnd(baseData),
+    ).reduce<Record<string, string>>((result, [key, value]) => {
         if (HIDDEN_BASE_DATA_KEYS.has(key)) {
-            return acc;
+            return result;
         }
 
-        if (value === null || value === undefined) {
-            acc[key] = "";
-            return acc;
-        }
+        result[key] =
+            value === null || value === undefined
+                ? ""
+                : String(value);
 
-        acc[key] = String(value);
-        return acc;
+        return result;
     }, {});
-};
 
 export const buildBaseData = (
     currentBaseData: JsonObject,
@@ -67,7 +76,7 @@ export const buildBaseData = (
             return acc;
         },
         {
-            ...currentBaseData,
+            ...withoutLegacyDateEnd(currentBaseData),
             Category: normalizedAutoloadCategory,
             Price: price,
         },
@@ -100,6 +109,11 @@ export const buildOptionFormValues = (
 ): Record<string, EditableOptionValue> => {
     return productOptions.reduce<Record<string, EditableOptionValue>>((acc, option) => {
         const optionKey = option.option_title_en;
+
+        if (isLegacyDateEndKey(optionKey)) {
+            return acc;
+        }
+
         const value = optionData[optionKey];
         const allowMultiple = option.allow_multiple ?? option.allow_multiple_options;
 
@@ -116,6 +130,10 @@ export const buildOptionData = (
     productOptions: ProductOption[],
 ): JsonObject => {
     return productOptions.reduce<JsonObject>((acc, option) => {
+        if (isLegacyDateEndKey(option.option_title_en)) {
+            return acc;
+        }
+
         const value = selectedOptions[String(option.id)];
         const allowMultiple = option.allow_multiple ?? option.allow_multiple_options;
 
@@ -144,13 +162,16 @@ export const mergeUnknownOptionData = (
 
     return Object.entries(currentOptionData).reduce<JsonObject>(
         (acc, [key, value]) => {
-            if (!knownOptionKeys.has(key)) {
+            if (
+                !knownOptionKeys.has(key) &&
+                !isLegacyDateEndKey(key)
+            ) {
                 acc[key] = value;
             }
 
             return acc;
         },
-        {...nextOptionData},
+        withoutLegacyDateEnd(nextOptionData),
     );
 };
 
