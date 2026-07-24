@@ -1,15 +1,21 @@
 from decimal import Decimal
 
-from analytics.models import AvitoListingDailyStats
+from django.db.models import Max, Sum
+
+from analytics.models import (
+    AvitoListingDailyStats,
+    AvitoListingStatsCoverage,
+    AvitoStatsSyncState,
+)
 
 
 def build_avito_listing_stats_report(
-    *,
-    workspace,
-    avito_account,
-    date_from,
-    date_to,
-    listing_ids=None,
+        *,
+        workspace,
+        avito_account,
+        date_from,
+        date_to,
+        listing_ids=None,
 ):
     stats_queryset = (
         AvitoListingDailyStats.objects
@@ -134,3 +140,211 @@ def format_money(value):
         return None
 
     return f"{value:.2f}"
+
+
+def build_avito_ads_stats_payload(
+        *,
+        workspace,
+        avito_account,
+        items,
+        date_from=None,
+        date_to=None,
+):
+    """
+    Обогащает только текущую страницу объявлений.
+
+    date_from/date_to пока не передаются frontend-ом, но selector уже
+    готов для будущего фильтра периода.
+    """
+
+    listing_ids = {
+        item["avito_listing_id"]
+        for item in items
+        if item.get("avito_listing_id")
+    }
+
+    stats_queryset = AvitoListingDailyStats.objects.filter(
+        workspace=workspace,
+        listing__avito_account=avito_account,
+        listing_id__in=listing_ids,
+    )
+
+    if date_from is not None:
+        stats_queryset = stats_queryset.filter(date__gte=date_from)
+
+    if date_to is not None:
+        stats_queryset = stats_queryset.filter(date__lte=date_to)
+
+    totals_by_listing_id = {
+        row["listing_id"]: row
+        for row in (
+            stats_queryset
+            .values("listing_id")
+            .annotate(
+                views=Sum("views"),
+                contacts=Sum("contacts"),
+                updated_at=Max("updated_at"),
+            )
+        )
+    }
+
+    coverages_by_listing_id = {
+        coverage.listing_id: coverage
+        for coverage in (
+            AvitoListingStatsCoverage.objects
+            .filter(
+                workspace=workspace,
+                listing__avito_account=avito_account,
+                listing_id__in=listing_ids,
+            )
+        )
+    }
+
+    sync_state = (
+        AvitoStatsSyncState.objects
+        .filter(
+            workspace=workspace,
+            avito_account=avito_account,
+        )
+        .first()
+    )
+
+    enriched_items = [
+        {
+            **item,
+            "stats": build_ad_stats_item(
+                item=item,
+                totals=totals_by_listing_id.get(
+                    item.get("avito_listing_id")
+                ),
+                coverage=coverages_by_listing_id.get(
+                    item.get("avito_listing_id")
+                ),
+                sync_state=sync_state,
+                date_from=date_from,
+                date_to=date_to,
+            ),
+        }
+        for item in items
+    ]
+
+    return {
+        "stats_sync": serialize_stats_sync_state(sync_state),
+        "results": enriched_items,
+    }
+
+
+def build_ad_stats_item(
+        *,
+        item,
+        totals,
+        coverage,
+        sync_state,
+        date_from=None,
+        date_to=None,
+):
+    if not item.get("avito_listing_id") or not item.get("avito_id"):
+        return {
+            "status": "unavailable",
+            "views": None,
+            "contacts": None,
+            "updated_at": None,
+        }
+
+    if not is_requested_range_covered(
+            coverage=coverage,
+            date_from=date_from,
+            date_to=date_to,
+    ):
+        status = (
+            "error"
+            if (
+                    sync_state
+                    and sync_state.status
+                    == AvitoStatsSyncState.Status.ERROR
+            )
+            else "processing"
+        )
+
+        return {
+            "status": status,
+            "views": None,
+            "contacts": None,
+            "updated_at": None,
+        }
+
+    return {
+        "status": "ready",
+        "views": int(totals["views"]) if totals else 0,
+        "contacts": int(totals["contacts"]) if totals else 0,
+        "updated_at": serialize_datetime(
+            totals["updated_at"]
+            if totals
+            else coverage.last_successful_at
+        ),
+    }
+
+
+def is_requested_range_covered(
+        *,
+        coverage,
+        date_from=None,
+        date_to=None,
+):
+    if coverage is None:
+        return False
+
+    if (
+            coverage.coverage_from is None
+            or coverage.finalized_through is None
+    ):
+        return False
+
+    # Таблица без фильтра показывает накопительные значения
+    # за весь подтверждённый диапазон объявления.
+    if date_from is None and date_to is None:
+        return True
+
+    # Selector должен получать либо обе границы, либо ни одной.
+    if date_from is None or date_to is None:
+        return False
+
+    return (
+            coverage.coverage_from <= date_from
+            and coverage.finalized_through >= date_to
+    )
+
+
+def serialize_stats_sync_state(sync_state):
+    if sync_state is None:
+        return {
+            "status": AvitoStatsSyncState.Status.NOT_STARTED,
+            "coverage_from": None,
+            "coverage_to": None,
+            "requested_at": None,
+            "started_at": None,
+            "finished_at": None,
+            "last_successful_at": None,
+            "error": "",
+        }
+
+    return {
+        "status": sync_state.status,
+        "coverage_from": serialize_date(sync_state.coverage_from),
+        "coverage_to": serialize_date(sync_state.coverage_to),
+        "requested_at": serialize_datetime(sync_state.requested_at),
+        "started_at": serialize_datetime(sync_state.started_at),
+        "finished_at": serialize_datetime(sync_state.finished_at),
+        "last_successful_at": serialize_datetime(
+            sync_state.last_successful_at
+        ),
+        "error": sync_state.error,
+    }
+
+
+def serialize_date(value):
+    return value.isoformat() if value else None
+
+
+def serialize_datetime(value):
+    return value.isoformat() if value else None

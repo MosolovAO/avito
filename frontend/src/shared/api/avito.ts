@@ -35,6 +35,7 @@ import type {
     AvitoAccountAdsResponse,
     BulkAvitoAdLifecycleRequest,
     BulkAvitoAdLifecycleResponse,
+    AvitoStatsSyncRequestResponse
 } from "../../entities/avito/types";
 
 import type {PaginatedResponse} from "./pagination";
@@ -153,22 +154,22 @@ export const linkAvitoPublications = async ({
 
 
 export const importAvitoDailyStats = async ({
-                                                workspaceId,
-                                                avitoAccountId,
-                                                payload
-                                            }: AvitoAccountRequest & {
+    workspaceId,
+    avitoAccountId,
+    payload,
+}: AvitoAccountRequest & {
     payload: ImportAvitoDailyStatsRequest;
-}): Promise<AvitoQueuedTaskResponse> => {
-    const response = await api.post<AvitoQueuedTaskResponse>(
-        `/api/avito/accounts/${avitoAccountId}/import-daily-stats/`,
+}): Promise<AvitoStatsSyncRequestResponse> => {
+    const response = await api.post<AvitoStatsSyncRequestResponse>(
+        `/api/analytics/avito-accounts/${avitoAccountId}/import-daily-stats/`,
         payload,
         {
-            headers: getWorkspaceHeaders((workspaceId))
-        }
-    )
+            headers: getWorkspaceHeaders(workspaceId),
+        },
+    );
 
-    return response.data
-}
+    return response.data;
+};
 
 export const verifyAvitoConnection = async ({
                                                 workspaceId,

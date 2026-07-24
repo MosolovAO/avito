@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
-
+from analytics.selectors.avito_stats import (
+    build_avito_ads_stats_payload,
+)
 from django.db.models import F, Q
 from django.db.models.functions import Coalesce
 
@@ -122,6 +124,7 @@ class AvitoAdListResult:
     page: int
     page_size: int
     results: list[dict[str, Any]]
+    stats_sync: dict[str, Any]
 
 
 def list_avito_account_ads(
@@ -274,14 +277,23 @@ def list_avito_account_ads(
         )
         items = items[start:end]
 
+    serialized_results = [
+        strip_internal_fields(item)
+        for item in items
+    ]
+
+    stats_payload = build_avito_ads_stats_payload(
+        workspace=workspace,
+        avito_account=avito_account,
+        items=serialized_results,
+    )
+
     return AvitoAdListResult(
         count=total_count,
         page=page,
         page_size=page_size,
-        results=[
-            strip_internal_fields(item)
-            for item in items
-        ],
+        results=stats_payload["results"],
+        stats_sync=stats_payload["stats_sync"],
     )
 
 
@@ -453,6 +465,7 @@ def serialize_linked_publication_listing_for_ads_page(listing: AvitoListing) -> 
         ),
         "date_end": date_end_payload["date_end"],
         "date_end_source": date_end_payload["date_end_source"],
+        "avito_listing_id": listing.id,
     }
 
 
@@ -513,6 +526,7 @@ def serialize_listing_for_ads_page(listing: AvitoListing) -> dict[str, Any]:
             if option_category
             else None
         ),
+        "avito_listing_id": listing.id,
     }
 
 
@@ -570,6 +584,7 @@ def serialize_publication_for_ads_page(publication: AdPublication) -> dict[str, 
             if option_category
             else None
         ),
+        "avito_listing_id": None,
     }
 
 

@@ -35,6 +35,13 @@ export const useAvitoAccountAdsQuery = (
                 avitoAccountId: avitoAccountId as number,
                 params,
             }),
+        refetchInterval: (query) => {
+            const status = query.state.data?.stats_sync.status;
+
+            return status === "queued" || status === "running"
+                ? 10_000
+                : false;
+        },
         enabled: currentWorkspaceId !== null && avitoAccountId !== null,
     });
 };

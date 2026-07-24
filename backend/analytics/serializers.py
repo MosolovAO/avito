@@ -2,8 +2,8 @@ from rest_framework import serializers
 
 
 class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
-    date_from = serializers.DateField()
-    date_to = serializers.DateField()
+    date_from = serializers.DateField(required=False)
+    date_to = serializers.DateField(required=False)
     listing_ids = serializers.ListField(
         child=serializers.IntegerField(),
         required=False,
@@ -11,9 +11,25 @@ class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        if attrs["date_from"] > attrs["date_to"]:
+        date_from = attrs.get("date_from")
+        date_to = attrs.get("date_to")
+
+        if (date_from is None) != (date_to is None):
             raise serializers.ValidationError({
-                "date_to": "date_to должен быть больше или равен date_from."
+                "date_to": (
+                    "date_from и date_to должны быть переданы вместе."
+                )
+            })
+
+        if (
+            date_from is not None
+            and date_to is not None
+            and date_from > date_to
+        ):
+            raise serializers.ValidationError({
+                "date_to": (
+                    "date_to должен быть больше или равен date_from."
+                )
             })
 
         return attrs
@@ -22,15 +38,22 @@ class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
 class AvitoListingStatsQuerySerializer(serializers.Serializer):
     date_from = serializers.DateField()
     date_to = serializers.DateField()
-    listing_ids = serializers.CharField(required=False, allow_blank=True)
+    listing_ids = serializers.CharField(
+        required=False,
+        allow_blank=True,
+    )
 
     def validate(self, attrs):
         if attrs["date_from"] > attrs["date_to"]:
             raise serializers.ValidationError({
-                "date_to": "date_to должен быть больше или равен date_from."
+                "date_to": (
+                    "date_to должен быть больше или равен date_from."
+                )
             })
 
-        attrs["listing_ids"] = parse_listing_ids(attrs.get("listing_ids"))
+        attrs["listing_ids"] = parse_listing_ids(
+            attrs.get("listing_ids")
+        )
         return attrs
 
 

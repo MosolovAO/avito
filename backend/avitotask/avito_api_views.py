@@ -819,6 +819,7 @@ class AvitoAccountAdsListView(APIView):
             "count": result.count,
             "page": result.page,
             "page_size": result.page_size,
+            "stats_sync": result.stats_sync,
             "results": result.results,
         })
 

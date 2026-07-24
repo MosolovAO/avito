@@ -15,7 +15,7 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
-    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 2
+    command: uvicorn system.asgi:application --host 0.0.0.0 --port 8000 --workers 1
     env_file:
       - .env.production
     volumes:
@@ -44,7 +44,12 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
-    command: celery --app=system worker -l info
+    command: >
+      celery --app=system worker
+      -l info
+      --concurrency=1
+      --prefetch-multiplier=1
+      --max-tasks-per-child=10
     env_file:
       - .env.production
     volumes:

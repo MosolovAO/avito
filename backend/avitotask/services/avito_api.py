@@ -4,11 +4,8 @@ import requests
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
-from urllib.parse import urlencode
 
-from avitotask.models import AvitoAccount, AvitoOAuthToken
-from django.core import signing
-from avitotask.models import AvitoAccount
+from avitotask.models import AvitoOAuthToken
 
 
 class AvitoApiError(Exception):
@@ -130,17 +127,28 @@ class AvitoApiClient:
 
         )
 
-    def get_item_analytics(self, token, item_ids, user_id, date_from, date_to, metrics):
+    def get_item_analytics(
+            self,
+            token,
+            user_id,
+            date_from,
+            date_to,
+            metrics,
+            grouping="item",
+            limit=1000,
+            offset=0,
+    ):
         return self.request(
             "POST",
             f"/stats/v2/accounts/{user_id}/items",
             token=token,
             json={
-                "itemIds": item_ids,
                 "dateFrom": date_from.isoformat(),
                 "dateTo": date_to.isoformat(),
                 "metrics": metrics,
-                "grouping": "day",
+                "grouping": grouping,
+                "limit": limit,
+                "offset": offset,
             },
         )
 

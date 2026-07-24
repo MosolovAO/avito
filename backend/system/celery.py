@@ -37,4 +37,8 @@ app.conf.beat_schedule = {
         'schedule': crontab(minute=20),
         'args': (20,),
     },
+    "enqueue_daily_avito_stats_syncs": {
+        "task": "analytics.tasks.enqueue_daily_avito_stats_syncs_task",
+        "schedule": crontab(hour=4, minute=10),
+    },
 }

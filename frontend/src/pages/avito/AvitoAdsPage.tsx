@@ -32,6 +32,7 @@ import {
     SearchOutlined,
     EditOutlined,
     FilterOutlined,
+    ReloadOutlined,
 } from "@ant-design/icons";
 
 import {
@@ -48,6 +49,7 @@ import {
     useUpdateAdPublicationMutation,
     useAdPublicationQuery,
     AdLifecycleBulkActions,
+    useImportAvitoDailyStatsMutation,
 } from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import type {
@@ -307,6 +309,7 @@ const JsonObjectInputs: React.FC<JsonObjectInputsProps> = ({
                 <Space direction="vertical" size={12} style={{width: "100%"}}>
                     <Text strong>{title}</Text>
 
+
                     {entries.length === 0 ? (
                         <Text type="secondary">{emptyText}</Text>
                     ) : (
@@ -455,6 +458,7 @@ export const AvitoAdsPage: React.FC = () => {
     const requestCsvExportMutation = useRequestAvitoCsvExportMutation();
     const downloadCsvMutation = useDownloadAvitoCsvMutation();
     const bulkLifecycleMutation = useBulkUpdateAvitoAdsLifecycleMutation();
+    const importStatsMutation = useImportAvitoDailyStatsMutation();
 
 
     const selectedAvitoAccount = (projectsQuery.data ?? []).find(
@@ -644,6 +648,54 @@ export const AvitoAdsPage: React.FC = () => {
     );
 
     const adsQuery = useAvitoAccountAdsQuery(avitoAccountId, queryParams);
+
+    const statsSync = adsQuery.data?.stats_sync;
+
+    const isStatsSyncing =
+        statsSync?.status === "queued"
+        || statsSync?.status === "running";
+
+    const handleRefreshStats = async () => {
+        if (!avitoAccountId) {
+            return;
+        }
+
+        await importStatsMutation.mutateAsync({
+            avitoAccountId,
+        });
+    };
+
+    const renderStatsValue = useCallback(
+        (
+            item: AvitoAccountAd,
+            metric: "views" | "contacts",
+        ) => {
+            const stats = item.stats;
+
+            if (!stats || stats.status === "processing") {
+                return (
+                    <Text type="secondary">
+                        Данные в обработке
+                    </Text>
+                );
+            }
+
+            if (stats.status === "ready") {
+                return <Text>{stats[metric] ?? 0}</Text>;
+            }
+
+            if (stats.status === "error") {
+                return (
+                    <Tooltip title={statsSync?.error || "Ошибка загрузки"}>
+                        <Tag color="error">Ошибка</Tag>
+                    </Tooltip>
+                );
+            }
+
+            return <Text type="secondary">—</Text>;
+        },
+        [statsSync?.error],
+    );
 
     const selectedAdKeys = useMemo(
         () => selectedAdItems.map((item) => `${item.entity_type}-${item.id}`),
@@ -1006,6 +1058,18 @@ export const AvitoAdsPage: React.FC = () => {
             },
         },
         {
+            title: "Просмотры",
+            key: "stats_views",
+            width: 130,
+            render: (_, item) => renderStatsValue(item, "views"),
+        },
+        {
+            title: "Контакты",
+            key: "stats_contacts",
+            width: 130,
+            render: (_, item) => renderStatsValue(item, "contacts"),
+        },
+        {
             title: "Тип",
             dataIndex: "entity_type",
             key: "entity_type",
@@ -1113,8 +1177,8 @@ export const AvitoAdsPage: React.FC = () => {
         },
     ], [
         getEditAction,
+        renderStatsValue,
     ]);
-    ;
 
     if (!currentWorkspace) {
         return (
@@ -1166,6 +1230,30 @@ export const AvitoAdsPage: React.FC = () => {
                             Avito ID.
                         </Text>
 
+                        {statsSync?.coverage_from && (
+                            <Text type="secondary">
+                                Статистика накоплена с {statsSync.coverage_from}
+                            </Text>
+                        )}
+
+                        {statsSync?.status === "error" && (
+                            <Text type="danger">
+                                Ошибка обновления статистики: {statsSync.error}
+                            </Text>
+                        )}
+
+                        {isStatsSyncing && statsSync?.last_successful_at && (
+                            <Text type="secondary">
+                                Выполняется обновление. Пока показаны последние сохранённые значения.
+                            </Text>
+                        )}
+
+                        {selectedAvitoAccount?.export_error && (
+                            <Text type="danger">
+                                {selectedAvitoAccount.export_error}
+                            </Text>
+                        )}
+
                         {selectedAvitoAccount?.export_error && (
                             <Text type="danger">
                                 {selectedAvitoAccount.export_error}
@@ -1199,6 +1287,17 @@ export const AvitoAdsPage: React.FC = () => {
                             onClick={handleDownloadCsv}
                         >
                             Скачать CSV
+                        </Button>
+
+                        <Button
+                            icon={<ReloadOutlined/>}
+                            disabled={!avitoAccountId || isStatsSyncing}
+                            loading={importStatsMutation.isPending || isStatsSyncing}
+                            onClick={handleRefreshStats}
+                        >
+                            {isStatsSyncing
+                                ? "Статистика обновляется"
+                                : "Обновить статистику"}
                         </Button>
                     </Space>
                 </Col>
@@ -1282,7 +1381,7 @@ export const AvitoAdsPage: React.FC = () => {
                 columns={columns}
                 rowSelection={rowSelection}
                 dataSource={adsQuery.data?.results ?? []}
-                loading={adsQuery.isLoading || adsQuery.isFetching}
+                loading={adsQuery.isLoading}
                 tableLayout="fixed"
                 scroll={{x: 2000}}
                 rowHoverable={false}

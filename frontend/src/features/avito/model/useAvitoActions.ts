@@ -17,16 +17,15 @@ import {
     verifyAvitoConnection,
 } from "../../../shared/api/avito";
 
+interface ImportAvitoDailyStatsVariables extends AvitoAccountActionVariables {
+    payload?: ImportAvitoDailyStatsRequest;
+}
 interface AvitoAccountActionVariables {
     avitoAccountId: number;
 }
 
 interface LinkAvitoPublicationsVariables extends AvitoAccountActionVariables {
     rowIds?: string[];
-}
-
-interface ImportAvitoDailyStatsVariables extends AvitoAccountActionVariables {
-    payload: ImportAvitoDailyStatsRequest;
 }
 
 export const useLinkAvitoPublicationsMutation = () => {
@@ -83,15 +82,23 @@ export const useImportAvitoDailyStatsMutation = () => {
             return importAvitoDailyStats({
                 workspaceId,
                 avitoAccountId,
-                payload
+                payload: payload ?? {},
             })
         },
-        onSuccess: async () => {
-            await queryClient.invalidateQueries({
-                queryKey: avitoKeys.stats(currentWorkspaceId),
-            });
+        onSuccess: async (_, variables) => {
+            await Promise.all([
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.stats(currentWorkspaceId),
+                }),
+                queryClient.invalidateQueries({
+                    queryKey: avitoKeys.ads(
+                        currentWorkspaceId,
+                        variables.avitoAccountId,
+                    ),
+                }),
+            ]);
 
-            message.success("Импорт статистики поставлен в очередь")
+            message.success("Обновление статистики поставлено в очередь");
         },
         onError: (error) => {
             message.error(

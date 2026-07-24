@@ -54,3 +54,107 @@ class AvitoListingDailyStats(models.Model):
 
     def __str__(self):
         return f"{self.listing.avito_id} / {self.date}"
+
+
+class AvitoStatsSyncState(models.Model):
+    """Постоянное состояние синхронизации статистики Avito-аккаунта."""
+
+    class Status(models.TextChoices):
+        NOT_STARTED = "not_started", "Не запускалась"
+        QUEUED = "queued", "В очереди"
+        RUNNING = "running", "Выполняется"
+        SUCCESS = "success", "Успешно"
+        ERROR = "error", "Ошибка"
+
+    workspace = models.ForeignKey(
+        "accounts.Workspace",
+        on_delete=models.CASCADE,
+        related_name="avito_stats_sync_states",
+    )
+    avito_account = models.OneToOneField(
+        "avitotask.AvitoAccount",
+        on_delete=models.CASCADE,
+        related_name="analytics_stats_sync",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.NOT_STARTED,
+    )
+
+    requested_date_from = models.DateField(null=True, blank=True)
+    requested_date_to = models.DateField(null=True, blank=True)
+
+    coverage_from = models.DateField(null=True, blank=True)
+    coverage_to = models.DateField(null=True, blank=True)
+
+    requested_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    last_successful_at = models.DateTimeField(null=True, blank=True)
+
+    error = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Состояние синхронизации статистики Avito"
+        verbose_name_plural = "Состояния синхронизации статистики Avito"
+        indexes = [
+            models.Index(
+                fields=["workspace", "status"],
+                name="idx_an_avsync_ws_status",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.avito_account_id}: {self.status}"
+
+
+class AvitoListingStatsCoverage(models.Model):
+    """
+    Подтверждённый диапазон финальной дневной статистики объявления.
+
+    Отсутствие AvitoListingDailyStats внутри этого диапазона означает
+    подтверждённые нулевые значения.
+    """
+
+    workspace = models.ForeignKey(
+        "accounts.Workspace",
+        on_delete=models.CASCADE,
+        related_name="avito_listing_stats_coverages",
+    )
+    listing = models.OneToOneField(
+        "avitotask.AvitoListing",
+        on_delete=models.CASCADE,
+        related_name="analytics_stats_coverage",
+    )
+
+    coverage_from = models.DateField(null=True, blank=True)
+    finalized_through = models.DateField(null=True, blank=True)
+
+    last_attempted_at = models.DateTimeField(null=True, blank=True)
+    last_successful_at = models.DateTimeField(null=True, blank=True)
+
+    error = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Покрытие статистики объявления Avito"
+        verbose_name_plural = "Покрытия статистики объявлений Avito"
+        indexes = [
+            models.Index(
+                fields=["workspace", "finalized_through"],
+                name="idx_an_avcov_ws_final",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.listing_id}: "
+            f"{self.coverage_from} — {self.finalized_through}"
+        )

@@ -1,4 +1,6 @@
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -11,9 +13,14 @@ from analytics.serializers import (
     AvitoAccountImportDailyStatsSerializer,
     AvitoListingStatsQuerySerializer,
 )
-from analytics.tasks import import_avito_account_daily_stats_task
+from analytics.tasks import (
+    enqueue_avito_profile_daily_sync,
+    enqueue_avito_stats_sync,
+)
 from accounts.workspace_context import get_request_workspace
 from avitotask.models import AvitoAccount
+
+from datetime import timedelta
 
 
 class AvitoAccountImportDailyStatsView(APIView):
@@ -33,18 +40,45 @@ class AvitoAccountImportDailyStatsView(APIView):
             workspace=workspace,
         )
 
-        async_result = import_avito_account_daily_stats_task.delay(
-            avito_account.id,
-            serializer.validated_data["date_from"].isoformat(),
-            serializer.validated_data["date_to"].isoformat(),
-            serializer.validated_data.get("listing_ids"),
+        has_explicit_range_or_listings = any(
+            field in serializer.validated_data
+            for field in (
+                "date_from",
+                "date_to",
+                "listing_ids",
+            )
         )
+
+        if has_explicit_range_or_listings:
+            # Диагностический режим: явно заданный stats/v1 импорт.
+            enqueue_result = enqueue_avito_stats_sync(
+                avito_account=avito_account,
+                date_from=serializer.validated_data.get("date_from"),
+                date_to=serializer.validated_data.get("date_to"),
+                listing_ids=serializer.validated_data.get("listing_ids"),
+            )
+        else:
+            # Основной сценарий ручной кнопки:
+            # stats/v2 за последний полностью завершённый день,
+            # затем отдельный исторический backfill через stats/v1.
+            target_date = (
+                    timezone.localdate() - timedelta(days=1)
+            )
+            enqueue_result = enqueue_avito_profile_daily_sync(
+                avito_account=avito_account,
+                stat_date=target_date,
+            )
+
+        sync_state = enqueue_result["sync_state"]
 
         return Response(
             {
-                "status": "queued",
-                "task_id": async_result.id,
+                "status": sync_state.status,
+                "task_id": enqueue_result["task_id"],
+                "queued": enqueue_result["queued"],
                 "avito_account_id": avito_account.id,
+                "date_from": enqueue_result["date_from"].isoformat(),
+                "date_to": enqueue_result["date_to"].isoformat(),
             },
             status=status.HTTP_202_ACCEPTED,
         )

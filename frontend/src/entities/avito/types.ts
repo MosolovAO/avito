@@ -103,8 +103,8 @@ export interface LinkAvitoPublicationsRequest {
 }
 
 export interface ImportAvitoDailyStatsRequest {
-    date_from: string;
-    date_to: string;
+    date_from?: string;
+    date_to?: string;
     listing_ids?: number[];
 }
 
@@ -158,6 +158,46 @@ export interface AvitoAccountAdAutoloadError {
     status?: string;
 }
 
+export type AvitoStatsSyncStatus =
+    | "not_started"
+    | "queued"
+    | "running"
+    | "success"
+    | "error";
+
+export type AvitoAdStatsStatus =
+    | "processing"
+    | "ready"
+    | "error"
+    | "unavailable";
+
+export interface AvitoAdStats {
+    status: AvitoAdStatsStatus;
+    views: number | null;
+    contacts: number | null;
+    updated_at: string | null;
+}
+
+export interface AvitoStatsSyncState {
+    status: AvitoStatsSyncStatus;
+    coverage_from: string | null;
+    coverage_to: string | null;
+    requested_at: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    last_successful_at: string | null;
+    error: string;
+}
+
+export interface AvitoStatsSyncRequestResponse {
+    status: AvitoStatsSyncStatus;
+    task_id: string | null;
+    queued: boolean;
+    avito_account_id: number;
+    date_from: string;
+    date_to: string;
+}
+
 export interface AvitoAccountAd {
     entity_type: AvitoAdEntityType;
     id: number;
@@ -199,6 +239,8 @@ export interface AvitoAccountAd {
     last_seen_at: string | null;
     created_at: string;
     updated_at: string;
+    avito_listing_id: number | null;
+    stats: AvitoAdStats;
 }
 
 export interface AvitoAccountAdsQueryParams {
@@ -221,6 +263,7 @@ export interface AvitoAccountAdsResponse {
     page: number;
     page_size: number;
     results: AvitoAccountAd[];
+    stats_sync: AvitoStatsSyncState;
 }
 
 
@@ -443,6 +486,7 @@ export interface AdCreativeEdit {
     option_data: JsonObject;
     updated_at: string;
 }
+
 export interface AdCreative {
     id: number;
     task: number | null;
@@ -513,6 +557,7 @@ export interface CreateManualMassPostingRequest {
     base_data?: JsonObject;
     option_data?: JsonObject;
 }
+
 export interface ManualMassPostingResponse {
     batch: {
         id: number;
