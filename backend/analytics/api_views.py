@@ -32,7 +32,7 @@ class AvitoAccountImportDailyStatsView(APIView):
 
         workspace = get_request_workspace(
             request,
-            required_permission=WorkspacePermission.VIEW_ANALYTICS,
+            required_permission=WorkspacePermission.MANAGE_AVITO_ACCOUNTS,
         )
         avito_account = get_object_or_404(
             AvitoAccount,
@@ -113,6 +113,8 @@ class AvitoAccountListingStatsView(APIView):
             date_from=serializer.validated_data["date_from"],
             date_to=serializer.validated_data["date_to"],
             listing_ids=listing_ids,
+            page=serializer.validated_data["page"],
+            page_size=serializer.validated_data["page_size"],
         )
 
         return Response(report)

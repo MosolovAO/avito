@@ -83,6 +83,16 @@ class AvitoStatsSyncState(models.Model):
         default=Status.NOT_STARTED,
     )
 
+    run_id = models.UUIDField(
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    heartbeat_at = models.DateTimeField(
+        null=True,
+        blank=True,
+    )
+
     requested_date_from = models.DateField(null=True, blank=True)
     requested_date_to = models.DateField(null=True, blank=True)
 
@@ -134,6 +144,15 @@ class AvitoListingStatsCoverage(models.Model):
 
     coverage_from = models.DateField(null=True, blank=True)
     finalized_through = models.DateField(null=True, blank=True)
+
+    spending_coverage_from = models.DateField(
+        null=True,
+        blank=True,
+    )
+    spending_finalized_through = models.DateField(
+        null=True,
+        blank=True,
+    )
 
     last_attempted_at = models.DateTimeField(null=True, blank=True)
     last_successful_at = models.DateTimeField(null=True, blank=True)

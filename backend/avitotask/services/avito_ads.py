@@ -4,8 +4,18 @@ from typing import Any
 from analytics.selectors.avito_stats import (
     build_avito_ads_stats_payload,
 )
-from django.db.models import F, Q
-from django.db.models.functions import Coalesce
+from django.db.models import (
+    Case,
+    ExpressionWrapper,
+    F,
+    FloatField,
+    IntegerField,
+    Q,
+    Sum,
+    Value,
+    When,
+)
+from django.db.models.functions import Coalesce, Lower
 
 from avitotask.models import AdPublication, AvitoAccount, AvitoListing
 
@@ -17,6 +27,12 @@ from avitotask.services.ad_publication_dates import (
 
 ENTITY_TYPE_AVITO_LISTING = "avito_listing"
 ENTITY_TYPE_AD_PUBLICATION = "ad_publication"
+
+STATS_ORDERING_FIELDS = {
+    "views": "stats_views",
+    "contacts": "stats_contacts",
+    "views_to_contacts_conversion": "stats_conversion",
+}
 
 
 def get_listing_date_end_value(listing: AvitoListing) -> str:
@@ -64,7 +80,12 @@ def get_publication_date_end_payload(publication: AdPublication) -> dict[str, st
     }
 
 
-def order_queryset_by_published_end(queryset, *, is_desc):
+def order_queryset_by_published_end(
+        queryset,
+        *,
+        is_desc,
+        title_field,
+):
     published_end_order = (
         F("published_end").desc(nulls_last=True)
         if is_desc
@@ -73,8 +94,16 @@ def order_queryset_by_published_end(queryset, *, is_desc):
 
     return queryset.order_by(
         published_end_order,
+        Lower(title_field),
         "id",
     )
+
+
+def get_candidate_title(entity_type, item):
+    if entity_type == ENTITY_TYPE_AD_PUBLICATION:
+        return item.creative.title or ""
+
+    return item.title or ""
 
 
 def get_date_end_candidate_sort_key(
@@ -96,9 +125,146 @@ def get_date_end_candidate_sort_key(
         else 1
     )
 
+    title = get_candidate_title(
+        entity_type,
+        item,
+    ).casefold()
+
     return (
         published_end is None,
         date_order,
+        title,
+        entity_order,
+        item.id,
+    )
+
+
+def annotate_listings_with_stats(
+        queryset,
+        *,
+        date_from=None,
+        date_to=None,
+):
+    has_confirmed_stats = (
+            ~Q(avito_id="")
+            & Q(
+        analytics_stats_coverage__coverage_from__isnull=False,
+    )
+            & Q(
+        analytics_stats_coverage__finalized_through__isnull=False,
+    )
+    )
+
+    stats_period_filter = Q()
+
+    if date_from is not None:
+        has_confirmed_stats &= Q(
+            analytics_stats_coverage__coverage_from__lte=date_from,
+        )
+        stats_period_filter &= Q(
+            analytics_daily_stats__date__gte=date_from,
+        )
+
+    if date_to is not None:
+        has_confirmed_stats &= Q(
+            analytics_stats_coverage__finalized_through__gte=date_to,
+        )
+        stats_period_filter &= Q(
+            analytics_daily_stats__date__lte=date_to,
+        )
+
+    queryset = queryset.annotate(
+        stats_views=Case(
+            When(
+                has_confirmed_stats,
+                then=Coalesce(
+                    Sum(
+                        "analytics_daily_stats__views",
+                        filter=stats_period_filter,
+                    ),
+                    Value(0),
+                ),
+            ),
+            default=Value(None),
+            output_field=IntegerField(),
+        ),
+        stats_contacts=Case(
+            When(
+                has_confirmed_stats,
+                then=Coalesce(
+                    Sum(
+                        "analytics_daily_stats__contacts",
+                        filter=stats_period_filter,
+                    ),
+                    Value(0),
+                ),
+            ),
+            default=Value(None),
+            output_field=IntegerField(),
+        ),
+    )
+
+    return queryset.annotate(
+        stats_conversion=Case(
+            When(
+                stats_views__gt=0,
+                then=ExpressionWrapper(
+                    (
+                            F("stats_contacts")
+                            * Value(100.0)
+                            / F("stats_views")
+                    ),
+                    output_field=FloatField(),
+                ),
+            ),
+            default=Value(None),
+            output_field=FloatField(),
+        ),
+    )
+
+
+def order_listings_by_stats(queryset, *, ordering):
+    metric = ordering.removeprefix("-")
+    field_name = STATS_ORDERING_FIELDS[metric]
+    is_desc = ordering.startswith("-")
+
+    queryset = queryset.annotate(
+        stats_sort_value=F(field_name),
+    )
+
+    stats_order = (
+        F("stats_sort_value").desc(nulls_last=True)
+        if is_desc
+        else F("stats_sort_value").asc(nulls_last=True)
+    )
+
+    return queryset.order_by(
+        stats_order,
+        "id",
+    )
+
+
+def get_stats_candidate_sort_key(
+        candidate: tuple[int | float | None, str, Any],
+        *,
+        is_desc: bool,
+):
+    value, entity_type, item = candidate
+
+    if value is None:
+        metric_order = 0
+    else:
+        metric_order = -value if is_desc else value
+
+    entity_order = (
+        0
+        if entity_type == ENTITY_TYPE_AD_PUBLICATION
+        else 1
+    )
+
+    return (
+        value is None,
+        metric_order,
         item.id,
         entity_order,
     )
@@ -115,6 +281,10 @@ class AvitoAdListFilters:
     has_errors: str = ""
     search: str = ""
     address: str = ""
+    stats_date_from: date | None = None
+    stats_date_to: date | None = None
+    min_views: int | None = None
+    min_contacts: int | None = None
     ordering: str = "-date_end"
 
 
@@ -147,14 +317,34 @@ def list_avito_account_ads(
     start = (page - 1) * page_size
     end = start + page_size
     ordering = filters.ordering or "-date_end"
+
     sort_by_date_end = ordering in {
         "date_end",
         "-date_end",
     }
     is_date_desc = ordering == "-date_end"
 
+    sort_by_stats = (
+            ordering.removeprefix("-") in STATS_ORDERING_FIELDS
+    )
+    is_stats_desc = (
+            sort_by_stats
+            and ordering.startswith("-")
+    )
+
+    has_stats_thresholds = (
+            filters.min_views is not None
+            or filters.min_contacts is not None
+    )
+
+    requires_stats_annotations = (
+            sort_by_stats
+            or has_stats_thresholds
+    )
+
     items = []
     date_end_candidates = []
+    stats_candidates = []
     total_count = 0
 
     include_listings = filters.entity_type in (
@@ -182,6 +372,23 @@ def list_avito_account_ads(
                 publication__isnull=False,
             )
 
+        if requires_stats_annotations:
+            listings_queryset = annotate_listings_with_stats(
+                listings_queryset,
+                date_from=filters.stats_date_from,
+                date_to=filters.stats_date_to,
+            )
+
+        if filters.min_views is not None:
+            listings_queryset = listings_queryset.filter(
+                stats_views__gte=filters.min_views,
+            )
+
+        if filters.min_contacts is not None:
+            listings_queryset = listings_queryset.filter(
+                stats_contacts__gte=filters.min_contacts,
+            )
+
         total_count += listings_queryset.count()
 
         if sort_by_date_end:
@@ -189,6 +396,7 @@ def list_avito_account_ads(
                 order_queryset_by_published_end(
                     listings_queryset,
                     is_desc=is_date_desc,
+                    title_field="title",
                 )[:end]
             )
 
@@ -200,22 +408,41 @@ def list_avito_account_ads(
                 )
                 for listing in limited_listings
             )
+        elif sort_by_stats:
+            limited_listings = list(
+                order_listings_by_stats(
+                    listings_queryset,
+                    ordering=ordering,
+                )[:end]
+            )
+
+            stats_candidates.extend(
+                (
+                    listing.stats_sort_value,
+                    ENTITY_TYPE_AVITO_LISTING,
+                    listing,
+                )
+                for listing in limited_listings
+            )
         else:
             items.extend(
                 serialize_listing_for_ads_page(listing)
                 for listing in listings_queryset[:end]
             )
 
-    if filters.entity_type in (
-            "",
-            ENTITY_TYPE_AD_PUBLICATION,
-    ):
-        publications_queryset = (
-            get_filtered_unlinked_publications(
-                workspace=workspace,
-                avito_account=avito_account,
-                filters=filters,
-            )
+    include_unlinked_publications = (
+            filters.entity_type in (
+        "",
+        ENTITY_TYPE_AD_PUBLICATION,
+    )
+            and not has_stats_thresholds
+    )
+
+    if include_unlinked_publications:
+        publications_queryset = get_filtered_unlinked_publications(
+            workspace=workspace,
+            avito_account=avito_account,
+            filters=filters,
         )
 
         total_count += publications_queryset.count()
@@ -225,12 +452,26 @@ def list_avito_account_ads(
                 order_queryset_by_published_end(
                     publications_queryset,
                     is_desc=is_date_desc,
+                    title_field="creative__title",
                 )[:end]
             )
 
             date_end_candidates.extend(
                 (
                     publication.published_end,
+                    ENTITY_TYPE_AD_PUBLICATION,
+                    publication,
+                )
+                for publication in limited_publications
+            )
+        elif sort_by_stats:
+            limited_publications = list(
+                publications_queryset.order_by("id")[:end]
+            )
+
+            stats_candidates.extend(
+                (
+                    None,
                     ENTITY_TYPE_AD_PUBLICATION,
                     publication,
                 )
@@ -270,6 +511,24 @@ def list_avito_account_ads(
             )
             for _, entity_type, item in page_candidates
         ]
+    elif sort_by_stats:
+        stats_candidates.sort(
+            key=lambda candidate: get_stats_candidate_sort_key(
+                candidate,
+                is_desc=is_stats_desc,
+            ),
+        )
+
+        page_candidates = stats_candidates[start:end]
+
+        items = [
+            (
+                serialize_listing_for_ads_page(item)
+                if entity_type == ENTITY_TYPE_AVITO_LISTING
+                else serialize_publication_for_ads_page(item)
+            )
+            for _, entity_type, item in page_candidates
+        ]
     else:
         items.sort(
             key=lambda item: item["sort_at"] or datetime.min,
@@ -286,6 +545,8 @@ def list_avito_account_ads(
         workspace=workspace,
         avito_account=avito_account,
         items=serialized_results,
+        date_from=filters.stats_date_from,
+        date_to=filters.stats_date_to,
     )
 
     return AvitoAdListResult(

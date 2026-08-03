@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal
 
 from django.conf import settings
 
@@ -69,12 +70,17 @@ def import_avito_listing_daily_stats_for_account(
         date_to,
         listing_ids=None,
         session=None,
+        progress_callback=None,
 ):
     """
     Загружает только базовые метрики stats/v1.
 
     Сетевые запросы намеренно выполняются вне общей транзакции.
     Повторный импорт безопасен благодаря unique(listing, date).
+
+    progress_callback вызывается перед каждым запросом Avito.
+    Если callback возвращает False, импорт прекращается без изменения
+    coverage для незавершённой группы объявлений.
     """
 
     if not avito_account.external_account_id:
@@ -118,6 +124,7 @@ def import_avito_listing_daily_stats_for_account(
         for listing in listings
     }
 
+    processed_listings = 0
     total_days = 0
     created_stats = 0
     updated_stats = 0
@@ -129,6 +136,18 @@ def import_avito_listing_daily_stats_for_account(
             listings,
             listings_batch_size,
     ):
+        if (
+                progress_callback is not None
+                and not progress_callback()
+        ):
+            return AvitoStatsImportResult(
+                total_listings=processed_listings,
+                total_days=total_days,
+                created_stats=created_stats,
+                updated_stats=updated_stats,
+                unchanged_stats=unchanged_stats,
+            )
+
         mark_listing_coverage_attempt(listings_chunk)
 
         try:
@@ -142,11 +161,26 @@ def import_avito_listing_daily_stats_for_account(
                     "В AvitoListing найден некорректный avito_id."
                 ) from exc
 
-            for range_from, range_to in split_date_range(
-                    date_from,
-                    date_to,
-                    max_period_days=AVITO_STATS_MAX_PERIOD_DAYS,
+            for range_index, (range_from, range_to) in enumerate(
+                    split_date_range(
+                        date_from,
+                        date_to,
+                        max_period_days=AVITO_STATS_MAX_PERIOD_DAYS,
+                    )
             ):
+                if (
+                        range_index > 0
+                        and progress_callback is not None
+                        and not progress_callback()
+                ):
+                    return AvitoStatsImportResult(
+                        total_listings=processed_listings,
+                        total_days=total_days,
+                        created_stats=created_stats,
+                        updated_stats=updated_stats,
+                        unchanged_stats=unchanged_stats,
+                    )
+
                 payload = client.get_item_stats(
                     token=token,
                     user_id=avito_account.external_account_id,
@@ -178,9 +212,10 @@ def import_avito_listing_daily_stats_for_account(
             date_from=date_from,
             date_to=date_to,
         )
+        processed_listings += len(listings_chunk)
 
     return AvitoStatsImportResult(
-        total_listings=len(listings),
+        total_listings=processed_listings,
         total_days=total_days,
         created_stats=created_stats,
         updated_stats=updated_stats,
@@ -230,7 +265,10 @@ def import_avito_profile_daily_stats_for_account(
         stat_date=stat_date,
         page_size=page_size,
     )
-
+    spending_available = profile_groupings_have_metric(
+        groupings=groupings,
+        metric_slug="allSpending",
+    )
     listing_by_avito_id = {
         str(listing.avito_id): listing
         for listing in listings
@@ -259,6 +297,7 @@ def import_avito_profile_daily_stats_for_account(
         listings=listings,
         stat_date=stat_date,
         activity_by_listing_id=activity_by_listing_id,
+        spending_available=spending_available,
     )
 
     return AvitoProfileDailyStatsImportResult(
@@ -288,7 +327,12 @@ def fetch_profile_daily_groupings(
             user_id=user_id,
             date_from=stat_date,
             date_to=stat_date,
-            metrics=["views", "contacts"],
+            metrics=[
+                "views",
+                "contacts",
+                "favorites",
+                "allSpending",
+            ],
             grouping="item",
             limit=page_size,
             offset=offset,
@@ -314,6 +358,28 @@ def fetch_profile_daily_groupings(
             )
 
     return groupings
+
+
+def profile_groupings_have_metric(
+        *,
+        groupings,
+        metric_slug,
+):
+    """
+    Проверяет доступность метрики по полному пагинированному ответу.
+
+    Если метрика не встретилась ни в одной grouping, её отсутствие
+    нельзя интерпретировать как подтверждённый ноль.
+    """
+
+    return any(
+        grouping.get("type") == "items"
+        and any(
+            metric.get("slug") == metric_slug
+            for metric in grouping.get("metrics") or []
+        )
+        for grouping in groupings
+    )
 
 
 def get_matched_profile_listing_ids(
@@ -356,25 +422,42 @@ def build_profile_activity_by_listing_id(
             continue
 
         metrics = {
-            str(metric.get("slug")): int(
-                metric.get("value") or 0
-            )
+            str(metric.get("slug")): metric.get("value")
             for metric in grouping.get("metrics") or []
+            if metric.get("slug")
         }
 
-        views = metrics.get("views", 0)
-        contacts = metrics.get("contacts", 0)
+        views = int(metrics.get("views") or 0)
+        contacts = int(metrics.get("contacts") or 0)
+        favorites = int(metrics.get("favorites") or 0)
 
-        # Нулевую строку физически не создаём.
-        if views == 0 and contacts == 0:
-            continue
+        has_total_spend = "allSpending" in metrics
+        total_spend = (
+            spending_kopecks_to_rubles(
+                metrics.get("allSpending")
+            )
+            if has_total_spend
+            else None
+        )
 
+        # Нулевую grouping нельзя отбрасывать: её присутствие
+        # отличается от полного отсутствия объявления в ответе.
         activity_by_listing_id[listing.id] = {
             "views": views,
             "contacts": contacts,
+            "favorites": favorites,
+            "total_spend": total_spend,
+            "has_total_spend": has_total_spend,
+            "raw_metrics": dict(metrics),
         }
 
     return activity_by_listing_id
+
+
+def spending_kopecks_to_rubles(value):
+    return (
+            Decimal(str(value or 0)) / Decimal("100")
+    ).quantize(Decimal("0.01"))
 
 
 def replace_profile_daily_activity(
@@ -383,6 +466,7 @@ def replace_profile_daily_activity(
         listings,
         stat_date,
         activity_by_listing_id,
+        spending_available,
 ):
     now = timezone.now()
     listing_ids = [listing.id for listing in listings]
@@ -390,6 +474,7 @@ def replace_profile_daily_activity(
     created_stats = []
     updated_stats = []
     delete_stat_ids = []
+    spending_confirmed_listing_ids = []
 
     with transaction.atomic():
         existing_by_listing_id = {
@@ -409,31 +494,53 @@ def replace_profile_daily_activity(
             values = activity_by_listing_id.get(listing.id)
             existing = existing_by_listing_id.get(listing.id)
 
+            if values is None:
+                # Объявление отсутствует в полном ответе. Нулевой расход
+                # подтверждён только тогда, когда allSpending в принципе
+                # доступен в этом ответе.
+                if spending_available:
+                    spending_confirmed_listing_ids.append(listing.id)
+            elif values["has_total_spend"]:
+                # Для присутствующей grouping расход подтверждён только
+                # явным присутствием allSpending.
+                spending_confirmed_listing_ids.append(listing.id)
+
             if values is not None:
                 raw_metrics = dict(
                     existing.raw_metrics or {}
                     if existing
                     else {}
                 )
-                raw_metrics["stats_v2"] = {
-                    "views": values["views"],
-                    "contacts": values["contacts"],
-                }
+                raw_metrics["stats_v2"] = dict(
+                    values["raw_metrics"]
+                )
 
                 if existing is None:
-                    created_stats.append(
-                        AvitoListingDailyStats(
-                            workspace=workspace,
-                            listing=listing,
-                            date=stat_date,
-                            views=values["views"],
-                            contacts=values["contacts"],
-                            raw_metrics=raw_metrics,
-                        )
+                    new_stat = AvitoListingDailyStats(
+                        workspace=workspace,
+                        listing=listing,
+                        date=stat_date,
+                        views=values["views"],
+                        contacts=values["contacts"],
+                        favorites=values["favorites"],
+                        total_spend=values["total_spend"],
+                        raw_metrics=raw_metrics,
                     )
+
+                    # Присутствие нулевой grouping уже сохранено
+                    # в activity_by_listing_id. Физическая zero-only
+                    # строка для этого не требуется.
+                    if not is_zero_only_daily_stat(new_stat):
+                        created_stats.append(new_stat)
                 else:
                     existing.views = values["views"]
                     existing.contacts = values["contacts"]
+                    existing.favorites = values["favorites"]
+
+                    # Отсутствие allSpending не означает нулевой расход.
+                    if values["has_total_spend"]:
+                        existing.total_spend = values["total_spend"]
+
                     existing.raw_metrics = raw_metrics
                     existing.updated_at = now
                     updated_stats.append(existing)
@@ -443,14 +550,26 @@ def replace_profile_daily_activity(
             if existing is None:
                 continue
 
+            # Отсутствие объявления подтверждает нулевые базовые
+            # показатели, но не всегда подтверждает нулевой расход.
             existing.views = 0
             existing.contacts = 0
+            existing.favorites = 0
+
+            if spending_available:
+                existing.total_spend = Decimal("0.00")
 
             raw_metrics = dict(existing.raw_metrics or {})
-            raw_metrics["stats_v2"] = {
+            stats_v2_metrics = {
                 "views": 0,
                 "contacts": 0,
+                "favorites": 0,
             }
+
+            if spending_available:
+                stats_v2_metrics["allSpending"] = 0
+
+            raw_metrics["stats_v2"] = stats_v2_metrics
             existing.raw_metrics = raw_metrics
             existing.updated_at = now
 
@@ -470,6 +589,8 @@ def replace_profile_daily_activity(
                 fields=[
                     "views",
                     "contacts",
+                    "favorites",
+                    "total_spend",
                     "raw_metrics",
                     "updated_at",
                 ],
@@ -485,6 +606,13 @@ def replace_profile_daily_activity(
         update_listing_coverages_for_profile_day(
             workspace=workspace,
             listings=listings,
+            stat_date=stat_date,
+            now=now,
+        )
+
+        update_listing_spending_coverages_for_profile_day(
+            workspace=workspace,
+            listing_ids=spending_confirmed_listing_ids,
             stat_date=stat_date,
             now=now,
         )
@@ -525,8 +653,8 @@ def update_listing_coverages_for_profile_day(
     ]
 
     empty_condition = (
-        Q(coverage_from__isnull=True)
-        | Q(finalized_through__isnull=True)
+            Q(coverage_from__isnull=True)
+            | Q(finalized_through__isnull=True)
     )
     prepend_condition = Q(
         coverage_from=stat_date + timedelta(days=1),
@@ -540,10 +668,10 @@ def update_listing_coverages_for_profile_day(
     )
 
     success_condition = (
-        empty_condition
-        | prepend_condition
-        | inside_condition
-        | append_condition
+            empty_condition
+            | prepend_condition
+            | inside_condition
+            | append_condition
     )
 
     gap_error = Concat(
@@ -625,6 +753,87 @@ def update_listing_coverages_for_profile_day(
         )
 
 
+def update_listing_spending_coverages_for_profile_day(
+        *,
+        workspace,
+        listing_ids,
+        stat_date,
+        now,
+):
+    """
+    Продвигает spending coverage только для объявлений, расход
+    которых подтверждён ответом stats/v2.
+
+    Обновление выполняется одним SQL UPDATE независимо от количества
+    объявлений. Разрывы диапазона автоматически не заполняются.
+    """
+
+    if not listing_ids:
+        return 0
+
+    empty_condition = (
+            Q(spending_coverage_from__isnull=True)
+            | Q(spending_finalized_through__isnull=True)
+    )
+    prepend_condition = Q(
+        spending_coverage_from=stat_date + timedelta(days=1),
+    )
+    inside_condition = Q(
+        spending_coverage_from__lte=stat_date,
+        spending_finalized_through__gte=stat_date,
+    )
+    append_condition = Q(
+        spending_finalized_through=stat_date - timedelta(days=1),
+    )
+
+    success_condition = (
+            empty_condition
+            | prepend_condition
+            | inside_condition
+            | append_condition
+    )
+
+    return (
+        AvitoListingStatsCoverage.objects
+        .filter(
+            workspace=workspace,
+            listing_id__in=listing_ids,
+            # Spending coverage не может существовать отдельно
+            # от подтверждённой generic coverage этого дня.
+            coverage_from__lte=stat_date,
+            finalized_through__gte=stat_date,
+        )
+        .filter(success_condition)
+        .update(
+            spending_coverage_from=Case(
+                When(
+                    empty_condition,
+                    then=Value(stat_date),
+                ),
+                When(
+                    prepend_condition,
+                    then=Value(stat_date),
+                ),
+                default=F("spending_coverage_from"),
+                output_field=DateField(),
+            ),
+            spending_finalized_through=Case(
+                When(
+                    empty_condition,
+                    then=Value(stat_date),
+                ),
+                When(
+                    append_condition,
+                    then=Value(stat_date),
+                ),
+                default=F("spending_finalized_through"),
+                output_field=DateField(),
+            ),
+            updated_at=now,
+        )
+    )
+
+
 def is_zero_only_daily_stat(stat):
     return (
             stat.views == 0
@@ -632,7 +841,10 @@ def is_zero_only_daily_stat(stat):
             and stat.favorites == 0
             and stat.calls == 0
             and stat.messages == 0
-            and stat.total_spend is None
+            and (
+                    stat.total_spend is None
+                    or stat.total_spend == 0
+            )
     )
 
 

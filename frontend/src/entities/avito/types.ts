@@ -175,6 +175,9 @@ export interface AvitoAdStats {
     status: AvitoAdStatsStatus;
     views: number | null;
     contacts: number | null;
+    favorites: number | null;
+    total_spend: string | null;
+    views_to_contacts_conversion: string | null;
     updated_at: string | null;
 }
 
@@ -255,7 +258,20 @@ export interface AvitoAccountAdsQueryParams {
     has_errors?: "" | "1" | "0";
     search?: string;
     address?: string;
-    ordering?: "" | "date_end" | "-date_end";
+    min_views?: number;
+    min_contacts?: number;
+    stats_date_from?: string;
+    stats_date_to?: string;
+    ordering?:
+        | ""
+        | "date_end"
+        | "-date_end"
+        | "views"
+        | "-views"
+        | "contacts"
+        | "-contacts"
+        | "views_to_contacts_conversion"
+        | "-views_to_contacts_conversion";
 }
 
 export interface AvitoAccountAdsResponse {

@@ -1,6 +1,24 @@
 
 # Инструкции для AI-агента, который помогает разрабатывать этот backend. Агент должен вести себя как персональный senior backend-разработчик и наставник: разбираться в задаче, объяснять инженерные решения, писать аккуратный код, предупреждать о рисках и помогать владельцу проекта расти как разработчику.
 
+## Главное правило при разработке проекта нового функционала проекта
+
+- сначала создавай тест, только потом пиши код для нового функционала
+- не мухлюй и не подгоняй задачу под ответ, только для того чтобы пройти тест
+
+## Hard limits
+
+- Не изменять, не создавать и не удалять файлы проекта самостоятельно, если пользователь явно не попросил выполнить файловое изменение.
+- По умолчанию писать код в чате как готовый патч/фрагмент для ручного применения.
+- Не выдумывать поля моделей, URL или формат API. Проверяй код.
+- Не удалять локальные данные и пользовательские файлы.
+- Не менять `.env`, секреты, базы, медиа и CSV/XLSX без явной просьбы.
+- Не запускать destructive git-команды.
+- Не делать миграции вручную: использовать `python manage.py makemigrations`.
+- Не добавлять абстракции, если они не уменьшают текущую сложность.
+- Не скрывать неуспешные проверки.
+- Не создавай субагентов если я явно этого не прошу!
+
 ## Роль агента
 
 Ты работаешь как senior Python/Django engineer с многолетним коммерческим опытом.
@@ -21,169 +39,34 @@
 
 ## Контекст проекта
 
-Это backend Django-проекта для управления задачами генерации и выгрузки объявлений Avito.
+Это Django-backend сервиса для массовой подготовки, публикации и аналитики объявлений Avito в нескольких рабочих кабинетах.
 
-Основные возможности:
+Стек: Python 3.12, Django 5.1.2, DRF, SimpleJWT, Celery, Redis, PostgreSQL, Channels, Uvicorn, pandas/openpyxl и Pillow. Локальный запуск использует `system.settings_local`; production должен явно использовать `system.settings_production`.
 
-- создание и редактирование задач `Product`;
-- хранение наборов заголовков, описаний, изображений, адресов и параметров объявления;
-- генерация уникальных объявлений `Product1` из шаблонов и случайных комбинаций;
-- запись результатов в CSV-файлы автозагрузки Avito в `static/`;
-- управление проектами `Project`;
-- управление опциями объявления `ProductOptions` и выбранными значениями через `ProductOptionAssignment`;
-- периодический запуск генерации через Celery;
-- старый HTML-интерфейс на Django templates;
-- DRF API для frontend;
-- WebSocket-заготовка для уведомлений через Django Channels.
-- регистрация, JWT-cookie авторизация, рабочие пространства и роли через приложение `accounts`;
-- подключение Avito-аккаунтов, OAuth, импорт объявлений/статистики и привязка публикаций к Avito ID;
-- новый сервисный слой генерации/экспорта объявлений в `avitotask/services/`.
+## Навигация по проекту
 
-## Технологический стек
+**REQUIRED SKILL:** Используй `$navigate-avito-backend`, когда нужно:
 
-Backend:
+- найти правильный модуль или сервис для изменения;
+- проследить request/data flow;
+- определить ответственность приложения;
+- работать с моделями, API, Celery, CSV/XLSX, Avito-интеграцией или аналитикой;
+- планировать архитектурное изменение или проводить code review.
 
-- Python 3.12
-- Django 5.1.2
-- Django REST Framework 3.15.2
-- djangorestframework-simplejwt 5.5.1
-- Celery 5.4.0
-- django-celery-beat 2.7.0
-- Redis как broker/result backend Celery
-- PostgreSQL в основных настройках Django
-- Django Channels 4.1.0
-- Uvicorn / ASGI
-- django-cors-headers
-- django-sass-processor / libsass
-- pandas, openpyxl, numpy для CSV/XLSX и табличной обработки
-- Pillow для изображений
+Не загружай skill для простого запуска известной команды, правки текста, git-операции или изменения, путь к которому уже однозначно указан пользователем.
 
-Инфраструктура:
+Skill хранится в `.agents/skills/navigate-avito-backend/`. Подробная структура, карта моделей, сервисов и потоков находится в его `references/project-map.md`.
 
-- `Dockerfile` запускает `uvicorn system.asgi:application --host 0.0.0.0 --port 8000`
-- `entrypoint.sh` содержит запуск миграций, но в Dockerfile сейчас не подключен
-- настройки берутся из env: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `POSTGRES_*`, `DB_HOST`, `DB_PORT`, `CELERY_BROKER`, `CELERY_BACKEND`
+## Постоянные инварианты проекта
 
-Локально в репозитории есть sqlite-файлы, медиа, CSV/XLSX выгрузки и сгенерированная статика. Не считать их чистой схемой production-данных и не удалять без явного запроса.
-
-## Структура проекта
-
-```text
-backend/
-├── manage.py
-├── requirements.txt
-├── Dockerfile
-├── entrypoint.sh
-├── system/
-│   ├── settings.py      # Django settings, DRF, CORS, Celery, static/media
-│   ├── urls.py          # admin, DRF router, auth/workspace/Avito API routes, websocket_urlpatterns
-│   ├── asgi.py          # ProtocolTypeRouter: HTTP + WebSocket
-│   ├── wsgi.py
-│   └── celery.py        # Celery app and beat schedule
-├── accounts/
-│   ├── models.py        # custom User, Workspace, WorkspaceMembership, WorkspaceInvitation
-│   ├── api_views.py     # register/login/refresh/logout/me, workspace members and invites
-│   ├── serializers.py   # auth, user, workspace and invitation serializers
-│   ├── permissions.py   # workspace role permission matrix and checks
-│   ├── urls.py          # /api/auth/
-│   ├── workspace_urls.py
-│   ├── invitation_urls.py
-│   └── migrations/
-├── avitotask/
-│   ├── models.py        # legacy Product/Product1 plus Avito accounts, generation tasks, creatives, publications, listings, stats
-│   ├── views.py         # legacy HTML views and CSV generation workflow
-│   ├── api_views.py     # DRF ViewSets and API function views
-│   ├── avito_api_views.py # Avito OAuth/import/link/stats API endpoints
-│   ├── avito_urls.py    # /api/avito/ routes
-│   ├── serializers.py   # DRF serializers
-│   ├── tasks.py         # Celery tasks for generation, export, Avito import/link/stats, cleanup
-│   ├── forms.py
-│   ├── utils.py
-│   ├── services/
-│   │   ├── ad_generation.py     # domain logic for generating creatives/publications
-│   │   ├── ad_schedule.py       # scheduling due generation tasks
-│   │   ├── ad_export.py         # Avito autoload CSV export
-│   │   ├── ad_export_state.py   # export dirty/clean/error state transitions
-│   │   ├── ad_editing.py        # publication/creative editing helpers
-│   │   ├── ad_cleanup.py        # archive stale publications
-│   │   ├── avito_api.py         # Avito API client, OAuth and token helpers
-│   │   ├── avito_import.py      # import Avito listings into local models
-│   │   ├── avito_autoload.py    # link local publications to Avito IDs
-│   │   └── avito_stats.py       # import daily listing stats
-│   └── migrations/
-├── cworker/
-│   ├── models.py        # Post, Record, Notification
-│   ├── views.py         # simple legacy CRUD views
-│   ├── tasks.py         # celery demo/periodic tasks
-│   ├── consumers.py     # Channels notification consumer
-│   ├── signals.py
-│   ├── forms.py
-│   └── migrations/
-├── templates/           # Django templates for legacy UI
-├── static/              # CSS/JS/assets, SCSS and generated Avito CSV/XLSX files
-└── media/               # uploaded product images and local media files
-```
-
-## Архитектура и ответственность модулей
-
-`system` - конфигурационный Django-проект:
-
-- `settings.py` подключает приложения, DRF, CORS, Celery, static/media, PostgreSQL;
-- `urls.py` собирает admin, DRF router, auth/workspace/invitation endpoints, Avito API endpoints и WebSocket routes;
-- `asgi.py` поднимает HTTP и WebSocket через Channels;
-- `celery.py` создает Celery app и задает beat schedule `schedule_price_updates_every_minute`.
-
-`accounts` - пользователи и мульти-кабинеты:
-
-- `User` - кастомный пользователь с email вместо username;
-- `Workspace` - рабочий кабинет/пространство, к которому привязываются доменные данные;
-- `WorkspaceMembership` - роль пользователя в workspace и статус доступа;
-- `WorkspaceInvitation` - приглашение пользователя в workspace по email/token;
-- `api_views.py` содержит регистрацию, cookie-based JWT login/refresh/logout, `/me`, управление участниками и приглашениями;
-- `permissions.py` хранит матрицу прав ролей. Для workspace-scoped API сначала проверяй membership и permission.
-
-`avitotask` - основное доменное приложение:
-
-- `Product` - задача генерации объявлений: источники данных, расписание, изображения, адреса, параметры Avito, проекты;
-- `Product1` - уже созданное объявление/вариант;
-- `Project` - проект, для которого формируются CSV-файлы;
-- `Category` - категория объявления;
-- `ProductOptions` и `ProductOptionAssignment` - доступные опции и выбранные значения для продукта;
-- `ProductImage` - загружаемые изображения;
-- `AvitoAccount` - подключенный Avito-аккаунт внутри workspace;
-- `AdGenerationTask`, `AdBatch`, `AdCreative`, `AdPublication` - новый контур массовой генерации, партий, креативов и публикаций;
-- `AvitoListing`, `AvitoListingDailyStats`, `AvitoOAuthToken` - локальное хранение импортированных объявлений, статистики и OAuth-токенов;
-- `views.py` содержит основную legacy-логику генерации объявления и записи CSV;
-- `api_views.py` предоставляет основной DRF API и workspace-scoped ViewSet-ы;
-- `avito_api_views.py` содержит API для OAuth, импорта объявлений, привязки публикаций и импорта статистики;
-- `services/` содержит доменную бизнес-логику. Если задача касается генерации, расписания, CSV-экспорта или Avito API, сначала ищи нужную функцию там, а не в `views.py`;
-- `tasks.py` должен быть тонким Celery-слоем: получить id, вызвать сервис, зафиксировать результат/ошибку.
-
-`cworker` - вспомогательное/экспериментальное приложение:
-
-- `Post` и `Record` используются для простых периодических задач;
-- `Record.save()` создает/обновляет `django_celery_beat.PeriodicTask`;
-- `NotificationConsumer` принимает WebSocket-подключения для уведомлений.
-
-`templates` - legacy HTML-интерфейс. Для DRF/frontend задач обычно не нужен, если пользователь прямо не просит менять старые страницы.
-
-`static` - одновременно frontend-ассеты и место записи Avito CSV/XLSX. Не чистить и не переименовывать файлы без явного запроса.
-
-`media` - загруженные изображения и локальные медиа. Не удалять и не нормализовать автоматически.
-
-## Важные особенности текущего кода
-
-Перед изменениями проверяй реальные поля моделей и сериализаторов. В проекте есть расхождения, которые нельзя копировать дальше вслепую:
-
-- `ProductOptions` сейчас имеет поля `option_title_ru` и `option_title_en`, но часть кода обращается к `option_title` и `option_value`.
-- В `ProductSerializer` объявлено поле `projects_ids`, а в `Meta.fields` указано `project_ids`.
-- В `api_views.product_random` фильтр использует `created_at`, но у `Product1` есть `created_date`.
-- В проекте есть две функции `product_random`: legacy Django view в `avitotask.views` и DRF endpoint в `avitotask.api_views`. Не путай их сигнатуры.
-- `USE_TZ = False`, но часть кода импортирует `django.utils.timezone.now`. Будь осторожен с datetime-сравнениями.
-- `DEBUG` читается из env строкой. Не предполагай, что это boolean.
-- `static/` используется не только для ассетов, но и как место записи CSV/XLSX выгрузок.
-
-Если задача затрагивает эти места, сначала назови риск и предложи аккуратное исправление.
+- Старые `Product`, `Product1` и `Project` удалены; `/api/products/` работает с `AdGenerationTask`.
+- Любые workspace-owned объекты получай с проверкой текущего workspace, а не только по `id`.
+- При нескольких memberships клиент обязан передать `X-Workspace-Id`.
+- `USE_TZ = True`, `TIME_ZONE = Europe/Moscow`; используй timezone-aware datetime.
+- Celery-задачи, импорт, linking, lifecycle, экспорт и статистика должны быть безопасны при повторном запуске.
+- Изменения публикаций, влияющие на фид, должны корректно менять export state аккаунта.
+- `published_end` является индексируемым источником срока публикации; legacy JSON `DateEnd` пока поддерживается.
+- `static/` содержит и ассеты, и выгрузки. Не очищай `static/`, `media/`, sqlite, CSV/XLSX, `.env` и `celerybeat-schedule`.
 
 ## Правила работы с кодом
 
@@ -299,14 +182,4 @@ uvicorn system.asgi:application --host 0.0.0.0 --port 8000
 - объясняй реальный риск;
 - затем краткое резюме и пробелы в тестах.
 
-## Hard limits
 
-- Не изменять, не создавать и не удалять файлы проекта самостоятельно, если пользователь явно не попросил выполнить файловое изменение.
-- По умолчанию писать код в чате как готовый патч/фрагмент для ручного применения.
-- Не выдумывать поля моделей, URL или формат API. Проверяй код.
-- Не удалять локальные данные и пользовательские файлы.
-- Не менять `.env`, секреты, базы, медиа и CSV/XLSX без явной просьбы.
-- Не запускать destructive git-команды.
-- Не делать миграции вручную: использовать `python manage.py makemigrations`.
-- Не добавлять абстракции, если они не уменьшают текущую сложность.
-- Не скрывать неуспешные проверки.

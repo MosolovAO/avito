@@ -27,6 +27,10 @@ export const useAvitoAccountAdsQuery = (
             params.has_errors ?? "",
             params.search ?? "",
             params.address ?? "",
+            params.stats_date_from ?? "",
+            params.stats_date_to ?? "",
+            params.min_views ?? "",
+            params.min_contacts ?? "",
             params.ordering ?? "",
         ],
         queryFn: () =>

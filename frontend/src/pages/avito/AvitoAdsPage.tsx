@@ -8,31 +8,39 @@ import React, {
 import {useNavigate} from "react-router-dom";
 import {
     Alert,
+    AutoComplete,
     Button,
+    Col,
+    Drawer,
+    DatePicker,
+    Form,
     Input,
+    InputNumber,
+    message,
+    Row,
     Select,
     Space,
+    Spin,
     Table,
     Tag,
-    Typography,
     Tooltip,
-    Drawer,
-    Form,
-    message,
-    Col,
-    Row,
-    Spin,
-    AutoComplete,
+    Typography,
 } from "antd";
+import dayjs from "dayjs";
+import type {Dayjs} from "dayjs";
 import type {FormInstance, TablePaginationConfig, TableProps} from "antd";
 import {
     CloudDownloadOutlined,
-    FileSyncOutlined,
-    LinkOutlined,
-    SearchOutlined,
     EditOutlined,
+    EyeOutlined,
+    FileSyncOutlined,
     FilterOutlined,
+    HeartOutlined,
+    LinkOutlined,
     ReloadOutlined,
+    SearchOutlined,
+    UserOutlined,
+    WalletOutlined,
 } from "@ant-design/icons";
 
 import {
@@ -156,11 +164,54 @@ const parseImageUrls = (value: string): string[] =>
         .filter(Boolean);
 
 const {Title, Text} = Typography;
+const {RangePicker} = DatePicker;
 
 type JsonTextFieldName = "base_data_json" | "option_data_json";
 
+type AvitoAdsOrdering = NonNullable<
+    AvitoAccountAdsQueryParams["ordering"]
+>;
+
+type AvitoAdsSortField =
+    | "date_end"
+    | "views"
+    | "contacts"
+    | "views_to_contacts_conversion";
+
+type SortDirection = "asc" | "desc";
+
 const pageSize = 30;
-const DEFAULT_DATE_END_ORDERING = "-date_end" as const;
+
+const DEFAULT_SORT_FIELD: AvitoAdsSortField = "date_end";
+const DEFAULT_SORT_DIRECTION: SortDirection = "desc";
+const DEFAULT_STATS_DATE_TO = dayjs()
+    .subtract(1, "day")
+    .startOf("day");
+const DEFAULT_STATS_DATE_FROM = DEFAULT_STATS_DATE_TO
+    .subtract(29, "day");
+
+const SORT_ORDERINGS: Record<
+    AvitoAdsSortField,
+    Record<SortDirection, AvitoAdsOrdering>
+> = {
+    date_end: {
+        asc: "date_end",
+        desc: "-date_end",
+    },
+    views: {
+        asc: "views",
+        desc: "-views",
+    },
+    contacts: {
+        asc: "contacts",
+        desc: "-contacts",
+    },
+    views_to_contacts_conversion: {
+        asc: "views_to_contacts_conversion",
+        desc: "-views_to_contacts_conversion",
+    },
+};
+
 
 const entityTypeLabel: Record<string, string> = {
     avito_listing: "Avito",
@@ -441,10 +492,33 @@ export const AvitoAdsPage: React.FC = () => {
         useState<AvitoAccountAdsQueryParams["has_errors"]>("");
     const [search, setSearch] = useState("");
     const [addressFilter, setAddressFilter] = useState("");
-    const [dateEndOrdering, setDateEndOrdering] =
-        useState<AvitoAccountAdsQueryParams["ordering"]>(
-            DEFAULT_DATE_END_ORDERING,
-        );
+
+    const [minViews, setMinViews] = useState<number | null>(null);
+    const [minContacts, setMinContacts] = useState<number | null>(null);
+
+    const [sortField, setSortField] = useState<AvitoAdsSortField>(
+        DEFAULT_SORT_FIELD,
+    );
+    const [sortDirection, setSortDirection] = useState<SortDirection>(
+        DEFAULT_SORT_DIRECTION,
+    );
+    const [statsPeriod, setStatsPeriod] = useState<
+        [Dayjs, Dayjs]
+    >(() => [
+        DEFAULT_STATS_DATE_FROM,
+        DEFAULT_STATS_DATE_TO,
+    ]);
+
+    const statsDateFrom = statsPeriod[0].format("YYYY-MM-DD");
+    const statsDateTo = statsPeriod[1].format("YYYY-MM-DD");
+    const isDefaultStatsPeriod = (
+        statsDateFrom
+        === DEFAULT_STATS_DATE_FROM.format("YYYY-MM-DD")
+        && statsDateTo
+        === DEFAULT_STATS_DATE_TO.format("YYYY-MM-DD")
+    );
+
+    const ordering = SORT_ORDERINGS[sortField][sortDirection];
     const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
     const [selectedAdItems, setSelectedAdItems] = useState<SelectedAdItem[]>([]);
 
@@ -468,13 +542,28 @@ export const AvitoAdsPage: React.FC = () => {
     const activeFiltersCount = useMemo(
         () =>
             [
-                entityType,
-                hasAvitoId,
-                hasErrors,
-                addressFilter.trim(),
-                dateEndOrdering === "date_end" ? dateEndOrdering : "",
+                Boolean(entityType),
+                Boolean(hasAvitoId),
+                Boolean(hasErrors),
+                Boolean(addressFilter.trim()),
+                !isDefaultStatsPeriod,
+                minViews !== null,
+                minContacts !== null,
+                sortField !== DEFAULT_SORT_FIELD
+                || sortDirection !== DEFAULT_SORT_DIRECTION,
             ].filter(Boolean).length,
-        [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors],
+        [
+            addressFilter,
+            entityType,
+            hasAvitoId,
+            hasErrors,
+            isDefaultStatsPeriod,
+            minContacts,
+            minViews,
+            sortDirection,
+            sortField,
+
+        ],
     );
 
     const resetPage = useCallback(() => {
@@ -487,7 +576,14 @@ export const AvitoAdsPage: React.FC = () => {
         setHasAvitoId("");
         setHasErrors("");
         setAddressFilter("");
-        setDateEndOrdering(DEFAULT_DATE_END_ORDERING);
+        setMinViews(null);
+        setMinContacts(null);
+        setSortField(DEFAULT_SORT_FIELD);
+        setSortDirection(DEFAULT_SORT_DIRECTION);
+        setStatsPeriod([
+            DEFAULT_STATS_DATE_FROM,
+            DEFAULT_STATS_DATE_TO,
+        ]);
         resetPage();
     }, [resetPage]);
 
@@ -642,9 +738,25 @@ export const AvitoAdsPage: React.FC = () => {
             has_errors: hasErrors,
             search: search.trim(),
             address: addressFilter.trim(),
-            ordering: dateEndOrdering,
+            stats_date_from: statsDateFrom,
+            stats_date_to: statsDateTo,
+            min_views: minViews ?? undefined,
+            min_contacts: minContacts ?? undefined,
+            ordering,
         }),
-        [addressFilter, dateEndOrdering, entityType, hasAvitoId, hasErrors, page, search],
+        [
+            addressFilter,
+            entityType,
+            hasAvitoId,
+            hasErrors,
+            minContacts,
+            minViews,
+            ordering,
+            page,
+            search,
+            statsDateFrom,
+            statsDateTo,
+        ],
     );
 
     const adsQuery = useAvitoAccountAdsQuery(avitoAccountId, queryParams);
@@ -665,11 +777,8 @@ export const AvitoAdsPage: React.FC = () => {
         });
     };
 
-    const renderStatsValue = useCallback(
-        (
-            item: AvitoAccountAd,
-            metric: "views" | "contacts",
-        ) => {
+    const renderStats = useCallback(
+        (item: AvitoAccountAd) => {
             const stats = item.stats;
 
             if (!stats || stats.status === "processing") {
@@ -680,10 +789,6 @@ export const AvitoAdsPage: React.FC = () => {
                 );
             }
 
-            if (stats.status === "ready") {
-                return <Text>{stats[metric] ?? 0}</Text>;
-            }
-
             if (stats.status === "error") {
                 return (
                     <Tooltip title={statsSync?.error || "Ошибка загрузки"}>
@@ -692,7 +797,104 @@ export const AvitoAdsPage: React.FC = () => {
                 );
             }
 
-            return <Text type="secondary">—</Text>;
+            if (stats.status === "unavailable") {
+                return <Text type="secondary">—</Text>;
+            }
+
+            const views = stats.views ?? 0;
+            const contacts = stats.contacts ?? 0;
+            const favorites = stats.favorites ?? 0;
+            const totalSpend = (
+                stats.total_spend === null
+                    ? "—"
+                    : `${stats.total_spend} ₽`
+            );
+            const conversion = (
+                stats.views_to_contacts_conversion === null
+                    ? "—"
+                    : `${stats.views_to_contacts_conversion}%`
+            );
+
+            return (
+                <div
+                    style={{
+                        display: "flex",
+                        flexDirection: "row",
+                        gap: "8px 14px",
+                    }}
+                >
+                    <Tooltip title="Просмотры">
+                    <span
+                        aria-label={`Просмотры: ${views}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                        }}
+                    >
+                        <EyeOutlined style={{color: "#1677ff"}}/>
+                        <Text>{views}</Text>
+                    </span>
+                    </Tooltip>
+
+                    <Tooltip title="Контакты">
+                    <span
+                        aria-label={`Контакты: ${contacts}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                        }}
+                    >
+                        <UserOutlined style={{color: "#52c41a"}}/>
+                        <Text>{contacts}</Text>
+                    </span>
+                    </Tooltip>
+
+                    <Tooltip title="Добавления в избранное">
+                    <span
+                        aria-label={`Добавления в избранное: ${favorites}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                        }}
+                    >
+                        <HeartOutlined style={{color: "#ff4d4f"}}/>
+                        <Text>{favorites}</Text>
+                    </span>
+                    </Tooltip>
+
+                    <Tooltip title="Все расходы, включая деньги и бонусы">
+                    <span
+                        aria-label={`Расходы: ${totalSpend}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                        }}
+                    >
+                        <WalletOutlined style={{color: "#fa8c16"}}/>
+                        <Text>{totalSpend}</Text>
+                    </span>
+                    </Tooltip>
+
+                    <Tooltip title="Конверсия просмотра в контакт">
+                    <span
+                        aria-label={`Конверсия: ${conversion}`}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            marginLeft: "10px",
+                            fontWeight: "bold"
+                        }}
+                    >
+                        <Text>{conversion}</Text>
+                    </span>
+                    </Tooltip>
+                </div>
+            );
         },
         [statsSync?.error],
     );
@@ -1058,16 +1260,10 @@ export const AvitoAdsPage: React.FC = () => {
             },
         },
         {
-            title: "Просмотры",
-            key: "stats_views",
-            width: 130,
-            render: (_, item) => renderStatsValue(item, "views"),
-        },
-        {
-            title: "Контакты",
-            key: "stats_contacts",
-            width: 130,
-            render: (_, item) => renderStatsValue(item, "contacts"),
+            title: "Статистика",
+            key: "stats",
+            width: 220,
+            render: (_, item) => renderStats(item),
         },
         {
             title: "Тип",
@@ -1177,7 +1373,7 @@ export const AvitoAdsPage: React.FC = () => {
         },
     ], [
         getEditAction,
-        renderStatsValue,
+        renderStats,
     ]);
 
     if (!currentWorkspace) {
@@ -1313,6 +1509,21 @@ export const AvitoAdsPage: React.FC = () => {
                 }}
             >
 
+                <Select
+                    style={{width: 220}}
+                    placeholder="Avito-аккаунт"
+                    loading={projectsQuery.isLoading}
+                    value={avitoAccountId ?? undefined}
+                    options={(projectsQuery.data ?? []).map((account) => ({
+                        label: account.name,
+                        value: account.id,
+                    }))}
+                    onChange={(value) => {
+                        setAvitoAccountId(value);
+                        resetPage();
+                    }}
+                />
+
                 <Input
                     allowClear
                     prefix={<SearchOutlined/>}
@@ -1325,17 +1536,34 @@ export const AvitoAdsPage: React.FC = () => {
                     }}
                 />
 
-                <Select
-                    style={{width: 220}}
-                    placeholder="Avito-аккаунт"
-                    loading={projectsQuery.isLoading}
-                    value={avitoAccountId ?? undefined}
-                    options={(projectsQuery.data ?? []).map((account) => ({
-                        label: account.name,
-                        value: account.id,
-                    }))}
-                    onChange={(value) => {
-                        setAvitoAccountId(value);
+                <RangePicker
+                    allowClear={false}
+                    value={statsPeriod}
+                    format="DD.MM.YYYY"
+                    separator="—"
+                    placeholder={[
+                        "Период от",
+                        "Период до",
+                    ]}
+                    style={{width: 260}}
+                    disabledDate={(current) => (
+                        current.isAfter(
+                            DEFAULT_STATS_DATE_TO,
+                            "day",
+                        )
+                    )}
+                    onChange={(dates) => {
+                        const dateFrom = dates?.[0];
+                        const dateTo = dates?.[1];
+
+                        if (!dateFrom || !dateTo) {
+                            return;
+                        }
+
+                        setStatsPeriod([
+                            dateFrom.startOf("day"),
+                            dateTo.startOf("day"),
+                        ]);
                         resetPage();
                     }}
                 />
@@ -1699,24 +1927,134 @@ export const AvitoAdsPage: React.FC = () => {
                         }}
                     />
 
-                    <Select
+                    <Space
+                        orientation="vertical"
+                        size={4}
                         style={{width: "100%"}}
-                        value={dateEndOrdering}
-                        options={[
-                            {
-                                label: "Окончание: сначала поздние",
-                                value: "-date_end",
-                            },
-                            {
-                                label: "Окончание: сначала ранние",
-                                value: "date_end",
-                            },
-                        ]}
-                        onChange={(value) => {
-                            setDateEndOrdering(value);
-                            resetPage();
-                        }}
-                    />
+                    >
+                        <Text strong>
+                            Сортировка
+                        </Text>
+
+                        <Row gutter={8}>
+                            <Col span={12}>
+                                <Select<AvitoAdsSortField>
+                                    value={sortField}
+                                    style={{width: "100%"}}
+                                    options={[
+                                        {
+                                            label: "Дата окончания",
+                                            value: "date_end",
+                                        },
+                                        {
+                                            label: "Просмотры",
+                                            value: "views",
+                                        },
+                                        {
+                                            label: "Контакты",
+                                            value: "contacts",
+                                        },
+                                        {
+                                            label: "Конверсия",
+                                            value: "views_to_contacts_conversion",
+                                        },
+                                    ]}
+                                    onChange={(value) => {
+                                        setSortField(value);
+                                        resetPage();
+                                    }}
+                                />
+                            </Col>
+
+                            <Col span={12}>
+
+                                <Select<SortDirection>
+                                    value={sortDirection}
+                                    style={{width: "100%"}}
+                                    options={[
+                                        {
+                                            label: "По возрастанию",
+                                            value: "asc",
+                                        },
+                                        {
+                                            label: "По убыванию",
+                                            value: "desc",
+                                        },
+                                    ]}
+                                    onChange={(value) => {
+                                        setSortDirection(value);
+                                        resetPage();
+                                    }}
+                                />
+                            </Col>
+                        </Row>
+
+                    </Space>
+
+                    <Space
+                        orientation="vertical"
+                        size={8}
+                        style={{width: "100%"}}
+                    >
+                        <Text strong>
+                            Статистика
+                        </Text>
+
+                        <Row gutter={8}>
+                            <Col span={12}>
+                                <Space
+                                    orientation="vertical"
+                                    size={4}
+                                    style={{width: "100%"}}
+                                >
+                                    <Text type="secondary">
+                                        Минимум просмотров
+                                    </Text>
+
+                                    <InputNumber<number>
+                                        min={0}
+                                        precision={0}
+                                        controls={false}
+                                        addonBefore="≥"
+                                        placeholder="0"
+                                        value={minViews}
+                                        style={{width: "100%"}}
+                                        onChange={(value) => {
+                                            setMinViews(value);
+                                            resetPage();
+                                        }}
+                                    />
+                                </Space>
+                            </Col>
+
+                            <Col span={12}>
+                                <Space
+                                    orientation="vertical"
+                                    size={4}
+                                    style={{width: "100%"}}
+                                >
+                                    <Text type="secondary">
+                                        Минимум контактов
+                                    </Text>
+
+                                    <InputNumber<number>
+                                        min={0}
+                                        precision={0}
+                                        controls={false}
+                                        addonBefore="≥"
+                                        placeholder="0"
+                                        value={minContacts}
+                                        style={{width: "100%"}}
+                                        onChange={(value) => {
+                                            setMinContacts(value);
+                                            resetPage();
+                                        }}
+                                    />
+                                </Space>
+                            </Col>
+                        </Row>
+
+                    </Space>
 
                     <Input
                         allowClear

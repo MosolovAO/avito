@@ -1,6 +1,7 @@
 import logging
+import uuid
 from datetime import timedelta
-
+import requests
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
@@ -15,6 +16,14 @@ from analytics.services.avito_stats import (
     resolve_stats_sync_range,
 )
 from avitotask.models import AvitoAccount
+from avitotask.services.avito_api import (
+    AvitoApiError,
+    AvitoConfigurationError,
+)
+
+AVITO_STATS_TASK_MAX_RETRIES = 3
+AVITO_STATS_TASK_RETRY_BASE_SECONDS = 60
+AVITO_STATS_TASK_RETRY_MAX_SECONDS = 15 * 60
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +66,11 @@ def enqueue_avito_stats_sync(
                 "date_to": resolved_to,
             }
 
+        run_id = uuid.uuid4()
+
         sync_state.status = AvitoStatsSyncState.Status.QUEUED
+        sync_state.run_id = run_id
+        sync_state.heartbeat_at = None
         sync_state.requested_date_from = resolved_from
         sync_state.requested_date_to = resolved_to
         sync_state.requested_at = now
@@ -67,6 +80,8 @@ def enqueue_avito_stats_sync(
         sync_state.save(
             update_fields=[
                 "status",
+                "run_id",
+                "heartbeat_at",
                 "requested_date_from",
                 "requested_date_to",
                 "requested_at",
@@ -83,11 +98,13 @@ def enqueue_avito_stats_sync(
             resolved_from.isoformat(),
             resolved_to.isoformat(),
             listing_ids,
+            str(run_id),
         )
     except Exception as exc:
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
         )
         raise
 
@@ -129,7 +146,11 @@ def enqueue_avito_profile_daily_sync(
                 "date_to": stat_date,
             }
 
+        run_id = uuid.uuid4()
+
         sync_state.status = AvitoStatsSyncState.Status.QUEUED
+        sync_state.run_id = run_id
+        sync_state.heartbeat_at = None
         sync_state.requested_date_from = stat_date
         sync_state.requested_date_to = stat_date
         sync_state.requested_at = now
@@ -139,6 +160,8 @@ def enqueue_avito_profile_daily_sync(
         sync_state.save(
             update_fields=[
                 "status",
+                "run_id",
+                "heartbeat_at",
                 "requested_date_from",
                 "requested_date_to",
                 "requested_at",
@@ -154,13 +177,17 @@ def enqueue_avito_profile_daily_sync(
             import_avito_account_profile_daily_stats_task.delay(
                 avito_account.id,
                 stat_date.isoformat(),
+                str(run_id),
             )
         )
+
     except Exception as exc:
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
         )
+
         raise
 
     return {
@@ -208,7 +235,11 @@ def enqueue_avito_stats_backfill(
                 "date_to": target_date,
             }
 
+        run_id = uuid.uuid4()
+
         sync_state.status = AvitoStatsSyncState.Status.QUEUED
+        sync_state.run_id = run_id
+        sync_state.heartbeat_at = None
         sync_state.requested_date_from = target_date
         sync_state.requested_date_to = target_date
         sync_state.requested_at = now
@@ -218,6 +249,8 @@ def enqueue_avito_stats_backfill(
         sync_state.save(
             update_fields=[
                 "status",
+                "run_id",
+                "heartbeat_at",
                 "requested_date_from",
                 "requested_date_to",
                 "requested_at",
@@ -233,12 +266,14 @@ def enqueue_avito_stats_backfill(
             backfill_missing_avito_listing_stats_task.delay(
                 avito_account.id,
                 target_date.isoformat(),
+                str(run_id),
             )
         )
     except Exception as exc:
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
         )
         raise
 
@@ -251,12 +286,17 @@ def enqueue_avito_stats_backfill(
     }
 
 
-@shared_task
+@shared_task(
+    bind=True,
+    max_retries=AVITO_STATS_TASK_MAX_RETRIES,
+)
 def import_avito_account_daily_stats_task(
+        self,
         avito_account_id,
         date_from,
         date_to,
         listing_ids=None,
+        run_id=None,
 ):
     avito_account = (
         AvitoAccount.objects
@@ -264,27 +304,61 @@ def import_avito_account_daily_stats_task(
         .get(id=avito_account_id)
     )
 
-    if not claim_sync(avito_account):
+    if not claim_sync(
+            avito_account,
+            run_id=run_id,
+    ):
         return {
             "status": "skipped",
             "reason": "already_running",
             "avito_account_id": avito_account.id,
         }
 
-    date_from = normalize_date(date_from)
-    date_to = normalize_date(date_to)
-
     try:
+        date_from = normalize_date(date_from)
+        date_to = normalize_date(date_to)
+
         result = import_avito_listing_daily_stats_for_account(
             avito_account=avito_account,
             date_from=date_from,
             date_to=date_to,
             listing_ids=listing_ids,
+            progress_callback=lambda: touch_sync_heartbeat(
+                avito_account_id=avito_account.id,
+                run_id=run_id,
+            ),
         )
-    except Exception as exc:
+    except AvitoApiError as exc:
+        retry_pending = (
+                is_transient_avito_error(exc)
+                and self.request.retries < self.max_retries
+                and mark_sync_retry_pending(avito_account_id=avito_account.id, error=str(exc), run_id=run_id, )
+        )
+
+        if retry_pending:
+            countdown = get_sync_retry_countdown(self)
+
+            logger.warning(
+                (
+                    "Retrying Avito stats import "
+                    "for account_id=%s run_id=%s "
+                    "attempt=%s countdown=%s"
+                ),
+                avito_account.id,
+                run_id,
+                self.request.retries + 1,
+                countdown,
+            )
+
+            raise self.retry(
+                exc=exc,
+                countdown=countdown,
+            )
+
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
         )
         logger.exception(
             "Avito stats import failed for account_id=%s",
@@ -292,12 +366,38 @@ def import_avito_account_daily_stats_task(
         )
         raise
 
-    mark_sync_success(
+    except Exception as exc:
+        mark_sync_error(
+            avito_account_id=avito_account.id,
+            error=str(exc),
+            run_id=run_id,
+        )
+        logger.exception(
+            "Avito stats import failed for account_id=%s",
+            avito_account.id,
+        )
+        raise
+
+    success_marked = mark_sync_success(
         avito_account_id=avito_account.id,
         date_from=date_from,
         date_to=date_to,
+        run_id=run_id,
     )
 
+    if not success_marked:
+        logger.info(
+            (
+                "Skipped completion of superseded Avito stats "
+                "run for account_id=%s run_id=%s"
+            ),
+            avito_account.id,
+            run_id,
+        )
+        return {
+            "status": "superseded",
+            "avito_account_id": avito_account.id,
+        }
     logger.info(
         (
             "Imported Avito daily stats for account_id=%s: "
@@ -322,10 +422,15 @@ def import_avito_account_daily_stats_task(
     }
 
 
-@shared_task
+@shared_task(
+    bind=True,
+    max_retries=AVITO_STATS_TASK_MAX_RETRIES,
+)
 def import_avito_account_profile_daily_stats_task(
+        self,
         avito_account_id,
         stat_date,
+        run_id=None,
 ):
     avito_account = (
         AvitoAccount.objects
@@ -333,47 +438,71 @@ def import_avito_account_profile_daily_stats_task(
         .get(id=avito_account_id)
     )
 
-    if not claim_sync(avito_account):
+    if not claim_sync(
+            avito_account,
+            run_id=run_id,
+    ):
         return {
             "status": "skipped",
             "reason": "already_running",
             "avito_account_id": avito_account.id,
         }
 
-    stat_date = normalize_date(stat_date)
-
-    sync_state = (
-        AvitoStatsSyncState.objects
-        .only("coverage_to")
-        .get(avito_account=avito_account)
-    )
-
-    if (
-            sync_state.coverage_to is None
-            or sync_state.coverage_to >= stat_date
-    ):
-        dates_to_import = [stat_date]
-    else:
-        missing_days = (
-                stat_date - sync_state.coverage_to
-        ).days
-
-        dates_to_import = [
-            sync_state.coverage_to + timedelta(days=offset)
-            for offset in range(1, missing_days + 1)
-        ]
-
-    total_received = 0
-    matched_listings = 0
-    created_stats = 0
-    updated_stats = 0
-    deleted_zero_stats = 0
-    confirmed_listings = 0
-
-    current_date = dates_to_import[0]
+    current_date = stat_date
 
     try:
+        stat_date = normalize_date(stat_date)
+        current_date = stat_date
+
+        sync_state = (
+            AvitoStatsSyncState.objects
+            .only("coverage_to")
+            .get(avito_account=avito_account)
+        )
+
+        if (
+                sync_state.coverage_to is None
+                or sync_state.coverage_to >= stat_date
+        ):
+            dates_to_import = [stat_date]
+        else:
+            missing_days = (
+                    stat_date - sync_state.coverage_to
+            ).days
+
+            dates_to_import = [
+                sync_state.coverage_to + timedelta(days=offset)
+                for offset in range(1, missing_days + 1)
+            ]
+
+        total_received = 0
+        matched_listings = 0
+        created_stats = 0
+        updated_stats = 0
+        deleted_zero_stats = 0
+        confirmed_listings = 0
+
         for current_date in dates_to_import:
+            heartbeat_updated = touch_sync_heartbeat(
+                avito_account_id=avito_account.id,
+                run_id=run_id,
+            )
+
+            if not heartbeat_updated:
+                logger.info(
+                    (
+                        "Stopped superseded Avito profile stats "
+                        "run before date=%s account_id=%s run_id=%s"
+                    ),
+                    current_date,
+                    avito_account.id,
+                    run_id,
+                )
+                return {
+                    "status": "superseded",
+                    "avito_account_id": avito_account.id,
+                }
+
             result = import_avito_profile_daily_stats_for_account(
                 avito_account=avito_account,
                 stat_date=current_date,
@@ -386,10 +515,51 @@ def import_avito_account_profile_daily_stats_task(
             deleted_zero_stats += result.deleted_zero_stats
             confirmed_listings += result.confirmed_listings
 
+    except AvitoApiError as exc:
+        retry_pending = (
+                is_transient_avito_error(exc)
+                and self.request.retries < self.max_retries
+                and mark_sync_retry_pending(avito_account_id=avito_account.id, error=str(exc), run_id=run_id, )
+
+        )
+        if retry_pending:
+            countdown = get_sync_retry_countdown(self)
+            logger.warning(
+                (
+                    "Retrying Avito profile daily stats "
+                    "for account_id=%s date=%s run_id=%s "
+                    "attempt=%s countdown=%s"
+                ),
+                avito_account.id,
+                current_date,
+                run_id,
+                self.request.retries + 1,
+                countdown,
+            )
+            raise self.retry(
+                exc=exc,
+                countdown=countdown,
+            )
+        mark_sync_error(
+            avito_account_id=avito_account.id,
+            error=str(exc),
+            run_id=run_id,
+        )
+        logger.exception(
+            (
+                "Avito profile daily stats import failed "
+                "for account_id=%s date=%s"
+            ),
+            avito_account.id,
+            current_date,
+        )
+        raise
     except Exception as exc:
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
+
         )
         logger.exception(
             (
@@ -401,11 +571,26 @@ def import_avito_account_profile_daily_stats_task(
         )
         raise
 
-    mark_sync_success(
+    success_marked = mark_sync_success(
         avito_account_id=avito_account.id,
         date_from=dates_to_import[0],
         date_to=stat_date,
+        run_id=run_id,
     )
+
+    if not success_marked:
+        logger.info(
+            (
+                "Skipped completion of superseded Avito profile "
+                "stats run for account_id=%s run_id=%s"
+            ),
+            avito_account.id,
+            run_id,
+        )
+        return {
+            "status": "superseded",
+            "avito_account_id": avito_account.id,
+        }
 
     logger.info(
         (
@@ -445,10 +630,15 @@ def import_avito_account_profile_daily_stats_task(
     }
 
 
-@shared_task
+@shared_task(
+    bind=True,
+    max_retries=AVITO_STATS_TASK_MAX_RETRIES,
+)
 def backfill_missing_avito_listing_stats_task(
+        self,
         avito_account_id,
         target_date,
+        run_id=None,
 ):
     """
     Заполняет недостающую историю через stats/v1.
@@ -463,16 +653,19 @@ def backfill_missing_avito_listing_stats_task(
         .get(id=avito_account_id)
     )
 
-    if not claim_sync(avito_account):
+    if not claim_sync(
+            avito_account,
+            run_id=run_id,
+    ):
         return {
             "status": "skipped",
             "reason": "already_running",
             "avito_account_id": avito_account.id,
         }
 
-    target_date = normalize_date(target_date)
-
     try:
+        target_date = normalize_date(target_date)
+
         plan = build_avito_stats_backfill_plan(
             avito_account=avito_account,
             target_date=target_date,
@@ -485,11 +678,36 @@ def backfill_missing_avito_listing_stats_task(
         unchanged_stats = 0
 
         for request in plan:
+            heartbeat_updated = touch_sync_heartbeat(
+                avito_account_id=avito_account.id,
+                run_id=run_id,
+            )
+
+            if not heartbeat_updated:
+                logger.info(
+                    (
+                        "Stopped superseded Avito stats backfill "
+                        "before range=%s..%s account_id=%s run_id=%s"
+                    ),
+                    request.date_from,
+                    request.date_to,
+                    avito_account.id,
+                    run_id,
+                )
+                return {
+                    "status": "superseded",
+                    "avito_account_id": avito_account.id,
+                }
+
             result = import_avito_listing_daily_stats_for_account(
                 avito_account=avito_account,
                 date_from=request.date_from,
                 date_to=request.date_to,
                 listing_ids=list(request.listing_ids),
+                progress_callback=lambda: touch_sync_heartbeat(
+                    avito_account_id=avito_account.id,
+                    run_id=run_id,
+                ),
             )
 
             total_listings += result.total_listings
@@ -498,11 +716,60 @@ def backfill_missing_avito_listing_stats_task(
             updated_stats += result.updated_stats
             unchanged_stats += result.unchanged_stats
 
+    except AvitoApiError as exc:
+        retry_pending = (
+                is_transient_avito_error(exc)
+                and self.request.retries < self.max_retries
+                and mark_sync_retry_pending(avito_account_id=avito_account.id, error=str(exc), run_id=run_id, )
+
+        )
+
+        if retry_pending:
+            countdown = get_sync_retry_countdown(self)
+
+            logger.warning(
+
+                (
+                    "Retrying Avito stats backfill "
+                    "for account_id=%s target_date=%s run_id=%s "
+                    "attempt=%s countdown=%s"
+                ),
+
+                avito_account.id,
+                target_date,
+                run_id,
+                self.request.retries + 1,
+                countdown,
+            )
+
+            raise self.retry(
+                exc=exc,
+                countdown=countdown,
+            )
+
+        mark_sync_error(
+            avito_account_id=avito_account.id,
+            error=str(exc),
+            run_id=run_id,
+        )
+
+        logger.exception(
+            (
+                "Avito stats backfill failed "
+                "for account_id=%s target_date=%s"
+            ),
+            avito_account.id,
+            target_date,
+        )
+        raise
+
     except Exception as exc:
         mark_sync_error(
             avito_account_id=avito_account.id,
             error=str(exc),
+            run_id=run_id,
         )
+
         logger.exception(
             (
                 "Avito stats backfill failed "
@@ -521,11 +788,26 @@ def backfill_missing_avito_listing_stats_task(
         default=target_date,
     )
 
-    mark_sync_success(
+    success_marked = mark_sync_success(
         avito_account_id=avito_account.id,
         date_from=coverage_from,
         date_to=target_date,
+        run_id=run_id,
     )
+
+    if not success_marked:
+        logger.info(
+            (
+                "Skipped completion of superseded Avito stats "
+                "backfill for account_id=%s run_id=%s"
+            ),
+            avito_account.id,
+            run_id,
+        )
+        return {
+            "status": "superseded",
+            "avito_account_id": avito_account.id,
+        }
 
     logger.info(
         (
@@ -594,8 +876,84 @@ def enqueue_daily_avito_stats_syncs_task():
     }
 
 
-def claim_sync(avito_account):
+def is_transient_avito_error(exc):
+    if isinstance(exc, AvitoConfigurationError):
+        return False
+
+    status_code = exc.status_code
+
+    if status_code == 429:
+        return True
+
+    if (
+            isinstance(status_code, int)
+            and status_code >= 500
+    ):
+        return True
+
+    return isinstance(
+        exc.__cause__,
+        requests.RequestException,
+    )
+
+
+def get_sync_retry_countdown(task):
+    countdown = (
+            AVITO_STATS_TASK_RETRY_BASE_SECONDS
+            * (2 ** task.request.retries)
+    )
+
+    return min(
+        countdown,
+        AVITO_STATS_TASK_RETRY_MAX_SECONDS,
+    )
+
+
+def mark_sync_retry_pending(
+        *,
+        avito_account_id,
+        error,
+        run_id=None,
+):
+    try:
+        requested_run_id = (
+            uuid.UUID(str(run_id))
+            if run_id is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
     now = timezone.now()
+
+    updated_count = AvitoStatsSyncState.objects.filter(
+        avito_account_id=avito_account_id,
+        run_id=requested_run_id,
+        status=AvitoStatsSyncState.Status.RUNNING,
+    ).update(
+        status=AvitoStatsSyncState.Status.QUEUED,
+        requested_at=now,
+        started_at=None,
+        heartbeat_at=None,
+        finished_at=None,
+        error=error,
+        updated_at=now,
+    )
+
+    return updated_count == 1
+
+
+def claim_sync(avito_account, run_id=None):
+    now = timezone.now()
+
+    try:
+        requested_run_id = (
+            uuid.UUID(str(run_id))
+            if run_id is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
 
     with transaction.atomic():
         AvitoStatsSyncState.objects.get_or_create(
@@ -609,20 +967,22 @@ def claim_sync(avito_account):
             .get(avito_account=avito_account)
         )
 
-        if (
-                sync_state.status == AvitoStatsSyncState.Status.RUNNING
-                and is_active_sync(sync_state, now=now)
-        ):
+        if sync_state.run_id != requested_run_id:
+            return False
+
+        if sync_state.status != AvitoStatsSyncState.Status.QUEUED:
             return False
 
         sync_state.status = AvitoStatsSyncState.Status.RUNNING
         sync_state.started_at = now
+        sync_state.heartbeat_at = now
         sync_state.finished_at = None
         sync_state.error = ""
         sync_state.save(
             update_fields=[
                 "status",
                 "started_at",
+                "heartbeat_at",
                 "finished_at",
                 "error",
                 "updated_at",
@@ -632,8 +992,51 @@ def claim_sync(avito_account):
     return True
 
 
-def mark_sync_success(*, avito_account_id, date_from, date_to):
+def touch_sync_heartbeat(
+        *,
+        avito_account_id,
+        run_id,
+):
+    try:
+        requested_run_id = (
+            uuid.UUID(str(run_id))
+            if run_id is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
     now = timezone.now()
+
+    updated_count = AvitoStatsSyncState.objects.filter(
+        avito_account_id=avito_account_id,
+        run_id=requested_run_id,
+        status=AvitoStatsSyncState.Status.RUNNING,
+    ).update(
+        heartbeat_at=now,
+        updated_at=now,
+    )
+
+    return updated_count == 1
+
+
+def mark_sync_success(
+        *,
+        avito_account_id,
+        date_from,
+        date_to,
+        run_id=None,
+):
+    now = timezone.now()
+
+    try:
+        requested_run_id = (
+            uuid.UUID(str(run_id))
+            if run_id is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
 
     with transaction.atomic():
         sync_state = (
@@ -641,6 +1044,9 @@ def mark_sync_success(*, avito_account_id, date_from, date_to):
             .select_for_update()
             .get(avito_account_id=avito_account_id)
         )
+
+        if sync_state.run_id != requested_run_id:
+            return False
 
         sync_state.status = AvitoStatsSyncState.Status.SUCCESS
         sync_state.coverage_from = min_not_none(
@@ -666,16 +1072,37 @@ def mark_sync_success(*, avito_account_id, date_from, date_to):
             ]
         )
 
+    return True
 
-def mark_sync_error(*, avito_account_id, error):
-    AvitoStatsSyncState.objects.filter(
+
+def mark_sync_error(
+        *,
+        avito_account_id,
+        error,
+        run_id=None,
+):
+    try:
+        requested_run_id = (
+            uuid.UUID(str(run_id))
+            if run_id is not None
+            else None
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+    now = timezone.now()
+
+    updated_count = AvitoStatsSyncState.objects.filter(
         avito_account_id=avito_account_id,
+        run_id=requested_run_id,
     ).update(
         status=AvitoStatsSyncState.Status.ERROR,
-        finished_at=timezone.now(),
+        finished_at=now,
         error=error,
-        updated_at=timezone.now(),
+        updated_at=now,
     )
+
+    return updated_count == 1
 
 
 def is_active_sync(sync_state, *, now):
@@ -686,7 +1113,10 @@ def is_active_sync(sync_state, *, now):
         return False
 
     if sync_state.status == AvitoStatsSyncState.Status.RUNNING:
-        anchor = sync_state.started_at
+        anchor = (
+                sync_state.heartbeat_at
+                or sync_state.started_at
+        )
     else:
         anchor = sync_state.requested_at
 

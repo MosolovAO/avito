@@ -1,3 +1,4 @@
+from datetime import timedelta
 from http import HTTPStatus
 
 from rest_framework import serializers, status
@@ -457,8 +458,34 @@ class AvitoAccountAdsListSerializer(serializers.Serializer):
         allow_blank=True,
         default="",
     )
+    stats_date_from = serializers.DateField(
+        required=False,
+    )
+    stats_date_to = serializers.DateField(
+        required=False,
+    )
+    min_views = serializers.IntegerField(
+        required=False,
+        min_value=0,
+        default=None,
+    )
+    min_contacts = serializers.IntegerField(
+        required=False,
+        min_value=0,
+        default=None,
+    )
     ordering = serializers.ChoiceField(
-        choices=["", "date_end", "-date_end"],
+        choices=[
+            "",
+            "date_end",
+            "-date_end",
+            "views",
+            "-views",
+            "contacts",
+            "-contacts",
+            "views_to_contacts_conversion",
+            "-views_to_contacts_conversion",
+        ],
         required=False,
         allow_blank=True,
         default="-date_end",
@@ -474,6 +501,63 @@ class AvitoAccountAdsListSerializer(serializers.Serializer):
         max_value=100,
         default=50,
     )
+
+    def validate(self, attrs):
+        has_date_from = "stats_date_from" in attrs
+        has_date_to = "stats_date_to" in attrs
+
+        if has_date_from != has_date_to:
+            raise serializers.ValidationError({
+                "stats_date_to": (
+                    "Начало и окончание периода должны быть переданы вместе."
+                ),
+            })
+
+        last_completed_date = (
+                timezone.localdate()
+                - timedelta(days=1)
+        )
+        history_days = int(settings.AVITO_STATS_HISTORY_DAYS)
+        earliest_available_date = (
+                last_completed_date
+                - timedelta(days=history_days - 1)
+        )
+
+        if not has_date_from:
+            attrs["stats_date_to"] = last_completed_date
+            attrs["stats_date_from"] = (
+                    last_completed_date
+                    - timedelta(days=29)
+            )
+            return attrs
+
+        stats_date_from = attrs["stats_date_from"]
+        stats_date_to = attrs["stats_date_to"]
+
+        if stats_date_from > stats_date_to:
+            raise serializers.ValidationError({
+                "stats_date_to": (
+                    "Окончание периода не может быть раньше начала."
+                ),
+            })
+
+        if stats_date_to > last_completed_date:
+            raise serializers.ValidationError({
+                "stats_date_to": (
+                    "Статистика доступна только по завершённым дням."
+                ),
+            })
+
+        if stats_date_from < earliest_available_date:
+            raise serializers.ValidationError({
+                "stats_date_from": (
+                    f"Можно выбрать только последние {history_days} "
+                    "завершённых дней. Самая ранняя доступная дата: "
+                    f"{earliest_available_date.isoformat()}."
+                ),
+            })
+
+        return attrs
 
 
 class AvitoAccountLinkPublicationsSerializer(serializers.Serializer):
@@ -804,6 +888,10 @@ class AvitoAccountAdsListView(APIView):
             has_errors=serializer.validated_data["has_errors"],
             search=serializer.validated_data["search"].strip(),
             address=serializer.validated_data["address"].strip(),
+            stats_date_from=serializer.validated_data["stats_date_from"],
+            stats_date_to=serializer.validated_data["stats_date_to"],
+            min_views=serializer.validated_data["min_views"],
+            min_contacts=serializer.validated_data["min_contacts"],
             ordering=serializer.validated_data["ordering"],
         )
 

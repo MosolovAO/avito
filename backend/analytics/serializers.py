@@ -1,4 +1,9 @@
+from datetime import timedelta
+from django.utils import timezone
 from rest_framework import serializers
+
+AVITO_STATS_SYNC_MAX_PERIOD_DAYS = 270
+AVITO_LISTING_STATS_MAX_PERIOD_DAYS = 270
 
 
 class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
@@ -21,14 +26,35 @@ class AvitoAccountImportDailyStatsSerializer(serializers.Serializer):
                 )
             })
 
-        if (
-            date_from is not None
-            and date_to is not None
-            and date_from > date_to
-        ):
+        if date_from is None:
+            return attrs
+
+        if date_from > date_to:
             raise serializers.ValidationError({
                 "date_to": (
                     "date_to должен быть больше или равен date_from."
+                )
+            })
+
+        last_completed_date = (
+                timezone.localdate() - timedelta(days=1)
+        )
+
+        if date_to > last_completed_date:
+            raise serializers.ValidationError({
+                "date_to": (
+                    "Можно синхронизировать только полностью "
+                    "завершённые дни."
+                )
+            })
+
+        period_days = (date_to - date_from).days + 1
+
+        if period_days > AVITO_STATS_SYNC_MAX_PERIOD_DAYS:
+            raise serializers.ValidationError({
+                "date_from": (
+                    "Период синхронизации не может превышать "
+                    f"{AVITO_STATS_SYNC_MAX_PERIOD_DAYS} дней."
                 )
             })
 
@@ -42,12 +68,48 @@ class AvitoListingStatsQuerySerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
     )
+    page = serializers.IntegerField(
+        required=False,
+        default=1,
+        min_value=1,
+    )
+    page_size = serializers.IntegerField(
+        required=False,
+        default=50,
+        min_value=1,
+        max_value=50,
+    )
 
     def validate(self, attrs):
-        if attrs["date_from"] > attrs["date_to"]:
+        date_from = attrs["date_from"]
+        date_to = attrs["date_to"]
+
+        if date_from > date_to:
             raise serializers.ValidationError({
                 "date_to": (
                     "date_to должен быть больше или равен date_from."
+                )
+            })
+
+        last_completed_date = (
+                timezone.localdate() - timedelta(days=1)
+        )
+
+        if date_to > last_completed_date:
+            raise serializers.ValidationError({
+                "date_to": (
+                    "Можно запрашивать только полностью "
+                    "завершённые дни."
+                )
+            })
+
+        period_days = (date_to - date_from).days + 1
+
+        if period_days > AVITO_LISTING_STATS_MAX_PERIOD_DAYS:
+            raise serializers.ValidationError({
+                "date_from": (
+                    "Период отчёта не может превышать "
+                    f"{AVITO_LISTING_STATS_MAX_PERIOD_DAYS} дней."
                 )
             })
 
