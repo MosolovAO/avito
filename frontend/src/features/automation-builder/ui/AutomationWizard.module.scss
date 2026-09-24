@@ -1,0 +1,61 @@
+/* /Users/artem/Desktop/avito/frontend/src/features/automation-builder/ui/AutomationWizard.module.scss */
+
+.form {
+    width: 100%;
+}
+
+.shell {
+    display: grid;
+    gap: 24px;
+    width: 100%;
+}
+
+.pageHeader {
+    display: grid;
+    gap: 4px;
+}
+
+.pageTitle {
+    margin: 0 !important;
+    letter-spacing: -0.02em;
+}
+
+.pageDescription {
+    font-size: 16px;
+}
+
+.steps {
+    padding: 0 0 4px;
+}
+
+.content {
+    min-width: 0;
+}
+
+.footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 0;
+    border-top: 1px solid #d9e2ef;
+}
+
+.primaryAction {
+    min-width: 208px;
+}
+
+@media (max-width: 640px) {
+    .steps {
+        overflow-x: auto;
+    }
+
+    .footer {
+        align-items: stretch;
+        flex-direction: column-reverse;
+    }
+
+    .primaryAction {
+        width: 100%;
+    }
+}

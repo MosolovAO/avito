@@ -1,0 +1,96 @@
+.editor {
+    display: grid;
+    gap: 16px;
+    width: 100%;
+}
+
+.meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.conditionCount {
+    color: #1f1f1f;
+    font-weight: 600;
+}
+
+.metaSeparator {
+    width: 1px;
+    height: 18px;
+    background: #b8c7db;
+}
+
+.groups {
+    display: grid;
+    gap: 12px;
+}
+
+.groupConnector {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    background: #edf6ff;
+}
+
+.connectorTitle {
+    color: #1f3f73;
+}
+
+.connectorControl {
+    display: grid;
+    grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}
+
+.connectorLine {
+    height: 1px;
+    background: #aac8ed;
+}
+
+.connectorDescription {
+    text-align: center;
+}
+
+.addGroup {
+    justify-self: start;
+}
+
+.groupOperator {
+    border: 1px solid #91caff;
+    box-shadow: 0 0 0 3px #e6f4ff;
+}
+
+.groupOperator :global(.ant-segmented-thumb) {
+    display: none;
+    border: 1px solid #1677ff;
+}
+
+.groupOperator :global(.ant-segmented-item-input:checked + .ant-segmented-item-label) {
+    color: #fff;
+    background: #1677ff;
+    border-radius: 4px;
+    transition: all .5s ease;
+
+}
+
+@media (max-width: 640px) {
+    .meta {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .metaSeparator {
+        display: none;
+    }
+
+    .groupConnector {
+        padding-inline: 12px;
+    }
+}

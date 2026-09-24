@@ -1,0 +1,49 @@
+.card {
+    border-radius: 12px;
+    border-color: #dbe5f0;
+    box-shadow: 0 8px 28px rgb(41 83 143 / 5%);
+}
+
+.content {
+    display: grid;
+    gap: 24px;
+}
+
+.fieldRow {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    align-items: start;
+    gap: 16px;
+}
+
+.number {
+    color: #1677ff;
+    background: #e6f4ff;
+    font-weight: 600;
+}
+
+.field {
+    margin-bottom: 0;
+}
+
+.accountField {
+    display: grid;
+    gap: 4px;
+}
+
+.manageAccounts {
+    justify-self: start;
+    padding-inline: 0;
+}
+
+.divider {
+    margin: 0;
+    border-color: #dbe5f0;
+}
+
+@media (max-width: 640px) {
+    .fieldRow {
+        grid-template-columns: 32px minmax(0, 1fr);
+        gap: 12px;
+    }
+}

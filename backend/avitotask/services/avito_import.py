@@ -16,6 +16,13 @@ from avitotask.services.avito_api import AvitoApiClient, AvitoApiError
 AVITO_ITEMS_PER_PAGE = 100
 AVITO_ITEMS_MAX_PAGES = 100
 
+AVITO_CONFIRMED_ACTIVE_STATUS = "active"
+
+LISTING_SOURCES_WITH_LOCAL_CONTENT = {
+    AvitoListing.Source.AVITO_EXCEL,
+    AvitoListing.Source.SERVICE,
+}
+
 
 @dataclass(frozen=True)
 class AvitoListingsImportResult:
@@ -106,11 +113,42 @@ def get_account_token(avito_account):
         raise AvitoApiError("У AvitoAccount нет подключенного OAuth-токена.") from exc
 
 
+def resolve_active_since_from_fresh_api(
+        *,
+        current_active_since,
+        desired_status,
+        api_status,
+        observed_at,
+):
+    """
+    Определяет начало текущего подтверждённого периода активности.
+
+    Только свежий API-статус active подтверждает активность.
+    Локальный pause/archive имеет приоритет над временно устаревшим
+    состоянием объявления на Avito.
+    """
+
+    normalized_status = str(api_status or "").strip().lower()
+
+    if desired_status != AvitoListing.DesiredStatus.PUBLISH:
+        return None
+
+    if normalized_status != AVITO_CONFIRMED_ACTIVE_STATUS:
+        return None
+
+    return current_active_since or observed_at
+
+
 def upsert_avito_listing(avito_account, item):
-    avito_id = item.get('id')
+    avito_id = item.get("id")
 
     if not avito_id:
-        raise AvitoApiError("Avito API вернул объявление без id.", payload=item)
+        raise AvitoApiError(
+            "Avito API вернул объявление без id.",
+            payload=item,
+        )
+
+    observed_at = timezone.now()
 
     listing = AvitoListing.objects.filter(
         workspace=avito_account.workspace,
@@ -118,17 +156,44 @@ def upsert_avito_listing(avito_account, item):
         avito_id=str(avito_id),
     ).first()
 
-    if listing and listing.source == AvitoListing.Source.AVITO_EXCEL:
-        return update_managed_excel_listing_from_api(listing, item), False
+    if (
+            listing
+            and listing.source in LISTING_SOURCES_WITH_LOCAL_CONTENT
+    ):
+        return (
+            update_locally_managed_listing_from_api(
+                listing,
+                item,
+                observed_at=observed_at,
+            ),
+            False,
+        )
+
+    current_active_since = (
+        listing.active_since
+        if listing
+        else None
+    )
+    desired_status = (
+        listing.desired_status
+        if listing
+        else AvitoListing.DesiredStatus.PUBLISH
+    )
 
     defaults = {
         "source": AvitoListing.Source.API,
         "management_status": AvitoListing.ManagementStatus.OBSERVED,
-        "status": item.get('status') or "",
-        "title": item.get('title') or "",
-        "url": item.get('url') or "",
+        "status": item.get("status") or "",
+        "title": item.get("title") or "",
+        "url": item.get("url") or "",
         "imported_payload": item,
-        "last_seen_at": timezone.now(),
+        "active_since": resolve_active_since_from_fresh_api(
+            current_active_since=current_active_since,
+            desired_status=desired_status,
+            api_status=item.get("status"),
+            observed_at=observed_at,
+        ),
+        "last_seen_at": observed_at,
     }
 
     return AvitoListing.objects.update_or_create(
@@ -139,23 +204,40 @@ def upsert_avito_listing(avito_account, item):
     )
 
 
-def update_managed_excel_listing_from_api(listing, item):
+def update_locally_managed_listing_from_api(
+        listing,
+        item,
+        *,
+        observed_at,
+):
     """
-    API /core/v1/items возвращает неполную карточку.
+    Обновляет наблюдаемое состояние объявления из свежего Avito API.
 
-    Для source=avito_excel не перетираем title/description/base_data/option_data,
-    потому что источник истины - данные, импортированные из XLSX и измененные в сервисе.
-    Обновляем только наблюдаемые поля: статус, URL, last_seen_at и сырой API payload.
+    Для объявлений из XLSX и созданных сервисом API не перезаписывает
+    локальный контент, источник, управление и связь с публикацией.
     """
 
     update_fields = []
 
     api_status = item.get("status")
+
     if api_status is not None:
         listing.status = api_status or ""
         update_fields.append("status")
 
+    next_active_since = resolve_active_since_from_fresh_api(
+        current_active_since=listing.active_since,
+        desired_status=listing.desired_status,
+        api_status=api_status,
+        observed_at=observed_at,
+    )
+
+    if listing.active_since != next_active_since:
+        listing.active_since = next_active_since
+        update_fields.append("active_since")
+
     api_url = item.get("url")
+
     if api_url is not None:
         listing.url = api_url or ""
         update_fields.append("url")
@@ -165,8 +247,12 @@ def update_managed_excel_listing_from_api(listing, item):
         source="api",
         payload=item,
     )
-    listing.last_seen_at = timezone.now()
-    update_fields.extend(["imported_payload", "last_seen_at", "updated_at"])
+    listing.last_seen_at = observed_at
+    update_fields.extend([
+        "imported_payload",
+        "last_seen_at",
+        "updated_at",
+    ])
 
     listing.save(update_fields=update_fields)
 
@@ -192,5 +278,6 @@ def mark_managed_excel_listings_out_of_sync(avito_account, seen_avito_ids):
 
     return queryset.update(
         management_status=AvitoListing.ManagementStatus.OUT_OF_SYNC,
+        active_since=None,
         last_seen_at=timezone.now(),
     )

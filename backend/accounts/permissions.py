@@ -12,6 +12,8 @@ class WorkspacePermission:
     MANAGE_TASKS = "manage_tasks"
     VIEW_TASKS = "view_tasks"
 
+    MANAGE_AUTOMATIONS = "manage_automations"
+
     MANAGE_AVITO_ACCOUNTS = "manage_avito_accounts"
     MANAGE_PROMOTION = "manage_promotion"
 
@@ -31,6 +33,7 @@ ROLE_PERMISSIONS = {
         WorkspacePermission.VIEW_ADS,
         WorkspacePermission.MANAGE_TASKS,
         WorkspacePermission.VIEW_TASKS,
+        WorkspacePermission.MANAGE_AUTOMATIONS,
         WorkspacePermission.MANAGE_AVITO_ACCOUNTS,
         WorkspacePermission.MANAGE_PROMOTION,
         WorkspacePermission.MANAGE_CHATS,
@@ -44,6 +47,7 @@ ROLE_PERMISSIONS = {
         WorkspacePermission.VIEW_ADS,
         WorkspacePermission.MANAGE_TASKS,
         WorkspacePermission.VIEW_TASKS,
+        WorkspacePermission.MANAGE_AUTOMATIONS,
         WorkspacePermission.MANAGE_AVITO_ACCOUNTS,
         WorkspacePermission.MANAGE_PROMOTION,
         WorkspacePermission.MANAGE_CHATS,

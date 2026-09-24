@@ -1,0 +1,136 @@
+.group {
+    width: 100%;
+}
+
+.card {
+    overflow: hidden;
+    border-color: #d7e5f5;
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgb(41 83 143 / 4%);
+}
+
+.groupHeading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.groupNumber,
+.conditionNumber {
+    flex: 0 0 auto;
+    color: #1677ff;
+    background: #e6f4ff;
+    font-weight: 600;
+}
+
+.groupTitle {
+    margin: 0 !important;
+}
+
+.groupDescription {
+    display: block;
+    margin-top: 2px;
+}
+
+.groupBody {
+    display: grid;
+    gap: 14px;
+}
+
+.conditionRow {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 12px;
+}
+
+.conditionFields {
+    display: grid;
+    grid-template-columns:
+        minmax(150px, 1.2fr)
+        minmax(130px, 0.9fr)
+        minmax(112px, 0.7fr)
+        minmax(170px, 1.2fr)
+        minmax(112px, 0.7fr);
+    gap: 12px;
+}
+
+.field {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.fieldLabel {
+    color: #1f1f1f;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.control {
+    width: 100%;
+}
+
+.deleteCondition {
+    min-width: 108px;
+}
+
+.conditionConnector {
+    display: grid;
+    grid-template-columns: minmax(24px, 1fr) auto minmax(24px, 1fr);
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+}
+
+.conditionOperator {
+    border: 1px solid #91caff;
+    box-shadow: 0 0 0 3px #e6f4ff;
+}
+
+.connectorLine {
+    height: 1px;
+    background: #adc9e8;
+}
+
+.addCondition {
+    justify-self: start;
+}
+
+.conditionOperator :global(.ant-segmented-thumb) {
+    display: none;
+}
+
+.conditionOperator :global(.ant-segmented-item-input:checked + .ant-segmented-item-label) {
+    color: #fff;
+    background: #1677ff;
+    border-radius: 4px;
+    transition: none;
+
+}
+
+@media (max-width: 1080px) {
+    .conditionFields {
+        grid-template-columns:
+            repeat(2, minmax(160px, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .conditionRow {
+        grid-template-columns: 32px minmax(0, 1fr);
+    }
+
+    .conditionFields {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .deleteCondition {
+        grid-column: 2;
+        justify-self: start;
+    }
+
+    .groupHeading {
+        align-items: flex-start;
+    }
+}

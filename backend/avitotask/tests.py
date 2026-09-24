@@ -1,5 +1,5 @@
 from django.test import SimpleTestCase, TestCase, override_settings
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.test.utils import CaptureQueriesContext
 from avitotask.services.ad_editing import update_ad_creative, update_ad_publication
 
@@ -20,13 +20,18 @@ from io import BytesIO, StringIO
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.core.exceptions import FieldDoesNotExist
 
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from io import BytesIO
 from openpyxl import Workbook
 
-from avitotask.services.avito_import import import_avito_listings_for_account, upsert_avito_listing
+from avitotask.services.avito_import import (
+    import_avito_listings_for_account,
+    mark_managed_excel_listings_out_of_sync,
+    upsert_avito_listing,
+)
 from avitotask.services.avito_listing_editing import (
     bulk_update_avito_listing_management_status,
     extend_avito_listing_date_end,
@@ -61,6 +66,13 @@ from avitotask.services.ad_export import (
     build_listing_export_row,
     build_publication_export_row,
     export_avito_account_publications_to_csv,
+)
+from avitotask.services.ad_export_state import (
+    mark_avito_account_export_clean,
+    mark_avito_account_export_error,
+    mark_avito_account_exporting,
+    mark_avito_accounts_export_dirty,
+    mark_avito_accounts_export_queued,
 )
 from avitotask.tasks import (
     export_avito_account_csv_task,
@@ -1900,6 +1912,560 @@ class AvitoExcelImportFlowTests(TestCase):
             updated_listing.imported_payload["api"]["title"],
             "API title must not overwrite Excel title",
         )
+
+
+class AvitoListingActiveSinceModelTests(SimpleTestCase):
+
+    def test_active_since_is_nullable_datetime_field(self):
+        try:
+            field = AvitoListing._meta.get_field("active_since")
+        except FieldDoesNotExist:
+            field = None
+
+        self.assertIsNotNone(
+            field,
+            "В AvitoListing должно быть поле active_since.",
+        )
+        self.assertEqual(field.get_internal_type(), "DateTimeField")
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)
+        self.assertIsNone(AvitoListing().active_since)
+
+    def test_active_since_selection_index_is_declared(self):
+        declared_indexes = {
+            tuple(index.fields)
+            for index in AvitoListing._meta.indexes
+        }
+
+        self.assertIn(
+            (
+                "workspace",
+                "avito_account",
+                "management_status",
+                "active_since",
+                "id",
+            ),
+            declared_indexes,
+            (
+                "Для выборки активных объявлений нужен составной индекс "
+                "по workspace, аккаунту, статусу управления, active_since и id."
+            ),
+        )
+
+
+class AvitoListingActiveSinceLifecycleTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="active-since-lifecycle@example.com",
+            password="test",
+        )
+        self.workspace = Workspace.objects.create(
+            name="Active since lifecycle",
+            slug="active-since-lifecycle",
+            owner=self.user,
+        )
+        self.avito_account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="Active since lifecycle account",
+        )
+        self.creative = AdCreative.objects.create(
+            workspace=self.workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Active since creative",
+            description="Description",
+            base_data={},
+        )
+        self.publication = AdPublication.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            creative=self.creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.ACTIVE,
+            row_id="ACTIVE-SINCE-001",
+            address="Москва",
+        )
+        self.service_listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            publication=self.publication,
+            source=AvitoListing.Source.SERVICE,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            avito_id="active-since-service",
+        )
+        self.imported_listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            avito_id="active-since-excel",
+        )
+        self.active_since = timezone.now() - timedelta(days=10)
+
+    def test_pause_and_archive_clear_active_since_for_imported_listing(self):
+        cases = (
+            ("pause", AvitoListing.DesiredStatus.PAUSE),
+            ("delete", AvitoListing.DesiredStatus.ARCHIVE),
+        )
+
+        for action, expected_status in cases:
+            with self.subTest(action=action):
+                self.imported_listing.active_since = self.active_since
+                self.imported_listing.desired_status = (
+                    AvitoListing.DesiredStatus.PUBLISH
+                )
+                self.imported_listing.save(
+                    update_fields=[
+                        "active_since",
+                        "desired_status",
+                        "updated_at",
+                    ],
+                )
+
+                result = bulk_update_ads_lifecycle(
+                    workspace=self.workspace,
+                    avito_account=self.avito_account,
+                    items=[{
+                        "entity_type": "avito_listing",
+                        "id": self.imported_listing.id,
+                    }],
+                    action=action,
+                )
+
+                self.assertEqual(result["updated"], 1)
+                self.imported_listing.refresh_from_db()
+                self.assertEqual(
+                    self.imported_listing.desired_status,
+                    expected_status,
+                )
+                self.assertIsNone(self.imported_listing.active_since)
+
+    def test_pause_and_archive_clear_active_since_for_service_listing(self):
+        cases = (
+            (
+                "pause",
+                "ad_publication",
+                self.publication.id,
+                AdPublication.Status.PAUSED,
+            ),
+            (
+                "delete",
+                "avito_listing",
+                self.service_listing.id,
+                AdPublication.Status.ARCHIVED,
+            ),
+        )
+
+        for action, entity_type, entity_id, expected_status in cases:
+            with self.subTest(action=action, entity_type=entity_type):
+                self.publication.status = AdPublication.Status.ACTIVE
+                self.publication.save(
+                    update_fields=["status", "updated_at"],
+                )
+                self.service_listing.active_since = self.active_since
+                self.service_listing.save(
+                    update_fields=["active_since", "updated_at"],
+                )
+
+                result = bulk_update_ads_lifecycle(
+                    workspace=self.workspace,
+                    avito_account=self.avito_account,
+                    items=[{
+                        "entity_type": entity_type,
+                        "id": entity_id,
+                    }],
+                    action=action,
+                )
+
+                self.assertEqual(result["updated"], 1)
+                self.publication.refresh_from_db()
+                self.service_listing.refresh_from_db()
+                self.assertEqual(self.publication.status, expected_status)
+                self.assertIsNone(self.service_listing.active_since)
+
+    def test_missing_target_does_not_create_required_export_revision(self):
+        self.avito_account.refresh_from_db()
+        previous_revision = self.avito_account.export_revision
+
+        result = bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": 999999999,
+            }],
+            action="pause",
+        )
+
+        self.avito_account.refresh_from_db()
+        self.assertEqual(result["updated"], 0)
+        self.assertIsNone(result["required_export_revision"])
+        self.assertEqual(
+            self.avito_account.export_revision,
+            previous_revision,
+        )
+
+
+class AvitoListingActiveSinceSyncTests(TestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="active-since-sync@example.com",
+            password="test",
+        )
+        self.workspace = Workspace.objects.create(
+            name="Active since sync",
+            slug="active-since-sync",
+            owner=self.user,
+        )
+        self.avito_account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="Active since sync account",
+        )
+        self.first_observed_at = timezone.now() - timedelta(hours=1)
+        self.second_observed_at = timezone.now()
+
+    def upsert_from_fresh_api(self, *, observed_at, avito_id, status):
+        with patch(
+            "avitotask.services.avito_import.timezone.now",
+            return_value=observed_at,
+        ):
+            return upsert_avito_listing(
+                self.avito_account,
+                {
+                    "id": avito_id,
+                    "status": status,
+                    "title": "Название из API",
+                    "url": f"https://www.avito.ru/item/{avito_id}",
+                },
+            )
+
+    def create_managed_excel_listing(
+            self,
+            *,
+            avito_id,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            active_since=None,
+    ):
+        return AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            source=AvitoListing.Source.AVITO_EXCEL,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=desired_status,
+            avito_id=avito_id,
+            title="Локальное название",
+            active_since=active_since,
+        )
+
+    def create_service_listing(self, *, avito_id):
+        creative = AdCreative.objects.create(
+            workspace=self.workspace,
+            source=AdCreative.Source.MANUAL,
+            title="Service creative",
+            description="Description",
+            base_data={},
+        )
+        publication = AdPublication.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            creative=creative,
+            source=AdPublication.Source.MANUAL,
+            status=AdPublication.Status.ACTIVE,
+            row_id=f"ROW-{avito_id}",
+            address="Москва",
+        )
+        listing = AvitoListing.objects.create(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            publication=publication,
+            source=AvitoListing.Source.SERVICE,
+            management_status=AvitoListing.ManagementStatus.MANAGED,
+            desired_status=AvitoListing.DesiredStatus.PUBLISH,
+            avito_id=avito_id,
+            title="Локальное service-название",
+        )
+        return publication, listing
+
+    def test_fresh_active_api_sync_starts_period_once(self):
+        listing, was_created = self.upsert_from_fresh_api(
+            observed_at=self.first_observed_at,
+            avito_id="fresh-active-api",
+            status="active",
+        )
+
+        self.assertTrue(was_created)
+        self.assertEqual(listing.active_since, self.first_observed_at)
+
+        listing, was_created = self.upsert_from_fresh_api(
+            observed_at=self.second_observed_at,
+            avito_id="fresh-active-api",
+            status="active",
+        )
+
+        self.assertFalse(was_created)
+        self.assertEqual(listing.active_since, self.first_observed_at)
+        self.assertEqual(listing.last_seen_at, self.second_observed_at)
+
+    def test_fresh_active_api_sync_respects_local_pause_and_archive(self):
+        for desired_status in (
+                AvitoListing.DesiredStatus.PAUSE,
+                AvitoListing.DesiredStatus.ARCHIVE,
+        ):
+            with self.subTest(desired_status=desired_status):
+                listing = self.create_managed_excel_listing(
+                    avito_id=f"local-{desired_status}",
+                    desired_status=desired_status,
+                    active_since=self.first_observed_at,
+                )
+
+                listing, was_created = self.upsert_from_fresh_api(
+                    observed_at=self.second_observed_at,
+                    avito_id=listing.avito_id,
+                    status="active",
+                )
+
+                self.assertFalse(was_created)
+                self.assertIsNone(listing.active_since)
+                self.assertEqual(listing.desired_status, desired_status)
+
+    def test_fresh_non_active_or_unknown_status_clears_period(self):
+        for index, status in enumerate(("removed", "unexpected", "", None)):
+            with self.subTest(status=status):
+                listing = self.create_managed_excel_listing(
+                    avito_id=f"non-active-{index}",
+                    active_since=self.first_observed_at,
+                )
+
+                listing, was_created = self.upsert_from_fresh_api(
+                    observed_at=self.second_observed_at,
+                    avito_id=listing.avito_id,
+                    status=status,
+                )
+
+                self.assertFalse(was_created)
+                self.assertIsNone(listing.active_since)
+
+    def test_listing_missing_from_fresh_sync_clears_period(self):
+        listing = self.create_managed_excel_listing(
+            avito_id="missing-from-fresh-sync",
+            active_since=self.first_observed_at,
+        )
+
+        updated_count = mark_managed_excel_listings_out_of_sync(
+            self.avito_account,
+            seen_avito_ids=set(),
+        )
+
+        self.assertEqual(updated_count, 1)
+        listing.refresh_from_db()
+        self.assertEqual(
+            listing.management_status,
+            AvitoListing.ManagementStatus.OUT_OF_SYNC,
+        )
+        self.assertIsNone(listing.active_since)
+
+    def test_fresh_active_api_sync_restores_managed_listing_period(self):
+        listing = self.create_managed_excel_listing(
+            avito_id="restored-excel",
+        )
+
+        listing, was_created = self.upsert_from_fresh_api(
+            observed_at=self.second_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+
+        self.assertFalse(was_created)
+        self.assertEqual(listing.active_since, self.second_observed_at)
+        self.assertEqual(listing.source, AvitoListing.Source.AVITO_EXCEL)
+        self.assertEqual(
+            listing.management_status,
+            AvitoListing.ManagementStatus.MANAGED,
+        )
+        self.assertEqual(listing.title, "Локальное название")
+
+    def test_fresh_active_api_sync_preserves_service_listing_ownership(self):
+        publication, listing = self.create_service_listing(
+            avito_id="restored-service",
+        )
+
+        listing, was_created = self.upsert_from_fresh_api(
+            observed_at=self.second_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+
+        self.assertFalse(was_created)
+        self.assertEqual(listing.active_since, self.second_observed_at)
+        self.assertEqual(listing.source, AvitoListing.Source.SERVICE)
+        self.assertEqual(
+            listing.management_status,
+            AvitoListing.ManagementStatus.MANAGED,
+        )
+        self.assertEqual(listing.publication, publication)
+        self.assertEqual(listing.title, "Локальное service-название")
+
+    def test_managed_excel_active_period_restarts_after_fresh_sync(self):
+        listing = self.create_managed_excel_listing(
+            avito_id="excel-full-lifecycle",
+        )
+
+        listing, _ = self.upsert_from_fresh_api(
+            observed_at=self.first_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+        self.assertEqual(listing.active_since, self.first_observed_at)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": listing.id,
+            }],
+            action="pause",
+        )
+        listing.refresh_from_db()
+        self.assertIsNone(listing.active_since)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": listing.id,
+            }],
+            action="publish",
+        )
+        listing.refresh_from_db()
+        self.assertEqual(
+            listing.desired_status,
+            AvitoListing.DesiredStatus.PUBLISH,
+        )
+        self.assertIsNone(listing.active_since)
+
+        listing, _ = self.upsert_from_fresh_api(
+            observed_at=self.second_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+        self.assertEqual(listing.active_since, self.second_observed_at)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": listing.id,
+            }],
+            action="delete",
+        )
+        listing.refresh_from_db()
+        self.assertEqual(
+            listing.desired_status,
+            AvitoListing.DesiredStatus.ARCHIVE,
+        )
+        self.assertIsNone(listing.active_since)
+
+    def test_service_active_period_ignores_report_and_restarts_after_fresh_sync(self):
+        publication, listing = self.create_service_listing(
+            avito_id="service-full-lifecycle",
+        )
+
+        listing, _ = self.upsert_from_fresh_api(
+            observed_at=self.first_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+        self.assertEqual(listing.active_since, self.first_observed_at)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "avito_listing",
+                "id": listing.id,
+            }],
+            action="pause",
+        )
+        listing.refresh_from_db()
+        self.assertIsNone(listing.active_since)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "ad_publication",
+                "id": publication.id,
+            }],
+            action="publish",
+        )
+
+        sync_avito_autoload_report(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            report_rows=[{
+                "Id": publication.row_id,
+                "AvitoId": listing.avito_id,
+                "status": "active",
+            }],
+        )
+        listing.refresh_from_db()
+        self.assertIsNone(listing.active_since)
+
+        listing, _ = self.upsert_from_fresh_api(
+            observed_at=self.second_observed_at,
+            avito_id=listing.avito_id,
+            status="active",
+        )
+        self.assertEqual(listing.active_since, self.second_observed_at)
+
+        bulk_update_ads_lifecycle(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            items=[{
+                "entity_type": "ad_publication",
+                "id": publication.id,
+            }],
+            action="delete",
+        )
+        publication.refresh_from_db()
+        listing.refresh_from_db()
+        self.assertEqual(
+            publication.status,
+            AdPublication.Status.ARCHIVED,
+        )
+        self.assertIsNone(listing.active_since)
+
+    def test_reprocessed_autoload_report_does_not_start_active_period(self):
+        publication, _ = self.create_service_listing(
+            avito_id="autoload-report-active",
+        )
+        AvitoListing.objects.filter(publication=publication).delete()
+
+        report_rows = [{
+            "Id": publication.row_id,
+            "AvitoId": "autoload-report-active",
+            "status": "active",
+        }]
+
+        sync_avito_autoload_report(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            report_rows=report_rows,
+        )
+        sync_avito_autoload_report(
+            workspace=self.workspace,
+            avito_account=self.avito_account,
+            report_rows=report_rows,
+        )
+
+        listing = AvitoListing.objects.get(publication=publication)
+        self.assertIsNone(listing.active_since)
 
 
 class PublishedEndLifecycleTests(TestCase):
@@ -5169,3 +5735,354 @@ class AdGenerationServiceTests(TestCase):
         self.assertEqual(avito_response.status_code, 200)
         self.assertEqual(avito_response.data["count"], 1)
         self.assertEqual(avito_response.data["results"][0]["avito_id"], "777888999")
+
+
+class AvitoAccountExportRevisionModelTests(TestCase):
+    required_field_names = {
+        "export_revision",
+        "exporting_revision",
+        "last_exported_revision",
+    }
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email="export-revision-owner@example.com",
+            password="test-password",
+        )
+        cls.workspace = Workspace.objects.create(
+            name="Export revision workspace",
+            slug="export-revision-workspace",
+            owner=cls.user,
+        )
+
+    def assert_revision_fields_exist(self):
+        field_names = {
+            field.name for field in AvitoAccount._meta.get_fields()
+        }
+        self.assertTrue(
+            self.required_field_names.issubset(field_names),
+            (
+                "AvitoAccount должен хранить текущую, экспортируемую "
+                "и последнюю успешно экспортированную revision."
+            ),
+        )
+
+    def test_new_account_starts_with_zero_export_revisions(self):
+        self.assert_revision_fields_exist()
+
+        account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="New revision account",
+        )
+
+        self.assertEqual(account.export_revision, 0)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 0)
+
+    def test_database_rejects_invalid_export_revision_order(self):
+        self.assert_revision_fields_exist()
+        account = AvitoAccount.objects.create(
+            workspace=self.workspace,
+            name="Revision invariant account",
+        )
+        invalid_states = (
+            {
+                "export_revision": 1,
+                "exporting_revision": None,
+                "last_exported_revision": 2,
+            },
+            {
+                "export_revision": 2,
+                "exporting_revision": 3,
+                "last_exported_revision": 1,
+            },
+            {
+                "export_revision": 2,
+                "exporting_revision": 1,
+                "last_exported_revision": 2,
+            },
+        )
+
+        for invalid_state in invalid_states:
+            with self.subTest(invalid_state=invalid_state):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        AvitoAccount.objects.filter(id=account.id).update(
+                            **invalid_state,
+                        )
+
+
+class AvitoAccountExportRevisionStateTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            email="export-revision-state-owner@example.com",
+            password="test-password",
+        )
+        cls.workspace = Workspace.objects.create(
+            name="Export revision state workspace",
+            slug="export-revision-state-workspace",
+            owner=cls.user,
+        )
+
+    def create_account(self, **overrides):
+        values = {
+            "workspace": self.workspace,
+            "name": "Revision state account",
+        }
+        values.update(overrides)
+        return AvitoAccount.objects.create(**values)
+
+    def test_each_dirty_transition_atomically_increments_revision(self):
+        account = self.create_account()
+
+        first_revisions = mark_avito_accounts_export_dirty([account])
+        second_revisions = mark_avito_accounts_export_dirty([account])
+
+        account.refresh_from_db()
+        self.assertEqual(first_revisions, {account.id: 1})
+        self.assertEqual(second_revisions, {account.id: 2})
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.DIRTY)
+        self.assertEqual(account.export_revision, 2)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 0)
+        self.assertIsNotNone(account.export_requested_at)
+        self.assertEqual(account.export_error, "")
+
+    def test_dirty_transition_returns_revision_for_each_account(self):
+        first_account = self.create_account(
+            name="First revision result account",
+            export_revision=2,
+        )
+        second_account = self.create_account(
+            name="Second revision result account",
+            export_revision=5,
+        )
+
+        revisions = mark_avito_accounts_export_dirty(
+            [first_account, second_account.id, first_account.id],
+        )
+
+        first_account.refresh_from_db()
+        second_account.refresh_from_db()
+        self.assertEqual(
+            revisions,
+            {
+                first_account.id: 3,
+                second_account.id: 6,
+            },
+        )
+        self.assertEqual(first_account.export_revision, 3)
+        self.assertEqual(second_account.export_revision, 6)
+
+    def test_dirty_during_export_preserves_exporting_revision(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.EXPORTING,
+            export_revision=1,
+            exporting_revision=1,
+        )
+
+        mark_avito_accounts_export_dirty([account.id])
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.DIRTY)
+        self.assertEqual(account.export_revision, 2)
+        self.assertEqual(account.exporting_revision, 1)
+
+    def test_exporting_transition_captures_current_revision(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.DIRTY,
+            export_revision=4,
+            last_exported_revision=2,
+        )
+
+        mark_avito_account_exporting(account)
+
+        account.refresh_from_db()
+        self.assertEqual(
+            account.export_status,
+            AvitoAccount.ExportStatus.EXPORTING,
+        )
+        self.assertEqual(account.export_revision, 4)
+        self.assertEqual(account.exporting_revision, 4)
+        self.assertEqual(account.last_exported_revision, 2)
+        self.assertIsNotNone(account.export_started_at)
+        self.assertEqual(account.export_error, "")
+
+    def test_queued_transition_does_not_increment_revision(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.DIRTY,
+            export_revision=3,
+            last_exported_revision=1,
+        )
+
+        mark_avito_accounts_export_queued([account])
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.QUEUED)
+        self.assertEqual(account.export_revision, 3)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 1)
+
+    def test_successful_current_export_marks_account_clean(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.EXPORTING,
+            export_revision=3,
+            exporting_revision=3,
+            last_exported_revision=1,
+        )
+
+        mark_avito_account_export_clean(
+            avito_account=account,
+            file_path="exports/current.csv",
+        )
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.CLEAN)
+        self.assertEqual(account.export_revision, 3)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 3)
+        self.assertEqual(account.export_file_path, "exports/current.csv")
+        self.assertIsNotNone(account.last_exported_at)
+        self.assertEqual(account.export_error, "")
+
+    def test_successful_old_export_preserves_newer_pending_status(self):
+        for index, pending_status in enumerate((
+                AvitoAccount.ExportStatus.DIRTY,
+                AvitoAccount.ExportStatus.QUEUED,
+        )):
+            with self.subTest(pending_status=pending_status):
+                account = self.create_account(
+                    name=f"Newer revision account {index}",
+                    export_status=pending_status,
+                    export_revision=4,
+                    exporting_revision=3,
+                    last_exported_revision=1,
+                )
+
+                mark_avito_account_export_clean(
+                    avito_account=account,
+                    file_path=f"exports/revision-3-{index}.csv",
+                )
+
+                account.refresh_from_db()
+                self.assertEqual(account.export_status, pending_status)
+                self.assertEqual(account.export_revision, 4)
+                self.assertIsNone(account.exporting_revision)
+                self.assertEqual(account.last_exported_revision, 3)
+                self.assertIsNotNone(account.last_exported_at)
+
+    def test_late_duplicate_completion_without_snapshot_is_ignored(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.CLEAN,
+            export_revision=5,
+            exporting_revision=None,
+            last_exported_revision=5,
+            export_file_path="exports/revision-5.csv",
+        )
+
+        mark_avito_account_export_clean(
+            avito_account=account,
+            file_path="exports/stale-revision.csv",
+        )
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.CLEAN)
+        self.assertEqual(account.last_exported_revision, 5)
+        self.assertEqual(
+            account.export_file_path,
+            "exports/revision-5.csv",
+        )
+
+    def test_failed_export_clears_active_snapshot_without_advancing_success(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.EXPORTING,
+            export_revision=3,
+            exporting_revision=3,
+            last_exported_revision=1,
+        )
+
+        mark_avito_account_export_error(
+            avito_account=account,
+            error=RuntimeError("CSV write failed"),
+        )
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.ERROR)
+        self.assertEqual(account.export_revision, 3)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 1)
+        self.assertEqual(account.export_error, "CSV write failed")
+
+    def test_late_duplicate_error_without_snapshot_is_ignored(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.CLEAN,
+            export_revision=5,
+            exporting_revision=None,
+            last_exported_revision=5,
+            export_file_path="exports/revision-5.csv",
+        )
+
+        mark_avito_account_export_error(
+            avito_account=account,
+            error=RuntimeError("Late worker error"),
+        )
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.CLEAN)
+        self.assertEqual(account.last_exported_revision, 5)
+        self.assertIsNone(account.export_error)
+
+    def test_exporter_failure_before_csv_write_releases_active_snapshot(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.DIRTY,
+            export_revision=2,
+            last_exported_revision=1,
+        )
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            with patch(
+                    "avitotask.services.ad_export.get_publications_for_export",
+                    side_effect=RuntimeError("Row preparation failed"),
+            ):
+                with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Row preparation failed",
+                ):
+                    export_avito_account_publications_to_csv(
+                        workspace=self.workspace,
+                        avito_account=account,
+                        output_dir=output_dir,
+                    )
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.ERROR)
+        self.assertEqual(account.export_revision, 2)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 1)
+        self.assertEqual(account.export_error, "Row preparation failed")
+
+    def test_export_task_failure_uses_revision_aware_error_transition(self):
+        account = self.create_account(
+            export_status=AvitoAccount.ExportStatus.DIRTY,
+            export_revision=2,
+            last_exported_revision=1,
+        )
+
+        with patch(
+                "avitotask.tasks.export_avito_account_publications_to_csv",
+                side_effect=RuntimeError("Task export failed"),
+        ):
+            with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Task export failed",
+            ):
+                export_avito_account_csv_task(account.id)
+
+        account.refresh_from_db()
+        self.assertEqual(account.export_status, AvitoAccount.ExportStatus.ERROR)
+        self.assertEqual(account.export_revision, 2)
+        self.assertIsNone(account.exporting_revision)
+        self.assertEqual(account.last_exported_revision, 1)
+        self.assertEqual(account.export_error, "Task export failed")

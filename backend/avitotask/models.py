@@ -9,10 +9,9 @@ from django.db import models
 
 from django.utils import timezone as django_timezone
 
-from django.db.models import JSONField, Q
+from django.db.models import F, JSONField, Q
 from django.core.serializers.json import DjangoJSONEncoder
 
-from django.core.exceptions import ValidationError
 from django.db.models.functions import Lower, Trim
 
 
@@ -164,7 +163,12 @@ class AvitoAccount(models.Model):
     export_file_path = models.CharField(max_length=255, blank=True, null=True)
     export_requested_at = models.DateTimeField(null=True, blank=True)
     export_started_at = models.DateTimeField(null=True, blank=True)
-
+    export_revision = models.PositiveBigIntegerField(default=0)
+    exporting_revision = models.PositiveBigIntegerField(
+        null=True,
+        blank=True,
+    )
+    last_exported_revision = models.PositiveBigIntegerField(default=0)
     sync_status = models.CharField(
         max_length=20,
         choices=SyncStatus.choices,
@@ -212,6 +216,32 @@ class AvitoAccount(models.Model):
                 fields=['workspace', 'external_account_id'],
                 condition=Q(external_account_id__isnull=False) & ~Q(external_account_id=""),
                 name='uniq_avacc_ws_ext',
+            ),
+            models.CheckConstraint(
+                condition=Q(
+                    last_exported_revision__lte=F(
+                        "export_revision",
+                    ),
+                ),
+                name="chk_avacc_exported_rev_lte",
+            ),
+            models.CheckConstraint(
+                condition=(
+                        Q(exporting_revision__isnull=True)
+                        | (
+                                Q(
+                                    exporting_revision__gte=F(
+                                        "last_exported_revision",
+                                    ),
+                                )
+                                & Q(
+                            exporting_revision__lte=F(
+                                "export_revision",
+                            ),
+                        )
+                        )
+                ),
+                name="chk_avacc_exporting_rev_range",
             ),
         ]
 
@@ -913,6 +943,11 @@ class AvitoListing(models.Model):
     imported_payload = MyJSONField(default=dict, blank=True)
     published_end = models.DateField(null=True, blank=True)
     published_at = models.DateTimeField(null=True, blank=True)
+    active_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Начало текущего непрерывного активного периода объявления.",
+    )
     last_seen_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -933,7 +968,16 @@ class AvitoListing(models.Model):
             models.Index(fields=["workspace", "-last_seen_at"], name="idx_avlisting_ws_seen"),
             models.Index(fields=["workspace", "status"], name="idx_avlisting_ws_status"),
             models.Index(fields=["workspace", "avito_account", "source"], name="idx_avlisting_acc_source"),
-            models.Index(fields=["workspace", "avito_account", "management_status"], name="idx_avlisting_acc_mgmt"),
+            models.Index(
+                fields=[
+                    "workspace",
+                    "avito_account",
+                    "management_status",
+                    "active_since",
+                    "id",
+                ],
+                name="idx_avlisting_acc_active",
+            ),
             models.Index(fields=["workspace", "avito_account", "row_id"], name="idx_avlisting_acc_row"),
             models.Index(fields=["workspace", "avito_account", "desired_status"], name="idx_avlisting_acc_desired"),
             models.Index(

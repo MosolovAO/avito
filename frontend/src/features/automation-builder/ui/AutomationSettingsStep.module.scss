@@ -1,0 +1,85 @@
+.card {
+    width: 100%;
+}
+
+.content {
+    display: grid;
+    gap: 24px;
+}
+
+.title {
+    margin: 0 !important;
+}
+
+.section {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    align-items: start;
+    gap: 20px;
+}
+
+.sectionContent {
+    min-width: 0;
+}
+
+.number {
+    color: var(--ant-color-primary, #1677ff);
+    background: var(--ant-color-primary-bg, #e6f4ff);
+    font-weight: 600;
+}
+
+.divider {
+    margin: 0;
+}
+
+.actionField {
+    margin-bottom: 0;
+}
+
+.actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    width: 100%;
+}
+
+.actionOption {
+    display: flex;
+    min-width: 0;
+    border: 1px solid var(--ant-color-border, #d9d9d9);
+    border-radius: var(--ant-border-radius-lg, 8px);
+}
+
+.actionOption[data-selected="true"] {
+    border-color: var(--ant-color-primary, #1677ff);
+    background: var(--ant-color-primary-bg, #e6f4ff);
+}
+
+.actionRadio {
+    align-items: flex-start;
+    width: 100%;
+    margin-inline-end: 0;
+    padding: 16px;
+}
+
+.actionCopy {
+    display: grid;
+    gap: 4px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+
+
+@media (max-width: 768px) {
+    .actions {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 480px) {
+    .section {
+        grid-template-columns: 32px minmax(0, 1fr);
+        gap: 12px;
+    }
+}

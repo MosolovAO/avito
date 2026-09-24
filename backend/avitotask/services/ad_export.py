@@ -183,52 +183,70 @@ def get_export_fieldnames(imported_listing_rows):
     return merge_fieldnames(fieldnames, imported_row_keys)
 
 
-def export_avito_account_publications_to_csv(*,
-                                             workspace,
-                                             avito_account,
-                                             output_dir=None
-                                             ):
+def export_avito_account_publications_to_csv(
+        *,
+        workspace,
+        avito_account,
+        output_dir=None,
+):
     if avito_account.workspace_id != workspace.id:
-        raise ValueError("Аккаунт Avito принадлежит другому workspace")
-    output_dir = Path(output_dir or settings.STATIC_ROOT)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        raise ValueError(
+            "Аккаунт Avito принадлежит другому workspace",
+        )
 
     mark_avito_account_exporting(avito_account)
 
-    publications = get_publications_for_export(
-        workspace=workspace,
-        avito_account=avito_account,
-    )
-    managed_imported_listings = get_managed_imported_listings_for_export(
-        workspace=workspace,
-        avito_account=avito_account,
-    )
-
-    publication_rows = [
-        build_publication_export_row(publication)
-        for publication in publications
-    ]
-    imported_listing_rows = [
-        build_listing_export_row(listing)
-        for listing in managed_imported_listings
-    ]
-
-    raw_rows = publication_rows + imported_listing_rows
-    fieldnames = get_export_fieldnames(imported_listing_rows)
-
-    rows = [
-        filter_row_to_approved_columns(row, fieldnames)
-        for row in raw_rows
-    ]
-
-    file_path = output_dir / build_export_file_name(avito_account)
     try:
-        write_csv_atomic(file_path=file_path, fieldnames=fieldnames, rows=rows)
+        output_dir = Path(output_dir or settings.STATIC_ROOT)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        publications = get_publications_for_export(
+            workspace=workspace,
+            avito_account=avito_account,
+        )
+        managed_imported_listings = (
+            get_managed_imported_listings_for_export(
+                workspace=workspace,
+                avito_account=avito_account,
+            )
+        )
+
+        publication_rows = [
+            build_publication_export_row(publication)
+            for publication in publications
+        ]
+        imported_listing_rows = [
+            build_listing_export_row(listing)
+            for listing in managed_imported_listings
+        ]
+
+        raw_rows = publication_rows + imported_listing_rows
+        fieldnames = get_export_fieldnames(imported_listing_rows)
+
+        rows = [
+            filter_row_to_approved_columns(row, fieldnames)
+            for row in raw_rows
+        ]
+
+        file_path = output_dir / build_export_file_name(
+            avito_account,
+        )
+        write_csv_atomic(
+            file_path=file_path,
+            fieldnames=fieldnames,
+            rows=rows,
+        )
     except Exception as exc:
-        mark_avito_account_export_error(avito_account=avito_account, error=exc)
+        mark_avito_account_export_error(
+            avito_account=avito_account,
+            error=exc,
+        )
         raise
 
-    mark_avito_account_export_clean(avito_account=avito_account, file_path=file_path)
+    mark_avito_account_export_clean(
+        avito_account=avito_account,
+        file_path=file_path,
+    )
 
     return file_path
 

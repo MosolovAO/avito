@@ -17,7 +17,10 @@ from .services.ad_export import export_avito_account_publications_to_csv
 from .services.avito_autoload import link_publications_to_avito_ids_for_account
 from .services.ad_schedule import run_due_ad_generation_tasks as run_due_ad_generation_tasks_service
 from .services.ad_cleanup import archive_stale_publications
-from .services.ad_export_state import mark_avito_account_exporting
+from .services.ad_export_state import (
+    mark_avito_account_export_error,
+    mark_avito_account_exporting,
+)
 from .services.avito_autoload_report_fetch import sync_last_completed_autoload_report_for_account
 from .services.avito_sync_state import (
     get_avito_sync_stale_timeout_minutes,
@@ -87,9 +90,9 @@ def export_avito_account_csv_task(avito_account_id):
             avito_account=avito_account,
         )
     except Exception as exc:
-        AvitoAccount.objects.filter(id=avito_account_id).update(
-            export_status=AvitoAccount.ExportStatus.ERROR,
-            export_error=str(exc),
+        mark_avito_account_export_error(
+            avito_account=avito_account,
+            error=exc,
         )
         raise
 

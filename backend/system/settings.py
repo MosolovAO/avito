@@ -15,6 +15,7 @@ from datetime import timedelta
 from pathlib import Path
 from corsheaders.defaults import default_headers
 from django.core.exceptions import ImproperlyConfigured
+from kombu import Queue
 
 
 def env_bool(name, default=False):
@@ -64,6 +65,7 @@ INSTALLED_APPS = [
     'cworker',
     'avitotask',
     'analytics',
+    "automations.apps.AutomationsConfig",
     'channels',
     'django_celery_beat',
     'sass_processor',
@@ -165,6 +167,17 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://redis:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
 
+CELERY_TASK_QUEUES = (
+    Queue(
+        "celery",
+        routing_key="celery",
+    ),
+    Queue(
+        "automations",
+        routing_key="automations",
+    ),
+)
+
 # CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 # CELERY_BEAT_SCHEDULE = {}
 # CELERY_ACCEPT_CONTENT = ['json']
@@ -188,6 +201,7 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-workspace-id",
+    "idempotency-key",
 ]
 
 # REST Framework settings

@@ -17,9 +17,14 @@ import {
     HistoryOutlined,
     AppstoreAddOutlined,
     PlusSquareOutlined,
+    ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
+    useAutomationInboxSummaryQuery,
+} from "../../entities/automation";
+import {
     Avatar,
+    Badge,
     Button,
     ConfigProvider,
     Dropdown,
@@ -30,6 +35,10 @@ import {
     Typography,
     theme,
 } from "antd";
+import {
+    useCurrentWorkspace,
+} from "../../features/workspace/model/useCurrentWorkspace";
+import {ROUTES} from "../../shared/config/constants";
 import type {MenuProps} from "antd";
 import {useLocation, useNavigate} from "react-router-dom";
 import {useAuth} from "../../features/auth/model/AuthProvider";
@@ -54,7 +63,8 @@ type MenuKey =
     | "chats"
     | "manualMassPosting"
     | "bots"
-    | "avitoAds";
+    | "avitoAds"
+    | "automations"
 
 const getMenuGroupLabel = (label: string) => (
     <span
@@ -69,7 +79,10 @@ const getMenuGroupLabel = (label: string) => (
     </span>
 );
 
-const menuItems: MenuProps["items"] = [
+const getMenuItems = (
+    canManageAutomations: boolean,
+    pendingApprovalCount: number,
+): MenuProps["items"] => [
     {
         key: "workspace-group",
         type: "group",
@@ -129,6 +142,23 @@ const menuItems: MenuProps["items"] = [
                 icon: <HistoryOutlined/>,
                 label: "Операции",
             },
+            ...(canManageAutomations
+                ? [
+                    {
+                        key: "automations",
+                        icon: <ThunderboltOutlined/>,
+                        label: (
+                            <Space size={8}>
+                                <span>Автоматизации</span>
+                                <Badge
+                                    count={pendingApprovalCount}
+                                    size="small"
+                                />
+                            </Space>
+                        ),
+                    },
+                ]
+                : []),
         ],
     },
     {
@@ -180,9 +210,11 @@ const routeByMenuKey: Record<MenuKey, string> = {
     adCreatives: "/ads/creatives",
     manualMassPosting: "/manual-mass-posting/new",
     avitoAds: "/ads",
+    automations: ROUTES.AUTOMATIONS,
 };
 
 const getSelectedMenuKey = (pathname: string): MenuKey => {
+    if (pathname.startsWith("/automations")) return "automations";
     if (pathname.startsWith("/workspace/users")) return "users";
     if (pathname.startsWith("/products")) return "products";
     if (pathname.startsWith("/projects")) return "projects";
@@ -203,7 +235,16 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
     const location = useLocation();
     const [collapsed, setCollapsed] = useState(false);
     const {token} = theme.useToken();
-
+    const {
+        currentWorkspaceId,
+        canManageAutomations,
+    } = useCurrentWorkspace();
+    const inboxSummaryQuery = useAutomationInboxSummaryQuery(
+        currentWorkspaceId,
+        canManageAutomations,
+    );
+    const pendingApprovalCount =
+        inboxSummaryQuery.data?.pending_approval_count ?? 0;
     const selectedMenuKey = getSelectedMenuKey(location.pathname);
 
     const handleMenuClick: MenuProps["onClick"] = ({key}) => {
@@ -290,7 +331,10 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
                         mode="inline"
                         theme="dark"
                         selectedKeys={[selectedMenuKey]}
-                        items={menuItems}
+                        items={getMenuItems(
+                            canManageAutomations,
+                            pendingApprovalCount,
+                        )}
                         onClick={handleMenuClick}
                         style={{
                             paddingTop: 8,

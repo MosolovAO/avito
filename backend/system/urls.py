@@ -57,6 +57,14 @@ urlpatterns = [
     # UR: для работы с API Avito
     path('api/avito/', include('avitotask.avito_urls')),
     path('api/analytics/', include('analytics.urls')),
+    path(
+        "api/automations/",
+        include("automations.urls"),
+    ),
+    path(
+        "api/automation-runs/",
+        include("automations.run_urls"),
+    ),
 ]
 
 websocket_urlpatterns = [

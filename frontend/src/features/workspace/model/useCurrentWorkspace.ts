@@ -5,6 +5,7 @@ import type {WorkspaceContext} from "../../../shared/api/auth";
 export const WorkspacePermission = {
     MANAGE_USERS: "manage_users",
     MANAGE_AVITO_ACCOUNTS: "manage_avito_accounts",
+    MANAGE_AUTOMATIONS: "manage_automations",
     VIEW_TASKS: "view_tasks",
 } as const;
 
@@ -21,6 +22,7 @@ interface CurrentWorkcpaceResult {
     hasPermission: (permission: WorkspacePermissionValue) => boolean;
     canManageUsers: boolean;
     canManageAvitoAccounts: boolean;
+    canManageAutomations: boolean;
     canViewTasks: boolean;
 }
 
@@ -61,6 +63,9 @@ export const useCurrentWorkspace = (): CurrentWorkcpaceResult => {
         canManageAvitoAccounts: hasPermission(
             WorkspacePermission.MANAGE_AVITO_ACCOUNTS,
         ),
-        canViewTasks: hasPermission((WorkspacePermission.VIEW_TASKS))
-    }
+        canManageAutomations: hasPermission(
+            WorkspacePermission.MANAGE_AUTOMATIONS,
+        ),
+        canViewTasks: hasPermission(WorkspacePermission.VIEW_TASKS),
+    };
 };

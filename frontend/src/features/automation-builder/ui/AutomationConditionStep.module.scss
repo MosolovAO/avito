@@ -1,0 +1,40 @@
+.step {
+    display: grid;
+    gap: 16px;
+}
+
+.expression {
+    position: relative;
+}
+
+.expressionAlert {
+    padding-right: 176px;
+    border-color: #91caff;
+    background: #e6f4ff;
+}
+
+.expressionTitle {
+    font-weight: 600;
+}
+
+.expressionValue {
+    color: #1f3f73;
+    font-weight: 600;
+}
+
+.detailsToggle {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+}
+
+@media (max-width: 640px) {
+    .expressionAlert {
+        padding-right: 16px;
+    }
+
+    .detailsToggle {
+        position: static;
+        margin-top: 8px;
+    }
+}

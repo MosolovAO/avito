@@ -34,6 +34,11 @@ LISTING_DESIRED_STATUS_BY_ACTION = {
     ACTION_DELETE: AvitoListing.DesiredStatus.ARCHIVE,
 }
 
+ACTIONS_STOPPING_ACTIVITY = {
+    ACTION_PAUSE,
+    ACTION_DELETE,
+}
+
 
 def bulk_update_ads_lifecycle(*, workspace, avito_account, items, action):
     """
@@ -96,15 +101,25 @@ def bulk_update_ads_lifecycle(*, workspace, avito_account, items, action):
                 action=action,
             )
 
-    updated = publication_result["updated"] + listing_result["updated"]
+        updated = (
+                publication_result["updated"]
+                + listing_result["updated"]
+        )
+        required_export_revision = None
 
-    if updated:
-        mark_avito_accounts_export_dirty([avito_account.id])
+        if updated:
+            revisions = mark_avito_accounts_export_dirty(
+                [avito_account.id],
+            )
+            required_export_revision = revisions.get(
+                avito_account.id,
+            )
 
     return {
         "action": action,
         "requested": len(items),
         "updated": updated,
+        "required_export_revision": required_export_revision,
         "publications": publication_result,
         "listings": {
             **listing_result,
@@ -186,6 +201,25 @@ def update_publications_lifecycle(
     status = PUBLICATION_STATUS_BY_ACTION[action]
     now = timezone.now()
 
+    stops_activity = action in ACTIONS_STOPPING_ACTIVITY
+
+    linked_listings = []
+
+    if stops_activity:
+        linked_listings = list(
+            AvitoListing.objects
+            .select_for_update(of=("self",))
+            .filter(
+                workspace=workspace,
+                avito_account=avito_account,
+                publication_id__in=publication_ids,
+                publication__workspace=workspace,
+                publication__avito_account=avito_account,
+                source=AvitoListing.Source.SERVICE,
+            )
+            .order_by("id")
+        )
+
     publications = list(
         AdPublication.objects
         .select_for_update()
@@ -195,6 +229,7 @@ def update_publications_lifecycle(
             avito_account=avito_account,
             id__in=publication_ids,
         )
+        .order_by("id")
     )
     matched = len(publications)
 
@@ -216,6 +251,30 @@ def update_publications_lifecycle(
                 "updated_at",
             ],
         )
+
+        if stops_activity and linked_listings:
+            matched_publication_ids = {
+                publication.id
+                for publication in publications
+            }
+            stopped_listings = [
+                listing
+                for listing in linked_listings
+                if listing.publication_id in matched_publication_ids
+            ]
+
+            for listing in stopped_listings:
+                listing.active_since = None
+                listing.updated_at = now
+
+            if stopped_listings:
+                AvitoListing.objects.bulk_update(
+                    stopped_listings,
+                    [
+                        "active_since",
+                        "updated_at",
+                    ],
+                )
 
         if action == ACTION_PUBLISH:
             sync_linked_listings_published_end(publications)
@@ -245,6 +304,8 @@ def update_imported_listings_lifecycle(
     desired_status = LISTING_DESIRED_STATUS_BY_ACTION[action]
     now = timezone.now()
 
+    stops_activity = action in ACTIONS_STOPPING_ACTIVITY
+
     listings = list(
         AvitoListing.objects
         .select_for_update()
@@ -254,10 +315,15 @@ def update_imported_listings_lifecycle(
             id__in=listing_ids,
             source=AvitoListing.Source.AVITO_EXCEL,
         )
+        .order_by("id")
     )
 
     for listing in listings:
         listing.desired_status = desired_status
+
+        if stops_activity:
+            listing.active_since = None
+
         listing.updated_at = now
 
         if action == ACTION_PUBLISH:
@@ -272,6 +338,9 @@ def update_imported_listings_lifecycle(
         "base_data",
         "updated_at",
     ]
+
+    if stops_activity:
+        update_fields.append("active_since")
 
     if action == ACTION_PUBLISH:
         update_fields.append("management_status")
@@ -439,8 +508,8 @@ def ensure_listing_has_active_date_end(listing):
     current_published_end = listing.published_end
 
     if (
-        current_published_end is None
-        or current_published_end < timezone.localdate()
+            current_published_end is None
+            or current_published_end < timezone.localdate()
     ):
         current_published_end = build_next_active_date_end()
 

@@ -21,6 +21,12 @@ import {
     EditAdPublicationPage,
     AdPublicationsPage,
 } from "./pages/ads";
+import {
+    AutomationDetailPage,
+    AutomationEditorPage,
+    AutomationRunPage,
+    AutomationsPage,
+} from "./pages/automations";
 // src/App.tsx
 import {Outlet} from "react-router-dom";
 import {ProtectedRoute} from "./routes/ProtectedRoute";
@@ -28,7 +34,7 @@ import {GuestRoute} from "./routes/GuestRoute";
 import {AuthLayout} from "./pages/auth/AuthLayout";
 import {LoginPage} from "./pages/auth/LoginPage";
 import {RegisterPage} from "./pages/auth/RegisterPage";
-
+import {ROUTES} from "./shared/config/constants";
 
 const ProtectedLayout: React.FC = () => (
     <ProtectedRoute>
@@ -67,7 +73,30 @@ const App: React.FC = () => {
                 />
 
                 <Route element={<ProtectedLayout/>}>
-
+                    <Route
+                        path={ROUTES.AUTOMATIONS}
+                        element={<AutomationsPage/>}
+                    />
+                    <Route
+                        path={ROUTES.AUTOMATION_NEW}
+                        element={<AutomationEditorPage/>}
+                    />
+                    <Route
+                        path={ROUTES.AUTOMATION_EDIT}
+                        element={<AutomationEditorPage/>}
+                    />
+                    <Route
+                        path={ROUTES.AUTOMATION_DETAIL}
+                        element={<Navigate to="settings" replace/>}
+                    />
+                    <Route
+                        path={ROUTES.AUTOMATION_TAB}
+                        element={<AutomationDetailPage/>}
+                    />
+                    <Route
+                        path={ROUTES.AUTOMATION_RUN}
+                        element={<AutomationRunPage/>}
+                    />
                     <Route path="/" element={<HomePage/>}/>
                     <Route path="/home" element={<Navigate to="/" replace/>}/>
                     <Route path="/products" element={<ProductsPage/>}/>
@@ -85,7 +114,7 @@ const App: React.FC = () => {
                     <Route path="/ads/creatives/:id/edit" element={<EditAdCreativePage/>}/>
                     <Route path="/ads/publications/:id/edit" element={<EditAdPublicationPage/>}/>
 
-                    <Route path="/manual-mass-posting/new" element={<ManualMassPostingPage />} />
+                    <Route path="/manual-mass-posting/new" element={<ManualMassPostingPage/>}/>
 
                     <Route path="/avito/listings" element={<AvitoListingsPage/>}/>
 

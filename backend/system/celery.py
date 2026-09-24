@@ -41,4 +41,10 @@ app.conf.beat_schedule = {
         "task": "analytics.tasks.enqueue_daily_avito_stats_syncs_task",
         "schedule": crontab(hour=4, minute=10),
     },
+    "recover_automation_runs_every_ten_minutes": {
+        "task": "automations.tasks.recover_automation_runs_task",
+        "schedule": crontab(
+            minute="5,15,25,35,45,55",
+        ),
+    },
 }

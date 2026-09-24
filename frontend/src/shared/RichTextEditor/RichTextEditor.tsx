@@ -8,7 +8,7 @@ import TextAlign from "@tiptap/extension-text-align";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 
-import styles from "./RichTextEditor.module.css";
+import styles from "./RichTextEditor.module.scss";
 
 interface RichTextEditorProps {
     content: string
@@ -195,4 +195,3 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         </div>
     )
 }
-
