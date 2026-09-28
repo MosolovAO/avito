@@ -351,6 +351,14 @@ def connect_avito_account_from_token(avito_account, token, session=None):
     token.last_error = None
     token.save(update_fields=["user_info", "last_verified_at", "last_error", "updated_at"])
 
+    from calls.tasks import sync_calls_for_account_task
+
+    transaction.on_commit(
+        lambda account_id=avito_account.pk:
+        sync_calls_for_account_task.delay(account_id),
+        robust=True,
+    )
+
     return avito_account
 
 

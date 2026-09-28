@@ -7,6 +7,7 @@ export const WorkspacePermission = {
     MANAGE_AVITO_ACCOUNTS: "manage_avito_accounts",
     MANAGE_AUTOMATIONS: "manage_automations",
     VIEW_TASKS: "view_tasks",
+    VIEW_CALLS: "view_calls",
 } as const;
 
 
@@ -24,6 +25,7 @@ interface CurrentWorkcpaceResult {
     canManageAvitoAccounts: boolean;
     canManageAutomations: boolean;
     canViewTasks: boolean;
+    canViewCalls: boolean;
 }
 
 export const useCurrentWorkspace = (): CurrentWorkcpaceResult => {
@@ -67,5 +69,6 @@ export const useCurrentWorkspace = (): CurrentWorkcpaceResult => {
             WorkspacePermission.MANAGE_AUTOMATIONS,
         ),
         canViewTasks: hasPermission(WorkspacePermission.VIEW_TASKS),
+        canViewCalls: hasPermission(WorkspacePermission.VIEW_CALLS),
     };
 };

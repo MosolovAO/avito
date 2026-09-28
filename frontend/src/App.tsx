@@ -27,6 +27,7 @@ import {
     AutomationRunPage,
     AutomationsPage,
 } from "./pages/automations";
+import {CallsPage} from "./pages/calls/CallsPage";
 // src/App.tsx
 import {Outlet} from "react-router-dom";
 import {ProtectedRoute} from "./routes/ProtectedRoute";
@@ -122,6 +123,9 @@ const App: React.FC = () => {
                     <Route path="/workspace/users" element={<WorkspaceUsersPage/>}/>
                     <Route path="/chats" element={<ChatsPage/>}/>
                     <Route path="/bots" element={<BotsPage/>}/>
+
+                    <Route path="/calls" element={<CallsPage/>}/>
+
                 </Route>
             </Routes>
         </BrowserRouter>

@@ -18,6 +18,7 @@ import {
     AppstoreAddOutlined,
     PlusSquareOutlined,
     ThunderboltOutlined,
+    PhoneOutlined
 } from "@ant-design/icons";
 import {
     useAutomationInboxSummaryQuery,
@@ -65,6 +66,7 @@ type MenuKey =
     | "bots"
     | "avitoAds"
     | "automations"
+    | "calls";
 
 const getMenuGroupLabel = (label: string) => (
     <span
@@ -81,6 +83,7 @@ const getMenuGroupLabel = (label: string) => (
 
 const getMenuItems = (
     canManageAutomations: boolean,
+    canViewCalls: boolean,
     pendingApprovalCount: number,
 ): MenuProps["items"] => [
     {
@@ -159,6 +162,11 @@ const getMenuItems = (
                     },
                 ]
                 : []),
+            ...(canViewCalls ? [{
+                key: "calls",
+                icon: <PhoneOutlined/>,
+                label: "Звонки",
+            }] : []),
         ],
     },
     {
@@ -210,6 +218,7 @@ const routeByMenuKey: Record<MenuKey, string> = {
     adCreatives: "/ads/creatives",
     manualMassPosting: "/manual-mass-posting/new",
     avitoAds: "/ads",
+    calls: "/calls",
     automations: ROUTES.AUTOMATIONS,
 };
 
@@ -226,6 +235,7 @@ const getSelectedMenuKey = (pathname: string): MenuKey => {
     if (pathname.startsWith("/ads/creatives")) return "adCreatives";
     if (pathname.startsWith("/manual-mass-posting")) return "manualMassPosting";
     if (pathname === "/ads") return "avitoAds";
+    if (pathname.startsWith("/calls")) return "calls";
 
     return "workspace";
 };
@@ -238,6 +248,7 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
     const {
         currentWorkspaceId,
         canManageAutomations,
+        canViewCalls,
     } = useCurrentWorkspace();
     const inboxSummaryQuery = useAutomationInboxSummaryQuery(
         currentWorkspaceId,
@@ -268,8 +279,14 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
         }
     };
 
+    const layoutStyle: React.CSSProperties & { "--calls-sidebar-width": string } = {
+        height: "100vh",
+        overflow: "hidden",
+        "--calls-sidebar-width": collapsed ? "88px" : "260px",
+    };
+
     return (
-        <AntLayout hasSider style={{height: "100vh", overflow: "hidden"}}>
+        <AntLayout hasSider style={layoutStyle}>
             <Sider
                 collapsed={collapsed}
                 collapsedWidth={88}
@@ -333,6 +350,7 @@ export const Layout: React.FC<LayoutProps> = ({children}) => {
                         selectedKeys={[selectedMenuKey]}
                         items={getMenuItems(
                             canManageAutomations,
+                            canViewCalls,
                             pendingApprovalCount,
                         )}
                         onClick={handleMenuClick}

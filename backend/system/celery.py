@@ -47,4 +47,8 @@ app.conf.beat_schedule = {
             minute="5,15,25,35,45,55",
         ),
     },
+    "enqueue_calls_sync_hourly": {
+        "task": "calls.tasks.enqueue_calls_sync_task",
+        "schedule": crontab(minute=35),
+    },
 }

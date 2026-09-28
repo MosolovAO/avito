@@ -23,6 +23,8 @@ class WorkspacePermission:
     VIEW_ANALYTICS = "view_analytics"
     VIEW_DETAILED_ANALYTICS = "view_detailed_analytics"
 
+    VIEW_CALLS = "view_calls"
+
 
 ROLE_PERMISSIONS = {
     WorkspaceMembership.Role.OWNER: {
@@ -40,6 +42,7 @@ ROLE_PERMISSIONS = {
         WorkspacePermission.VIEW_CHATS,
         WorkspacePermission.VIEW_ANALYTICS,
         WorkspacePermission.VIEW_DETAILED_ANALYTICS,
+        WorkspacePermission.VIEW_CALLS,
     },
     WorkspaceMembership.Role.ADMIN: {
         WorkspacePermission.MANAGE_USERS,
@@ -54,6 +57,7 @@ ROLE_PERMISSIONS = {
         WorkspacePermission.VIEW_CHATS,
         WorkspacePermission.VIEW_ANALYTICS,
         WorkspacePermission.VIEW_DETAILED_ANALYTICS,
+        WorkspacePermission.VIEW_CALLS,
     },
     WorkspaceMembership.Role.MANAGER: {
         WorkspacePermission.MANAGE_ADS,
@@ -63,12 +67,14 @@ ROLE_PERMISSIONS = {
         WorkspacePermission.MANAGE_CHATS,
         WorkspacePermission.VIEW_CHATS,
         WorkspacePermission.VIEW_ANALYTICS,
+        WorkspacePermission.VIEW_CALLS,
     },
     WorkspaceMembership.Role.ANALYST: {
         WorkspacePermission.VIEW_ADS,
         WorkspacePermission.VIEW_TASKS,
         WorkspacePermission.VIEW_ANALYTICS,
         WorkspacePermission.VIEW_DETAILED_ANALYTICS,
+        WorkspacePermission.VIEW_CALLS,
     },
     WorkspaceMembership.Role.VIEWER: {
         WorkspacePermission.VIEW_ADS,

@@ -65,6 +65,10 @@ urlpatterns = [
         "api/automation-runs/",
         include("automations.run_urls"),
     ),
+    path(
+        "api/calls/",
+        include("calls.urls")
+    ),
 ]
 
 websocket_urlpatterns = [

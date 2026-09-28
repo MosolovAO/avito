@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'avitotask',
     'analytics',
     "automations.apps.AutomationsConfig",
+    "calls.apps.CallsConfig",
     'channels',
     'django_celery_beat',
     'sass_processor',
