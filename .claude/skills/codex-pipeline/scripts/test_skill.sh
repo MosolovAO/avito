@@ -59,5 +59,11 @@ for section in "## Разрешения" "## Контекст" "## Цель" "##
 done
 check "шаблон брифа запрещает git-команды" has "$BRIEF" "git-команды"
 
+CLAUDE_MD="$ROOT/CLAUDE.md"
+check "CLAUDE.md существует в корне репозитория" test -f "$CLAUDE_MD"
+check "CLAUDE.md называет /codex-pipeline" has "$CLAUDE_MD" "/codex-pipeline"
+check "CLAUDE.md запрещает самостоятельный вызов codex:codex-rescue" has "$CLAUDE_MD" "codex:codex-rescue"
+check "CLAUDE.md требует явной команде пользователя" has "$CLAUDE_MD" "явной команде"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
