@@ -31,7 +31,7 @@
 |---|---|
 | `.claude/skills/codex-pipeline/SKILL.md` | Цикл оркестрации; frontmatter `disable-model-invocation: true` |
 | `.claude/skills/codex-pipeline/references/task-brief.md` | Шаблон брифа для Codex |
-| `.claude/skills/codex-pipeline/scripts/worktree.sh` | `create <slug> [base-ref]` и `remove <slug>` |
+| `.claude/skills/codex-pipeline/scripts/worktree.sh` | `create <slug> [base-ref]`, `path <slug>` и `remove <slug>` |
 | `CLAUDE.md` (корень) | Правило: Codex только по явной команде пользователя, `codex:codex-rescue` сам не вызывать |
 
 ## Роли
