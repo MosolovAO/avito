@@ -65,5 +65,15 @@ check "CLAUDE.md называет /codex-pipeline" has "$CLAUDE_MD" "/codex-pipe
 check "CLAUDE.md запрещает самостоятельный вызов codex:codex-rescue" has "$CLAUDE_MD" "codex:codex-rescue"
 check "CLAUDE.md требует явной команде пользователя" has "$CLAUDE_MD" "явной команде"
 
+# Исправления по итогам финального ревью.
+check "SKILL.md: пропуск задач смотрит только коммиты ветки (<BASE>..HEAD)" has "$SKILL" "log --format=%s <BASE>..HEAD"
+check "SKILL.md: BASE фиксируется как SHA" has "$SKILL" "git rev-parse <ref>"
+check "SKILL.md: BASE восстанавливается при возобновлении" has "$SKILL" "git merge-base codex/<SLUG> HEAD"
+check "SKILL.md: finishing получает контекст ветки и worktree" has "$SKILL" "передай контекст"
+check "SKILL.md: status --wait с timeout 600000" has "$SKILL" "status --wait\` вызывай с \`timeout: 600000\`"
+check "SKILL.md: описано поле waitTimedOut" has "$SKILL" "waitTimedOut"
+check "SKILL.md: проверка scope видит файлы внутри новых каталогов и игнорируемые" has "$SKILL" "--untracked-files=all --ignored"
+check "SKILL.md: замечания передаются файлом, а не строкой в кавычках" has "$SKILL" "--resume-last --prompt-file"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

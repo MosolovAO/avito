@@ -45,7 +45,7 @@ node "$COMPANION" setup --json
 SNAP="$(mktemp)"; git status --porcelain > "$SNAP"; echo "$SNAP"
 ```
 
-Запомни `SNAP`. База `BASE` по умолчанию `HEAD` текущей ветки; пользователь может указать другую. Если файл из scope любой задачи плана есть в снимке (изменён или не отслеживается), остановись и спроси: закоммитить его или взять другую базу. В worktree незакоммиченное не попадает.
+Запомни `SNAP`. База по умолчанию — `HEAD` текущей ветки; пользователь может указать другую. Зафиксируй `BASE` как SHA: `git rev-parse <ref>`. Слово `HEAD` вместо SHA нельзя: в worktree диапазон `<BASE>..HEAD` стал бы пустым. Если файл из scope любой задачи плана есть в снимке (изменён или не отслеживается), остановись и спроси: закоммитить его или взять другую базу. В worktree незакоммиченное не попадает.
 
 ## Шаг 4. Worktree
 
@@ -55,7 +55,7 @@ SNAP="$(mktemp)"; git status --porcelain > "$SNAP"; echo "$SNAP"
 bash .claude/skills/codex-pipeline/scripts/worktree.sh path <SLUG>
 ```
 
-- Код 0: worktree уже есть, это возобновление. Скажи пользователю одной строкой и используй напечатанный путь как `WT`.
+- Код 0: worktree уже есть, это возобновление. Скажи пользователю одной строкой и используй напечатанный путь как `WT`. `BASE` восстанови из основного дерева: `git merge-base codex/<SLUG> HEAD`.
 - Код 1: создай новый:
 
 ```bash
@@ -66,7 +66,7 @@ bash .claude/skills/codex-pipeline/scripts/worktree.sh create <SLUG> [BASE]
 
 ## Шаг 5. Цикл по задачам плана
 
-Идти по порядку. Задачу пропусти, если в `git -C <WT> log --format=%s` уже есть строка, начинающаяся с `task N:`.
+Идти по порядку. Задачу пропусти, если в `git -C <WT> log --format=%s <BASE>..HEAD` есть строка, начинающаяся с `task N:`. Смотри только коммиты ветки: после merge в основную ветку старые `task N:` лежат в общей истории и скрыли бы задачи нового запуска.
 
 ### 5.1 Бриф
 
@@ -80,7 +80,7 @@ bash .claude/skills/codex-pipeline/scripts/worktree.sh create <SLUG> [BASE]
 node <COMPANION> task --cwd <WT> --write --model gpt-6.1-sol --effort high --json --prompt-file <BRIEF>
 ```
 
-Вызывай с `timeout: 600000`. Ответ: `{"status", "threadId", "rawOutput", "touchedFiles", "reasoningSummary"}`; `status` 0 означает успех.
+Вызывай с `timeout: 600000`. Если Bash оборвал команду по таймауту, job может остаться в состоянии `running`: выполни `status --cwd <WT>`, при необходимости `cancel <jobId> --cwd <WT>`, и только после этого повторяй задачу. Ответ: `{"status", "threadId", "rawOutput", "touchedFiles", "reasoningSummary"}`; `status` 0 означает успех.
 
 Большая задача (много файлов или долгие тесты): добавь `--background`. Ответ `{"jobId", …}`. Дальше:
 
@@ -89,26 +89,26 @@ node <COMPANION> status <jobId> --cwd <WT> --wait --timeout-ms 540000 --json
 node <COMPANION> result <jobId> --cwd <WT>
 ```
 
-Если `--wait` истёк, повтори его один раз; после второго истечения предложи пользователю отмену: `node <COMPANION> cancel <jobId> --cwd <WT>`.
+`status --wait` вызывай с `timeout: 600000`. Когда ожидание истекло, команда завершается с кодом 0 и полем `"waitTimedOut": true`; это не ошибка. Тогда повтори `--wait` один раз; после второго истечения предложи пользователю отмену: `node <COMPANION> cancel <jobId> --cwd <WT>`.
 
 ### 5.3 Разбор ответа
 
 - `status` не 0, ответ пустой или job отменён: один повтор с нуля (новый `task`, без `--resume-last`). Не помогло — эскалация к пользователю.
-- Codex вернул вопрос вместо кода: ответь из плана (`--resume-last` с ответом); если ответа в плане нет, спроси пользователя.
+- Codex вернул вопрос вместо кода: ответь из плана (`--resume-last --prompt-file` с ответом); если ответа в плане нет, спроси пользователя.
 - Codex упёрся в зависимость или окружение: покажи пользователю и остановись на гейте.
 
 ### 5.4 Проверка (делаешь ты, не Codex)
 
-1. `git -C <WT> status --porcelain` вместе с `touchedFiles` из ответа: каждый изменённый или новый путь должен быть в scope брифа. Файл вне scope, а также `.env*`, `backend/static/`, `backend/media/`, `*.csv`, `*.xlsx`, `backend/celerybeat-schedule` — отклонение; замечание уходит по шагу 5.5.
+1. `git -C <WT> status --porcelain --untracked-files=all --ignored` вместе с `touchedFiles` из ответа (без `--untracked-files=all` новый каталог сворачивается в одну строку и прячет файлы внутри): каждый изменённый или новый путь должен быть в scope брифа. Записи `!!` для `venv`, `frontend/node_modules` и `__pycache__` игнорируй; любой другой игнорируемый файл (в том числе `.env*`) считай нарушением. Файл вне scope, а также `.env*`, `backend/static/`, `backend/media/`, `*.csv`, `*.xlsx`, `backend/celerybeat-schedule` — отклонение; замечание уходит по шагу 5.5.
 2. Запусти команды проверки из брифа сам, в `<WT>`: Django — `cd <WT>/backend && ../venv/bin/python manage.py test <путь>`, frontend — `cd <WT>/frontend && npm run test -- <путь>`. Если окружения нет (PostgreSQL, Redis, Docker), запиши «не проверено: <что именно>»; такую задачу нельзя считать подтверждённой.
 3. Прочитай `git -C <WT> diff` и новые файлы против критериев приёмки.
 
 ### 5.5 Автоисправление
 
-Если проверка не прошла, отправь Codex конкретные замечания в тот же поток:
+Если проверка не прошла, запиши конкретные замечания в файл `<папка WT>/.briefs/<SLUG>-task-N-fix-K.md` и отправь их в тот же поток. Не передавай замечания строкой в кавычках: обратные кавычки внутри двойных zsh выполнит как команду в основном дереве.
 
 ```bash
-node <COMPANION> task --cwd <WT> --write --model gpt-6.1-sol --effort high --json --resume-last "<замечания: файл, что не так, чего ожидаешь>"
+node <COMPANION> task --cwd <WT> --write --model gpt-6.1-sol --effort high --json --resume-last --prompt-file <файл замечаний>
 ```
 
 Затем повтори 5.4. Максимум 2 автоматических раунда на задачу; после этого иди на гейт с честным описанием проблемы.
@@ -135,5 +135,5 @@ git -C <WT> commit -m "task N: <название задачи>" -m "Co-Authored-
 
 1. Покажи итог: сделанные задачи и `git -C <WT> log --oneline <BASE>..HEAD`.
 2. Проверь основное дерево: `git status --porcelain | diff - <SNAP>` должен быть пуст. Если нет, сообщи об этом пользователю.
-3. Вызови `superpowers:finishing-a-development-branch`.
+3. Вызови `superpowers:finishing-a-development-branch` и передай контекст: ветка `codex/<SLUG>`, worktree `<WT>`, база `<BASE>`; тесты и проверки гонять в `<WT>`, а не в основном дереве. Основное дерево грязное (чужие правки), поэтому checkout, pull и merge в нём без прямого согласия пользователя не выполняй.
 4. Удалять worktree можно только по команде пользователя: `bash .claude/skills/codex-pipeline/scripts/worktree.sh remove <SLUG>` (ветка сохраняется).
