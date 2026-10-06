@@ -1,18 +1,24 @@
 """Contract tests for calls, using redacted Avito response shapes."""
 
 import asyncio
+import gzip
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from asgiref.sync import sync_to_async
-from django.db import connection
+import requests
+
+from asgiref.sync import async_to_sync, sync_to_async
+from celery.exceptions import Retry, SoftTimeLimitExceeded
+from django.conf import settings
+from django.db import DataError, connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone as django_timezone
 from requests import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+from urllib3.response import HTTPResponse
 
 from accounts.models import User, Workspace, WorkspaceMembership
 from avitotask.models import AvitoAccount, AvitoListing, AvitoOAuthToken
@@ -20,10 +26,10 @@ from avitotask.services.avito_api import AvitoApiError
 from calls.api_views import CallAudioView
 from calls.models import Call, CallSyncState
 from calls.services import (
-    AudioUnavailable, fetch_call_window, open_call_audio,
+    AudioUnavailable, LEASE, fetch_call_window, open_call_audio,
     sync_calls_for_account, upsert_call, classify_account_history,
 )
-from calls.tasks import enqueue_calls_sync_task
+from calls.tasks import enqueue_calls_sync_task, sync_calls_for_account_task
 
 AVITO_CALL = {
     "buyerPhone": "+70000000001",
@@ -49,7 +55,7 @@ class FakeCallsClient:
         matches = [
             row for row in self.rows
             if start <= (occurred_at := datetime.fromisoformat(row["callTime"].replace("Z", "+00:00")))
-            and (occurred_at <= end if self.inclusive_end else occurred_at < end)
+               and (occurred_at <= end if self.inclusive_end else occurred_at < end)
         ]
         return {
             "calls": matches[json["offset"]:json["offset"] + json["limit"]],
@@ -57,7 +63,191 @@ class FakeCallsClient:
         }
 
 
+def isolate_calls_audio_cache(test_case):
+    cache_settings = test_case.settings(CACHES={
+        **settings.CACHES,
+        "calls_audio": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": test_case.id(),
+        },
+    })
+    cache_settings.enable()
+    test_case.addCleanup(cache_settings.disable)
+
+
 class CallsMvpTests(TestCase):
+    def setUp(self):
+        isolate_calls_audio_cache(self)
+
+    def test_report_rejects_empty_content(self):
+        call = self.make_call(
+            "empty-report",
+            datetime(2026, 9, 29, tzinfo=timezone.utc),
+        )
+        call.report_text = "Существующий отчет"
+        call.save(update_fields=["report_text"])
+        client = self.api_as(self.owner, self.workspace)
+
+        for content in ("", "   ", "\n\t", "\u00a0"):
+            with self.subTest(content=content):
+                response = client.put(
+                    f"/api/calls/{call.pk}/report/",
+                    {"report_text": content},
+                    format="json",
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("report_text", response.data)
+                call.refresh_from_db()
+                self.assertEqual(call.report_text, "Существующий отчет")
+
+    def test_report_cannot_update_call_from_another_workspace(self):
+        call = upsert_call(self.other_account, AVITO_CALL)
+        response = self.api_as(self.owner, self.workspace).put(
+            f"/api/calls/{call.pk}/report/",
+            {"report_text": "Чужой отчет"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        call.refresh_from_db()
+        self.assertEqual(call.report_text, "")
+
+    def test_report_save_returns_saved_content_in_call_list(self):
+        call = self.make_call(
+            "report-api",
+            datetime(2026, 9, 29, 12, tzinfo=timezone.utc),
+        )
+        client = self.api_as(self.owner, self.workspace)
+        report = (
+            "Виктория\n"
+            "ГСБ 40 кубов / Москва / Перезвонит клиенту"
+        )
+
+        response = client.put(
+            f"/api/calls/{call.pk}/report/",
+            {"report_text": report},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["report_text"], report)
+
+        call.refresh_from_db()
+        self.assertEqual(call.report_text, report)
+
+        response = client.get(
+            "/api/calls/",
+            {
+                "avito_account_id": self.account.pk,
+                "date": "2026-09-29",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["id"], call.pk)
+        self.assertEqual(response.data["results"][0]["report_text"], report)
+
+    def test_repeat_import_preserves_call_report(self):
+        call = upsert_call(self.account, AVITO_CALL)
+        report = (
+            "Виктория\n"
+            "ГСБ 40 кубов / Москва / Перезвонит клиенту"
+        )
+        call.report_text = report
+        call.save(update_fields=["report_text"])
+
+        upsert_call(self.account, {**AVITO_CALL, "talkDuration": 90})
+
+        call.refresh_from_db()
+        self.assertEqual(call.report_text, report)
+        self.assertEqual(call.talk_duration, 90)
+
+    def test_report_edit_updates_the_same_call_without_changing_call_data(self):
+        call = upsert_call(self.account, AVITO_CALL)
+        client = self.api_as(self.owner, self.workspace)
+        url = f"/api/calls/{call.pk}/report/"
+
+        for report in ("Клиент перезвонит", "Заказ подтвержден\n40 кубов"):
+            with self.subTest(report=report):
+                response = client.put(
+                    url, {"report_text": report}, format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["report_text"], report)
+                call.refresh_from_db()
+                self.assertEqual(call.report_text, report)
+                self.assertEqual(call.buyer_phone, "+70000000001")
+                self.assertEqual(call.talk_duration, 74)
+                self.assertEqual(
+                    Call.objects.filter(avito_account=self.account).count(), 1,
+                )
+
+    def test_report_is_allowed_for_every_role_with_call_access(self):
+        call = self.make_call(
+            "report-roles", datetime(2026, 9, 29, tzinfo=timezone.utc),
+        )
+        for role, user in (
+            (WorkspaceMembership.Role.OWNER, self.owner),
+            (WorkspaceMembership.Role.ADMIN, self.viewer),
+            (WorkspaceMembership.Role.MANAGER, self.viewer),
+            (WorkspaceMembership.Role.ANALYST, self.viewer),
+        ):
+            with self.subTest(role=role):
+                membership = WorkspaceMembership.objects.get(
+                    user=user, workspace=self.workspace,
+                )
+                membership.role = role
+                membership.save(update_fields=["role"])
+                report = f"Отчет участника {role}"
+                response = self.api_as(user, self.workspace).put(
+                    f"/api/calls/{call.pk}/report/",
+                    {"report_text": report},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 200)
+                call.refresh_from_db()
+                self.assertEqual(call.report_text, report)
+
+    def test_report_is_forbidden_without_call_access(self):
+        call = self.make_call(
+            "report-forbidden", datetime(2026, 9, 29, tzinfo=timezone.utc),
+        )
+        response = self.api_as(self.viewer, self.workspace).put(
+            f"/api/calls/{call.pk}/report/",
+            {"report_text": "Недоступный отчет"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        call.refresh_from_db()
+        self.assertEqual(call.report_text, "")
+
+    def test_report_rejects_missing_invalid_or_oversized_text(self):
+        call = self.make_call(
+            "invalid-report", datetime(2026, 9, 29, tzinfo=timezone.utc),
+        )
+        call.report_text = "Существующий отчет"
+        call.save(update_fields=["report_text"])
+        client = self.api_as(self.owner, self.workspace)
+        cases = (
+            ("missing", {}),
+            ("null", {"report_text": None}),
+            ("number", {"report_text": 123}),
+            ("list", {"report_text": []}),
+            ("object", {"report_text": {}}),
+            ("oversized", {"report_text": "а" * 20_001}),
+        )
+        for name, payload in cases:
+            with self.subTest(case=name):
+                response = client.put(
+                    f"/api/calls/{call.pk}/report/", payload, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("report_text", response.data)
+                call.refresh_from_db()
+                self.assertEqual(call.report_text, "Существующий отчет")
 
     def test_sync_exposes_each_phase_and_clears_it_on_completion(self):
         occurred_at = datetime(2026, 4, 2, 12, tzinfo=timezone.utc)
@@ -219,6 +409,76 @@ class CallsMvpTests(TestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["id"], matching.pk)
         self.assertIsNone(response.data["next"])
+
+    def test_list_search_normalizes_full_phone_before_pagination(self):
+        matching = upsert_call(self.account, {
+            **AVITO_CALL,
+            "buyerPhone": "+7 (999) 123-45-67",
+        })
+        self.make_call("other", matching.occurred_at + timedelta(minutes=1))
+        upsert_call(self.other_account, {
+            **AVITO_CALL,
+            "buyerPhone": "+7 (999) 123-45-67",
+        })
+        client = self.api_as(self.owner, self.workspace)
+
+        for search in (
+                "89991234567", "8 (999) 123-45-67",
+                "79991234567", "+7 (999) 123-45-67",
+                "9991234567", "999 123-45-67",
+        ):
+            with self.subTest(search=search):
+                response = client.get("/api/calls/", {
+                    "avito_account_id": self.account.pk,
+                    "search": search,
+                    "page_size": 1,
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.data["count"], 1)
+                self.assertEqual(
+                    [row["id"] for row in response.data["results"]],
+                    [matching.pk],
+                )
+                self.assertIsNone(response.data["next"])
+
+    def test_list_search_keeps_partial_phone_matching(self):
+        matching = upsert_call(self.account, {
+            **AVITO_CALL,
+            "buyerPhone": "+7 (999) 812-34-56",
+        })
+        self.make_call("other", matching.occurred_at + timedelta(minutes=1))
+        client = self.api_as(self.owner, self.workspace)
+
+        for search in ("8", "81234", "812-34", "999 812"):
+            with self.subTest(search=search):
+                response = client.get("/api/calls/", {
+                    "avito_account_id": self.account.pk,
+                    "search": search,
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [row["id"] for row in response.data["results"]],
+                    [matching.pk],
+                )
+
+    def test_list_search_keeps_item_id_starting_with_eight(self):
+        matching = upsert_call(self.account, {
+            **AVITO_CALL,
+            "itemId": "89991234567",
+        })
+        client = self.api_as(self.owner, self.workspace)
+
+        for search in ("89991234567", "8999123"):
+            with self.subTest(search=search):
+                response = client.get("/api/calls/", {
+                    "avito_account_id": self.account.pk,
+                    "search": search,
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [row["id"] for row in response.data["results"]],
+                    [matching.pk],
+                )
 
     def test_list_search_finds_late_listing_title_and_id_in_current_account(self):
         at = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
@@ -668,6 +928,139 @@ class CallsMvpTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def make_audio_upstream(self, *args):
+        upstream = Response()
+        upstream.status_code = 200
+        upstream.headers["Content-Type"] = "audio/mpeg"
+        upstream.headers["Content-Length"] = "5"
+        upstream.raw = BytesIO(b"audio")
+        return upstream
+
+    def finish_audio_response(self, response):
+        if response.streaming:
+            async def read_audio():
+                return b"".join([chunk async for chunk in response])
+
+            self.assertEqual(async_to_sync(read_audio)(), b"audio")
+
+    @patch("rest_framework.throttling.SimpleRateThrottle.timer", return_value=1000)
+    def test_audio_limit_blocks_avito_and_resets_at_window_boundary(self, timer):
+        call = self.make_call("audio-limit", self.now_for_audio())
+        client = self.api_as(self.owner, self.workspace)
+        url = f"/api/calls/{call.pk}/audio/"
+        with (
+            self.settings(AVITO_CALLS_AUDIO_THROTTLE_RATE="2/min"),
+            patch("calls.api_views.open_call_audio", side_effect=self.make_audio_upstream) as audio,
+        ):
+            for _ in range(2):
+                response = client.get(url)
+                try:
+                    self.assertEqual(response.status_code, 200)
+                finally:
+                    self.finish_audio_response(response)
+
+            blocked = client.get(url)
+            self.assertEqual(blocked.status_code, 429)
+            self.assertEqual(blocked["Retry-After"], "60")
+            self.assertEqual(audio.call_count, 2)
+
+            timer.return_value = 1059
+            blocked = client.get(url)
+            self.assertEqual(blocked.status_code, 429)
+            self.assertEqual(blocked["Retry-After"], "1")
+            self.assertEqual(audio.call_count, 2)
+
+            timer.return_value = 1060
+            response = client.get(url)
+            try:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(audio.call_count, 3)
+            finally:
+                self.finish_audio_response(response)
+
+    def now_for_audio(self):
+        return datetime(2026, 4, 2, 12, tzinfo=timezone.utc)
+
+    @patch("rest_framework.throttling.SimpleRateThrottle.timer", return_value=1000)
+    def test_audio_limit_is_shared_across_workspaces_for_one_user(self, timer):
+        WorkspaceMembership.objects.create(
+            user=self.owner, workspace=self.other_workspace,
+            role=WorkspaceMembership.Role.MANAGER,
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=self.other_workspace, avito_account=self.other_account,
+            access_token="test-other-token",
+        )
+        first = self.make_call("first-audio", self.now_for_audio())
+        second = Call.objects.create(
+            workspace=self.other_workspace, avito_account=self.other_account,
+            external_id="second-audio", occurred_at=self.now_for_audio(),
+        )
+        with (
+            self.settings(AVITO_CALLS_AUDIO_THROTTLE_RATE="1/min"),
+            patch("calls.api_views.open_call_audio", side_effect=self.make_audio_upstream) as audio,
+        ):
+            response = self.api_as(self.owner, self.workspace).get(
+                f"/api/calls/{first.pk}/audio/",
+            )
+            try:
+                self.assertEqual(response.status_code, 200)
+            finally:
+                self.finish_audio_response(response)
+            blocked = self.api_as(self.owner, self.other_workspace).get(
+                f"/api/calls/{second.pk}/audio/",
+            )
+            self.assertEqual(blocked.status_code, 429)
+            self.assertEqual(audio.call_count, 1)
+
+    @patch("rest_framework.throttling.SimpleRateThrottle.timer", return_value=1000)
+    def test_audio_limit_does_not_block_another_user(self, timer):
+        WorkspaceMembership.objects.create(
+            user=self.other_owner, workspace=self.workspace,
+            role=WorkspaceMembership.Role.MANAGER,
+        )
+        call = self.make_call("separate-user-limit", self.now_for_audio())
+        url = f"/api/calls/{call.pk}/audio/"
+        with (
+            self.settings(AVITO_CALLS_AUDIO_THROTTLE_RATE="1/min"),
+            patch("calls.api_views.open_call_audio", side_effect=self.make_audio_upstream) as audio,
+        ):
+            owner_client = self.api_as(self.owner, self.workspace)
+            response = owner_client.get(url)
+            try:
+                self.assertEqual(response.status_code, 200)
+            finally:
+                self.finish_audio_response(response)
+            self.assertEqual(owner_client.get(url).status_code, 429)
+
+            response = self.api_as(self.other_owner, self.workspace).get(url)
+            try:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(audio.call_count, 2)
+            finally:
+                self.finish_audio_response(response)
+
+    @patch("rest_framework.throttling.SimpleRateThrottle.timer", return_value=1000)
+    def test_audio_limit_does_not_block_call_list_or_sync_status(self, timer):
+        call = self.make_call("audio-only-limit", self.now_for_audio())
+        client = self.api_as(self.owner, self.workspace)
+        audio_url = f"/api/calls/{call.pk}/audio/"
+        with (
+            self.settings(AVITO_CALLS_AUDIO_THROTTLE_RATE="1/min"),
+            patch("calls.api_views.open_call_audio", side_effect=self.make_audio_upstream) as audio,
+        ):
+            response = client.get(audio_url)
+            try:
+                self.assertEqual(response.status_code, 200)
+            finally:
+                self.finish_audio_response(response)
+            self.assertEqual(client.get(audio_url).status_code, 429)
+            for url in ("/api/calls/", "/api/calls/sync-status/"):
+                with self.subTest(url=url):
+                    response = client.get(url, {"avito_account_id": self.account.pk})
+                    self.assertEqual(response.status_code, 200)
+            self.assertEqual(audio.call_count, 1)
+
     def test_audio_unavailable_preserves_card(self):
         call = self.make_call(
             "recording-later",
@@ -735,6 +1128,79 @@ class CallsMvpTests(TestCase):
 
         self.assertEqual(result, {"queued": 1, "failed": 1})
 
+    def test_invalid_workspace_header_returns_400_on_each_calls_endpoint(self):
+        call = self.make_call("header-test", datetime(2026, 4, 2, tzinfo=timezone.utc))
+        urls = (
+            f"/api/calls/?avito_account_id={self.account.pk}",
+            f"/api/calls/sync-status/?avito_account_id={self.account.pk}",
+            f"/api/calls/{call.pk}/audio/",
+        )
+        client = self.api_as(self.owner, self.workspace)
+        client.raise_request_exception = False
+        with patch("calls.api_views.open_call_audio", side_effect=AudioUnavailable) as audio:
+            for url in urls:
+                with self.subTest(url=url):
+                    with self.assertNumQueries(0):
+                        response = client.get(url, HTTP_X_WORKSPACE_ID="abc")
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("workspace", response.data)
+            audio.assert_not_called()
+
+    def test_workspace_header_rejects_empty_noninteger_and_out_of_range_ids(self):
+        client = self.api_as(self.owner, self.workspace)
+        client.raise_request_exception = False
+        for value in ("", " ", "1.5", "0", "-1", "9223372036854775808", "9" * 200):
+            with self.subTest(value=value):
+                response = client.get(
+                    f"/api/calls/?avito_account_id={self.account.pk}",
+                    HTTP_X_WORKSPACE_ID=value,
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("workspace", response.data)
+
+    def test_valid_workspace_header_keeps_access_to_the_selected_workspace(self):
+        call = self.make_call("header-test", datetime(2026, 4, 2, tzinfo=timezone.utc))
+        client = self.api_as(self.owner, self.workspace)
+        for value in (str(self.workspace.pk), f"0{self.workspace.pk}", f" {self.workspace.pk} "):
+            with self.subTest(value=value):
+                response = client.get(
+                    f"/api/calls/?avito_account_id={self.account.pk}",
+                    HTTP_X_WORKSPACE_ID=value,
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual([row["id"] for row in response.data["results"]], [call.pk])
+
+    def test_foreign_workspace_header_stays_forbidden_before_audio_request(self):
+        call = self.make_call("header-test", datetime(2026, 4, 2, tzinfo=timezone.utc))
+        client = self.api_as(self.owner, self.workspace)
+        urls = (
+            f"/api/calls/?avito_account_id={self.account.pk}",
+            f"/api/calls/sync-status/?avito_account_id={self.account.pk}",
+            f"/api/calls/{call.pk}/audio/",
+        )
+        with patch("calls.api_views.open_call_audio", side_effect=AudioUnavailable) as audio:
+            for url in urls:
+                with self.subTest(url=url):
+                    response = client.get(url, HTTP_X_WORKSPACE_ID=str(self.other_workspace.pk))
+                    self.assertEqual(response.status_code, 403)
+            audio.assert_not_called()
+
+    def test_largest_valid_workspace_id_is_forbidden_instead_of_invalid(self):
+        client = self.api_as(self.owner, self.workspace)
+        response = client.get(
+            f"/api/calls/?avito_account_id={self.account.pk}",
+            HTTP_X_WORKSPACE_ID="9223372036854775807",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_missing_workspace_header_keeps_single_membership_fallback(self):
+        call = self.make_call("header-test", datetime(2026, 4, 2, tzinfo=timezone.utc))
+        client = APIClient()
+        client.force_authenticate(user=self.owner)
+        response = client.get(f"/api/calls/?avito_account_id={self.account.pk}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data["results"]], [call.pk])
+
 
 class AudioBody(BytesIO):
     def __init__(self, content):
@@ -758,12 +1224,17 @@ class AudioBody(BytesIO):
 
 
 class CallAudioStreamingTests(SimpleTestCase):
-    def make_response(self):
-        body = AudioBody(b'a' * 65536 + b'b' * 65536)
-        upstream = Response()
-        upstream.status_code = 200
-        upstream.headers['Content-Length'] = '131072'
-        upstream.raw = body
+    def setUp(self):
+        isolate_calls_audio_cache(self)
+
+    def make_response(self, upstream=None):
+        if upstream is None:
+            upstream = Response()
+            upstream.status_code = 200
+            upstream.headers['Content-Type'] = 'audio/mpeg'
+            upstream.headers['Content-Length'] = '131072'
+            upstream.raw = AudioBody(b'a' * 65536 + b'b' * 65536)
+        body = upstream.raw
         call = SimpleNamespace(
             external_id='123',
             avito_account=SimpleNamespace(oauth_tokens=object()),
@@ -778,6 +1249,104 @@ class CallAudioStreamingTests(SimpleTestCase):
             response = CallAudioView.as_view()(request, pk=1)
         self.addCleanup(upstream.close)
         return response, body
+
+    def test_audio_response_preserves_upstream_content_type(self):
+        for content_type in (
+                'audio/mpeg', 'audio/ogg', 'audio/ogg; codecs=opus',
+                'audio/wav', 'audio/mp4',
+        ):
+            with self.subTest(content_type=content_type):
+                upstream = Response()
+                upstream.status_code = 200
+                upstream.headers.update({
+                    'Content-Type': content_type,
+                    'Content-Length': '5',
+                })
+                upstream.raw = AudioBody(b'audio')
+                response, body = self.make_response(upstream)
+                try:
+                    self.assertEqual(response['Content-Type'], content_type)
+                    self.assertEqual(response['Content-Length'], '5')
+                    self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
+                    self.assertEqual(response['Cache-Control'], 'private, no-store')
+                finally:
+                    response.close()
+                self.assertTrue(body.closed)
+
+    def test_open_audio_rejects_missing_or_non_audio_content_type(self):
+        for content_type in (None, 'application/json', 'text/html'):
+            with self.subTest(content_type=content_type):
+                upstream = Response()
+                upstream.status_code = 200
+                if content_type is not None:
+                    upstream.headers['Content-Type'] = content_type
+                body = AudioBody(b'not audio')
+                upstream.raw = body
+                self.addCleanup(upstream.close)
+                with patch('calls.services.AvitoApiClient') as client_class:
+                    client_class.return_value.base_url = 'https://api.avito.ru'
+                    client_class.return_value._send_request.return_value = upstream
+                    with self.assertRaisesMessage(AvitoApiError, 'не аудиофайл'):
+                        open_call_audio(SimpleNamespace(access_token='test-token'), '123')
+                self.assertTrue(body.closed)
+
+    async def test_gzip_audio_omits_compressed_length_and_delivers_decoded_body(self):
+        audio = b'a' * 65536 + b'b' * 65536
+        compressed = gzip.compress(audio)
+        upstream = Response()
+        upstream.status_code = 200
+        upstream.headers.update({
+            'Content-Type': 'audio/mpeg',
+            'Content-Encoding': 'gzip',
+            'Content-Length': str(len(compressed)),
+        })
+        upstream.raw = HTTPResponse(
+            body=AudioBody(compressed),
+            headers=upstream.headers,
+            preload_content=False,
+        )
+        response, body = self.make_response(upstream)
+        try:
+            delivered = b''.join([chunk async for chunk in response])
+            self.assertEqual(delivered, audio)
+            self.assertNotEqual(len(delivered), len(compressed))
+            self.assertNotIn('Content-Length', response.headers)
+            self.assertNotIn('Content-Encoding', response.headers)
+        finally:
+            await sync_to_async(response.close)()
+        self.assertTrue(body.closed)
+
+    def test_identity_encoding_preserves_original_length(self):
+        for encoding in ('identity', 'Identity', ' identity '):
+            with self.subTest(encoding=encoding):
+                upstream = Response()
+                upstream.status_code = 200
+                upstream.headers.update({
+                    'Content-Type': 'audio/mpeg',
+                    'Content-Encoding': encoding,
+                    'Content-Length': '131072',
+                })
+                upstream.raw = AudioBody(b'a' * 131072)
+                response, _ = self.make_response(upstream)
+                try:
+                    self.assertEqual(response['Content-Length'], '131072')
+                finally:
+                    response.close()
+
+    def test_missing_or_invalid_audio_length_is_not_forwarded(self):
+        for length in (None, '', 'invalid', '-1'):
+            with self.subTest(length=length):
+                upstream = Response()
+                upstream.status_code = 200
+                upstream.headers['Content-Type'] = 'audio/mpeg'
+                if length is not None:
+                    upstream.headers['Content-Length'] = length
+                upstream.raw = AudioBody(b'a')
+                response, _ = self.make_response(upstream)
+                try:
+                    self.assertNotIn('Content-Length', response.headers)
+                finally:
+                    response.close()
 
     async def test_asgi_delivers_first_chunk_before_reading_remaining_audio(self):
         response, body = self.make_response()
@@ -954,10 +1523,10 @@ class IncrementalClassificationTests(TestCase):
         phone_reads = [
             query["sql"] for query in captured
             if query["sql"].startswith(("SELECT ", "DECLARE "))
-            and (
-                '"calls_call"."normalized_phone" IN ' in query["sql"]
-                or '"calls_call"."normalized_phone" = ' in query["sql"]
-            )
+               and (
+                       '"calls_call"."normalized_phone" IN ' in query["sql"]
+                       or '"calls_call"."normalized_phone" = ' in query["sql"]
+               )
         ]
         self.assertTrue(phone_reads, "Ожидалось чтение первой записи номера")
         self.assertTrue(
@@ -1140,11 +1709,530 @@ class CallSyncQueryTests(TestCase):
         self.assertEqual(Call.objects.count(), 1)
         self.assertEqual(Call.objects.get(external_id='0').talk_duration, 60)
 
-    def test_invalid_row_rolls_back_changes_from_the_same_page(self):
+    def test_invalid_row_preserves_valid_changes_from_the_same_page(self):
         rows = self.rows(2)
         self.seed(rows)
         rows[0]['talkDuration'] = 75
         rows[1]['talkDuration'] = -1
+        self.fetch(rows)
+        self.assertEqual(Call.objects.get(external_id='0').talk_duration, 75)
+        self.assertEqual(Call.objects.get(external_id='1').talk_duration, 60)
+
+
+class InvalidCallRowsTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        owner = User.objects.create_user("invalid-calls@example.com")
+        workspace = Workspace.objects.create(
+            name="Invalid calls", slug="invalid-calls", owner=owner,
+        )
+        cls.account = AvitoAccount.objects.create(workspace=workspace, name="Main")
+        AvitoOAuthToken.objects.create(
+            workspace=workspace, avito_account=cls.account,
+            auth_type=AvitoOAuthToken.AuthType.CLIENT_CREDENTIALS,
+            access_token="test-token",
+        )
+        cls.now = datetime(2026, 4, 3, tzinfo=timezone.utc)
+
+    def row(self, call_id, **changes):
+        return {
+            "callId": call_id,
+            "callTime": "2026-04-02T12:00:00Z",
+            "buyerPhone": "+79991234567",
+            "talkDuration": 60,
+            "waitingDuration": 5,
+            **changes,
+        }
+
+    def fetch(self, rows):
+        client = Mock()
+        client.request.return_value = {"calls": rows}
+        return fetch_call_window(
+            self.account, self.account.oauth_tokens,
+            self.now - timedelta(days=2), self.now, client,
+        )
+
+    def state(self):
+        return CallSyncState.objects.create(
+            avito_account=self.account,
+            last_synced_at=self.now - timedelta(hours=1),
+            backfill_complete=True,
+            classification_complete=True,
+        )
+
+    def test_invalid_row_does_not_discard_valid_neighbors(self):
+        missing_time = self.row(99)
+        missing_time.pop("callTime")
+        invalid_rows = [
+            None,
+            self.row(None),
+            self.row(True),
+            self.row("invalid"),
+            self.row("1" * 101),
+            missing_time,
+            self.row(99, callTime="2026-04-02T12:00:00"),
+            self.row(99, buyerPhone="9" * 65),
+            self.row(99, buyerPhone=79991234567),
+            self.row(99, itemId="1" * 101),
+            self.row(99, talkDuration=-1),
+            self.row(99, waitingDuration=2 ** 31),
+        ]
+        for invalid in invalid_rows:
+            with self.subTest(invalid=invalid):
+                with self.assertLogs("calls.services", level="WARNING") as logs:
+                    skipped = self.fetch([self.row(1), invalid, self.row(2)])
+                self.assertEqual(skipped, 1)
+                self.assertEqual(
+                    set(Call.objects.values_list("external_id", flat=True)),
+                    {"1", "2"},
+                )
+                self.assertNotIn("+79991234567", "\n".join(logs.output))
+
+    def test_non_ascii_call_ids_are_rejected(self):
+        for call_id in ("²", "١٢٣", "１２３", "123²", "123١"):
+            with self.subTest(call_id=call_id):
+                with self.assertRaisesMessage(AvitoApiError, "Некорректный callId."):
+                    upsert_call(self.account, self.row(call_id))
+
+    def test_non_ascii_call_ids_are_skipped_without_losing_valid_neighbors(self):
+        invalid_ids = ("²", "١٢٣", "１２３", "123²", "123١")
+        rows = [
+            self.row(1),
+            *(self.row(call_id) for call_id in invalid_ids),
+            self.row(2),
+        ]
+        with self.assertLogs("calls.services", level="WARNING") as logs:
+            skipped = self.fetch(rows)
+        self.assertEqual(skipped, len(invalid_ids))
+        self.assertEqual(len(logs.records), len(invalid_ids))
+        self.assertEqual(
+            set(Call.objects.values_list("external_id", flat=True)),
+            {"1", "2"},
+        )
+
+    def test_ascii_call_ids_keep_their_original_representation(self):
+        for call_id in (0, "0", 123, "123", "000123", "9" * 100):
+            with self.subTest(call_id=call_id):
+                call = upsert_call(self.account, self.row(call_id))
+                self.assertEqual(call.external_id, str(call_id))
+                self.assertTrue(Call.objects.filter(
+                    avito_account=self.account,
+                    external_id=str(call_id),
+                ).exists())
+
+    def test_invalid_full_page_does_not_stop_pagination(self):
+        client = Mock()
+        client.request.side_effect = [
+            {"calls": [self.row(98, talkDuration=-1), self.row(99, talkDuration=-1)]},
+            {"calls": [self.row(1)]},
+        ]
+        with patch("calls.services.PAGE_SIZE", 2):
+            skipped = fetch_call_window(
+                self.account, self.account.oauth_tokens,
+                self.now - timedelta(days=2), self.now, client,
+            )
+        self.assertEqual(skipped, 2)
+        self.assertEqual(client.request.call_count, 2)
+        self.assertTrue(Call.objects.filter(external_id="1").exists())
+
+    def test_database_failure_still_rolls_back_the_page(self):
+        upsert_call(self.account, self.row(1))
+        upsert_call(self.account, self.row(2))
+        save = Call.objects.update_or_create
+
+        def fail_second(**kwargs):
+            if kwargs["external_id"] == "2":
+                raise DataError("simulated database failure")
+            return save(**kwargs)
+
+        with patch("calls.services.Call.objects.update_or_create", side_effect=fail_second):
+            with self.assertRaises(DataError):
+                self.fetch([
+                    self.row(1, talkDuration=75),
+                    self.row(2, talkDuration=76),
+                ])
+        self.assertEqual(Call.objects.get(external_id="1").talk_duration, 60)
+
+    def test_invalid_envelope_does_not_advance_cursor(self):
+        state = self.state()
+        original_cursor = state.last_synced_at
+        client = Mock()
+        client.request.return_value = {"calls": None}
         with self.assertRaises(AvitoApiError):
-            self.fetch(rows)
-        self.assertEqual(Call.objects.get(external_id='0').talk_duration, 60)
+            sync_calls_for_account(self.account.pk, client=client, now=self.now)
+        state.refresh_from_db()
+        self.assertEqual(state.last_synced_at, original_cursor)
+        self.assertIsNone(state.lease_until)
+
+    def test_incomplete_history_warning_survives_a_successful_next_sync(self):
+        state = self.state()
+        client = Mock()
+        client.request.return_value = {"calls": [
+            self.row(1), self.row(99, buyerPhone="9" * 65),
+        ]}
+        sync_calls_for_account(self.account.pk, client=client, now=self.now)
+        state.refresh_from_db()
+        self.assertEqual(state.last_synced_at, self.now)
+        self.assertTrue(state.has_invalid_calls)
+        self.assertIn("неполной", state.last_error)
+
+        client.request.return_value = {"calls": [self.row(1)]}
+        next_now = self.now + timedelta(hours=1)
+        sync_calls_for_account(self.account.pk, client=client, now=next_now)
+        state.refresh_from_db()
+        self.assertEqual(state.last_synced_at, next_now)
+        self.assertTrue(state.has_invalid_calls)
+        self.assertIn("неполной", state.last_error)
+
+    def test_oversized_values_are_validation_errors_before_database_writes(self):
+        for row in (
+                self.row("1" * 101),
+                self.row(1, buyerPhone="9" * 65),
+                self.row(1, itemId="1" * 101),
+                self.row(1, talkDuration=2 ** 31),
+        ):
+            with self.subTest(row=row), self.assertNumQueries(0):
+                with self.assertRaises(AvitoApiError):
+                    upsert_call(self.account, row)
+
+    def test_values_at_database_boundaries_are_preserved(self):
+        call = upsert_call(self.account, self.row(
+            "1" * 100, buyerPhone="9" * 64,
+            itemId="2" * 100, talkDuration=2 ** 31 - 1,
+        ))
+        self.assertEqual(call.external_id, "1" * 100)
+        self.assertEqual(call.buyer_phone, "9" * 64)
+        self.assertEqual(call.avito_item_id, "2" * 100)
+        self.assertEqual(call.talk_duration, 2 ** 31 - 1)
+
+
+class CallsApiAuthorizationTests(SimpleTestCase):
+    def make_api_client(self, statuses):
+        from avitotask.services.avito_api import AvitoApiClient
+
+        responses = []
+        for status in statuses:
+            response = Response()
+            response.status_code = status
+            response._content = b'{"result":"ok"}'
+            responses.append(response)
+        session = Mock()
+        session.request.side_effect = responses
+        with self.settings(
+                AVITO_API_MIN_REQUEST_INTERVAL_SECONDS=0,
+                AVITO_API_MAX_RETRIES=0,
+        ):
+            return AvitoApiClient(session=session)
+
+    def test_forbidden_response_does_not_refresh_token_or_repeat_request(self):
+        client = self.make_api_client([403, 403])
+        token = SimpleNamespace(access_token="test-token")
+        with patch.object(client, "refresh_access_token") as refresh:
+            with self.assertRaises(AvitoApiError) as caught:
+                client.request("POST", "/calltracking/v1/getCalls/", token=token)
+        self.assertEqual(caught.exception.status_code, 403)
+        refresh.assert_not_called()
+        self.assertEqual(client.session.request.call_count, 1)
+
+    def test_unauthorized_response_refreshes_token_once_and_uses_new_token(self):
+        client = self.make_api_client([401, 200])
+        token = SimpleNamespace(access_token="old-test-token")
+
+        def update_token(current_token):
+            current_token.access_token = "new-test-token"
+
+        with patch.object(client, "refresh_access_token", side_effect=update_token) as refresh:
+            result = client.request("POST", "/calltracking/v1/getCalls/", token=token)
+        self.assertEqual(result, {"result": "ok"})
+        refresh.assert_called_once_with(token)
+        self.assertEqual(client.session.request.call_count, 2)
+        sent_headers = [
+            call.kwargs["headers"]["Authorization"]
+            for call in client.session.request.call_args_list
+        ]
+        self.assertEqual(sent_headers, [
+            "Bearer old-test-token", "Bearer new-test-token",
+        ])
+
+    def test_second_unauthorized_response_stops_without_another_refresh(self):
+        client = self.make_api_client([401, 401])
+        token = SimpleNamespace(access_token="test-token")
+        with patch.object(client, "refresh_access_token") as refresh:
+            with self.assertRaises(AvitoApiError) as caught:
+                client.request("POST", "/calltracking/v1/getCalls/", token=token)
+        self.assertEqual(caught.exception.status_code, 401)
+        refresh.assert_called_once_with(token)
+        self.assertEqual(client.session.request.call_count, 2)
+
+    def test_forbidden_after_token_refresh_is_returned_without_another_refresh(self):
+        client = self.make_api_client([401, 403])
+        token = SimpleNamespace(access_token="test-token")
+        with patch.object(client, "refresh_access_token") as refresh:
+            with self.assertRaises(AvitoApiError) as caught:
+                client.request("POST", "/calltracking/v1/getCalls/", token=token)
+        self.assertEqual(caught.exception.status_code, 403)
+        refresh.assert_called_once_with(token)
+        self.assertEqual(client.session.request.call_count, 2)
+
+
+class CallsRetryAfterTests(SimpleTestCase):
+    def response(self, status, retry_after=None):
+        response = Response()
+        response.status_code = status
+        response._content = b'{"access_token":"test-token","expires_in":3600,"token_type":"Bearer"}'
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        return response
+
+    def request(self, client, endpoint):
+        if endpoint == "token":
+            return client.request_token({"grant_type": "client_credentials"})
+        return client.request("GET", "/calltracking/test")
+
+    def make_api_client(self, responses, *, default_delay=60):
+        from avitotask.services.avito_api import AvitoApiClient
+
+        session = Mock()
+        session.request.side_effect = responses
+        with self.settings(
+                AVITO_API_MIN_REQUEST_INTERVAL_SECONDS=0,
+                AVITO_API_MAX_RETRIES=1,
+                AVITO_API_DEFAULT_RETRY_AFTER_SECONDS=default_delay,
+                AVITO_API_MAX_RETRY_AFTER_SECONDS=60,
+        ):
+            return AvitoApiClient(session=session)
+
+    def test_long_retry_after_fails_without_sleeping_or_sending_again(self):
+        for endpoint in ("api", "token"):
+            with self.subTest(endpoint=endpoint):
+                client = self.make_api_client([self.response(429, "61"), self.response(200)])
+                with patch("avitotask.services.avito_api.time.sleep") as sleep:
+                    with self.assertRaises(AvitoApiError) as caught:
+                        self.request(client, endpoint)
+                self.assertEqual(caught.exception.status_code, 429)
+                sleep.assert_not_called()
+                self.assertEqual(client.session.request.call_count, 1)
+
+    def test_retry_after_at_limit_is_honored(self):
+        for endpoint in ("api", "token"):
+            with self.subTest(endpoint=endpoint):
+                client = self.make_api_client([self.response(429, "60"), self.response(200)])
+                with patch("avitotask.services.avito_api.time.sleep") as sleep:
+                    result = self.request(client, endpoint)
+                self.assertEqual(result["access_token"], "test-token")
+                sleep.assert_called_once_with(60)
+
+    def test_missing_or_invalid_retry_after_uses_bounded_default(self):
+        for endpoint in ("api", "token"):
+            for value in (None, "invalid"):
+                with self.subTest(endpoint=endpoint, value=value):
+                    client = self.make_api_client(
+                        [self.response(429, value), self.response(200)],
+                        default_delay=30,
+                    )
+                    with patch("avitotask.services.avito_api.time.sleep") as sleep:
+                        result = self.request(client, endpoint)
+                    self.assertEqual(result["access_token"], "test-token")
+                    sleep.assert_called_once_with(30)
+
+    def test_default_delay_cannot_bypass_the_wait_limit(self):
+        client = self.make_api_client([self.response(429), self.response(200)], default_delay=61)
+        with patch("avitotask.services.avito_api.time.sleep") as sleep:
+            with self.assertRaises(AvitoApiError) as caught:
+                self.request(client, "api")
+        self.assertEqual(caught.exception.status_code, 429)
+        sleep.assert_not_called()
+
+
+class CallsTaskResilienceTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        owner = User.objects.create_user("calls-task-retries@example.com")
+        workspace = Workspace.objects.create(
+            name="Calls task retries", slug="calls-task-retries", owner=owner,
+        )
+        cls.account = AvitoAccount.objects.create(workspace=workspace, name="Main")
+        AvitoOAuthToken.objects.create(
+            workspace=workspace, avito_account=cls.account,
+            access_token="test-token",
+        )
+
+    def run_task(self, retries=0):
+        task = sync_calls_for_account_task
+        task.push_request(
+            id="calls-retry-test", args=(self.account.pk,), kwargs={},
+            retries=retries, called_directly=False, is_eager=True,
+        )
+        try:
+            return task.run(self.account.pk)
+        finally:
+            task.pop_request()
+
+    def forbid_calls(self, now, status=403):
+        state = CallSyncState.objects.create(
+            avito_account=self.account,
+            last_synced_at=now - timedelta(hours=1),
+            backfill_complete=True,
+            classification_complete=True,
+        )
+        client = Mock()
+        client.request.side_effect = AvitoApiError(
+            "upstream private details", status_code=status,
+        )
+        with (
+            self.settings(AVITO_CALLS_FORBIDDEN_RETRY_HOURS=6),
+            patch("calls.services.timezone.now", return_value=now),
+            patch("calls.services.AvitoApiClient", return_value=client),
+        ):
+            with self.assertRaises(AvitoApiError) as caught:
+                self.run_task()
+        self.assertEqual(caught.exception.status_code, status)
+        state.refresh_from_db()
+        return state
+
+    def test_forbidden_sync_records_pause_without_advancing_cursor(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        state = self.forbid_calls(now)
+        self.assertEqual(
+            getattr(state, "access_retry_at", None),
+            now + timedelta(hours=6),
+        )
+        self.assertEqual(state.last_synced_at, now - timedelta(hours=1))
+        self.assertIsNone(state.lease_until)
+        self.assertEqual(state.lease_token, "")
+        self.assertIsNone(state.phase)
+        self.assertIn("403", state.last_error)
+        self.assertNotIn("private details", state.last_error)
+
+    def test_paused_sync_does_not_contact_avito_or_advance_cursor(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        state = self.forbid_calls(now)
+        client = Mock()
+        client.request.return_value = {"calls": []}
+        for attempted_at in (
+                now + timedelta(hours=1),
+                now + timedelta(hours=6) - timedelta(seconds=1),
+        ):
+            with self.subTest(attempted_at=attempted_at):
+                self.assertFalse(sync_calls_for_account(
+                    self.account.pk, client=client, now=attempted_at,
+                ))
+                client.request.assert_not_called()
+                state.refresh_from_db()
+                self.assertEqual(state.last_synced_at, now - timedelta(hours=1))
+                self.assertIn("403", state.last_error)
+                self.assertIsNone(state.lease_until)
+
+    def test_dispatch_skips_paused_account_and_keeps_account_without_state(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        self.forbid_calls(now)
+        eligible = AvitoAccount.objects.create(
+            workspace=self.account.workspace, name="Without sync state",
+        )
+        AvitoOAuthToken.objects.create(
+            workspace=self.account.workspace, avito_account=eligible,
+            access_token="test-eligible-token",
+        )
+        with (
+            patch("django.utils.timezone.now", return_value=now + timedelta(hours=1)),
+            patch("calls.tasks.sync_calls_for_account_task.delay") as enqueue,
+        ):
+            result = enqueue_calls_sync_task()
+        enqueue.assert_called_once_with(eligible.pk)
+        self.assertEqual(result, {"queued": 1, "failed": 0})
+
+    def test_sync_resumes_and_clears_pause_at_exact_expiry(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        state = self.forbid_calls(now)
+        retry_at = now + timedelta(hours=6)
+        client = Mock()
+        client.request.return_value = {"calls": []}
+        self.assertFalse(sync_calls_for_account(
+            self.account.pk, client=client, now=retry_at,
+        ))
+        self.assertEqual(client.request.call_count, 1)
+        state.refresh_from_db()
+        self.assertIsNone(getattr(state, "access_retry_at", None))
+        self.assertEqual(state.last_synced_at, retry_at)
+        self.assertEqual(state.last_error, "")
+
+    def test_dispatch_resumes_paused_account_at_exact_expiry(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        self.forbid_calls(now)
+        with (
+            patch("django.utils.timezone.now", return_value=now + timedelta(hours=6)),
+            patch("calls.tasks.sync_calls_for_account_task.delay") as enqueue,
+        ):
+            result = enqueue_calls_sync_task()
+        enqueue.assert_called_once_with(self.account.pk)
+        self.assertEqual(result, {"queued": 1, "failed": 0})
+
+    def test_unauthorized_error_does_not_create_forbidden_pause(self):
+        now = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)
+        state = self.forbid_calls(now, status=401)
+        self.assertIsNone(getattr(state, "access_retry_at", None))
+        client = Mock()
+        client.request.return_value = {"calls": []}
+        sync_calls_for_account(
+            self.account.pk, client=client, now=now + timedelta(hours=1),
+        )
+        self.assertEqual(client.request.call_count, 1)
+
+    def test_time_limits_allow_cleanup_before_lease_expires(self):
+        task = sync_calls_for_account_task
+        self.assertIsInstance(task.soft_time_limit, int)
+        self.assertIsInstance(task.time_limit, int)
+        self.assertGreater(task.soft_time_limit, 0)
+        self.assertGreater(task.time_limit, task.soft_time_limit)
+        self.assertLess(task.time_limit, LEASE.total_seconds())
+
+    def test_server_error_retries_with_increasing_delay(self):
+        state = CallSyncState.objects.create(avito_account=self.account)
+        for attempt, expected_delay in ((0, 60), (1, 120), (2, 240)):
+            with self.subTest(attempt=attempt):
+                error = AvitoApiError("upstream failure", status_code=503)
+                with patch("calls.tasks.sync_calls_for_account", side_effect=error):
+                    with self.assertRaises(Retry) as caught:
+                        self.run_task(attempt)
+                self.assertEqual(caught.exception.when, expected_delay)
+                self.assertIs(caught.exception.exc, error)
+                state.refresh_from_db()
+                self.assertIn("503", state.last_error)
+
+    def test_network_timeout_and_connection_error_are_retried(self):
+        for cause in (requests.Timeout("timeout"), requests.ConnectionError("connection")):
+            with self.subTest(cause=type(cause).__name__):
+                error = AvitoApiError("network failure")
+                error.__cause__ = cause
+                with patch("calls.tasks.sync_calls_for_account", side_effect=error):
+                    with self.assertRaises(Retry) as caught:
+                        self.run_task()
+                self.assertEqual(caught.exception.when, 60)
+                self.assertIs(caught.exception.exc, error)
+
+    def test_fourth_failure_stops_retrying(self):
+        error = AvitoApiError("upstream failure", status_code=503)
+        with patch("calls.tasks.sync_calls_for_account", side_effect=error):
+            with self.assertRaises(AvitoApiError) as caught:
+                self.run_task(retries=3)
+        self.assertIs(caught.exception, error)
+
+    def test_client_errors_and_invalid_payload_are_not_retried_by_celery(self):
+        for status in (None, 400, 401, 403, 404, 429):
+            with self.subTest(status=status):
+                error = AvitoApiError("permanent failure", status_code=status)
+                with patch("calls.tasks.sync_calls_for_account", side_effect=error):
+                    with self.assertRaises(AvitoApiError) as caught:
+                        self.run_task()
+                self.assertIs(caught.exception, error)
+
+    def test_soft_timeout_releases_lease_and_records_timeout(self):
+        state = CallSyncState.objects.create(avito_account=self.account)
+        with patch("calls.services.fetch_call_window", side_effect=SoftTimeLimitExceeded):
+            with self.assertRaises(SoftTimeLimitExceeded):
+                self.run_task()
+        state.refresh_from_db()
+        self.assertIsNone(state.lease_until)
+        self.assertEqual(state.lease_token, "")
+        self.assertIsNone(state.phase)
+        self.assertIn("время", state.last_error.lower())

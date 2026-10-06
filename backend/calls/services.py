@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timedelta, timezone as dt_timezone
 from uuid import uuid4
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -10,11 +11,24 @@ from avitotask.models import AvitoAccount, AvitoListing, AvitoOAuthToken
 from avitotask.services.avito_api import AvitoApiClient, AvitoApiError
 from calls.models import Call, CallSyncState
 
+import logging
+
 HISTORY_START = datetime(2007, 1, 1, tzinfo=dt_timezone.utc)
 WINDOW = timedelta(days=89)
 PAGE_SIZE = 100
 MAX_PAGES_PER_WINDOW = 1000
 LEASE = timedelta(minutes=30)
+
+logger = logging.getLogger(__name__)
+
+INCOMPLETE_HISTORY_WARNING = (
+    "При синхронизации пропущены некорректные строки Avito. "
+    "История звонков может быть неполной."
+)
+
+
+class InvalidCallData(AvitoApiError):
+    pass
 
 
 class AudioUnavailable(Exception):
@@ -23,13 +37,16 @@ class AudioUnavailable(Exception):
 
 def _duration(value):
     if isinstance(value, bool):
-        raise AvitoApiError("Avito вернул некорректную длительность.")
+        raise InvalidCallData("Некорректная длительность звонка.")
+
     try:
         result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise AvitoApiError("Avito вернул некорректную длительность.") from exc
-    if result < 0:
-        raise AvitoApiError("Avito вернул отрицательную длительность.")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidCallData("Некорректная длительность звонка.") from exc
+
+    if not 0 <= result <= 2 ** 31 - 1:
+        raise InvalidCallData("Длительность звонка вне допустимого диапазона.")
+
     return result
 
 
@@ -44,36 +61,80 @@ def normalize_phone(value):
     return digits if 11 <= len(digits) <= 15 and not digits.startswith("0") else ""
 
 
-def upsert_call(account, item, *, existing_call=None, listing_ids=None):
+def _parse_call(item):
+    if not isinstance(item, dict):
+        raise InvalidCallData("Карточка звонка должна быть объектом.")
+
     call_id = item.get("callId")
-    if isinstance(call_id, bool) or not str(call_id).isdigit():
-        raise AvitoApiError("Avito вернул звонок без корректного callId.")
+    external_id = str(call_id)
+    if (
+            isinstance(call_id, bool)
+            or not external_id.isascii()
+            or not external_id.isdigit()
+    ):
+        raise InvalidCallData("Некорректный callId.")
 
     try:
         occurred_at = datetime.fromisoformat(
             item["callTime"].replace("Z", "+00:00")
         )
-    except (KeyError, AttributeError, ValueError) as exc:
-        raise AvitoApiError("Avito вернул некорректное время звонка.") from exc
-    if timezone.is_naive(occurred_at):
-        raise AvitoApiError("Avito вернул время звонка без часового пояса.")
+    except (KeyError, AttributeError, TypeError, ValueError) as exc:
+        raise InvalidCallData("Некорректное время звонка.") from exc
 
-    defaults = {
-        "workspace_id": account.workspace_id,
+    if timezone.is_naive(occurred_at):
+        raise InvalidCallData("Время звонка без часового пояса.")
+
+    buyer_phone = item.get("buyerPhone")
+    if buyer_phone is None:
+        buyer_phone = ""
+
+    item_id = item.get("itemId")
+    avito_item_id = str(item_id) if item_id not in (None, "") else ""
+
+    for field_name, value in (
+            ("external_id", external_id),
+            ("buyer_phone", buyer_phone),
+            ("avito_item_id", avito_item_id),
+    ):
+        max_length = Call._meta.get_field(field_name).max_length
+        if (
+                not isinstance(value, str)
+                or len(value) > max_length
+                or "\x00" in value
+        ):
+            raise InvalidCallData(f"Некорректное поле {field_name}.")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise InvalidCallData(
+                f"Некорректная кодировка поля {field_name}."
+            ) from exc
+
+    values = {
         "occurred_at": occurred_at,
-        "buyer_phone": item.get("buyerPhone") or "",
-        "normalized_phone": normalize_phone(item.get("buyerPhone")),
+        "buyer_phone": buyer_phone,
+        "normalized_phone": normalize_phone(buyer_phone),
         "talk_duration": _duration(item.get("talkDuration", 0)),
         "waiting_duration": _duration(item.get("waitingDuration", 0)),
     }
 
     if isinstance(item.get("isMissed"), bool):
-        defaults["is_missed"] = item["isMissed"]
+        values["is_missed"] = item["isMissed"]
 
-    item_id = item.get("itemId")
-    if item_id not in (None, ""):
-        item_id = str(item_id)
-        defaults["avito_item_id"] = item_id
+    if avito_item_id:
+        values["avito_item_id"] = avito_item_id
+
+    return external_id, values
+
+
+def _save_call(account, external_id, values, *, existing_call=None, listing_ids=None):
+    defaults = {
+        **values,
+        "workspace_id": account.workspace_id,
+    }
+
+    item_id = values.get("avito_item_id")
+    if item_id:
         defaults["listing_id"] = (
             listing_ids.get(item_id)
             if listing_ids is not None
@@ -95,10 +156,21 @@ def upsert_call(account, item, *, existing_call=None, listing_ids=None):
 
     call, _ = Call.objects.update_or_create(
         avito_account=account,
-        external_id=str(call_id),
+        external_id=external_id,
         defaults=defaults,
     )
     return call
+
+
+def upsert_call(account, item, *, existing_call=None, listing_ids=None):
+    external_id, values = _parse_call(item)
+    return _save_call(
+        account,
+        external_id,
+        values,
+        existing_call=existing_call,
+        listing_ids=listing_ids,
+    )
 
 
 def classify_account_history(account, state, lease_token, heartbeat):
@@ -219,6 +291,7 @@ def classify_changed_phones(account, phones):
 
 
 def fetch_call_window(account, token, start, end, client, heartbeat=None, *, classify=False):
+    skipped_rows = 0
     for page in range(MAX_PAGES_PER_WINDOW):
         if heartbeat:
             heartbeat()
@@ -245,9 +318,21 @@ def fetch_call_window(account, token, start, end, client, heartbeat=None, *, cla
         if not isinstance(rows, list):
             raise AvitoApiError("Avito не вернул список звонков.")
         if not rows:
-            return
-        if not all(isinstance(row, dict) for row in rows):
-            raise AvitoApiError("Avito вернул некорректную карточку звонка.")
+            return skipped_rows
+
+        parsed_rows = []
+        for index, row in enumerate(rows):
+            try:
+                parsed_rows.append(_parse_call(row))
+            except InvalidCallData as exc:
+                skipped_rows += 1
+                logger.warning(
+                    "Пропущена некорректная строка звонков: "
+                    "account_id=%s offset=%s reason=%s",
+                    account.pk,
+                    page * PAGE_SIZE + index,
+                    exc,
+                )
 
         with transaction.atomic():
             existing_calls = {
@@ -255,14 +340,16 @@ def fetch_call_window(account, token, start, end, client, heartbeat=None, *, cla
                 for call in Call.objects.select_for_update().filter(
                     workspace_id=account.workspace_id,
                     avito_account=account,
-                    external_id__in=[str(row.get("callId")) for row in rows],
+                    external_id__in=[
+                        external_id for external_id, values in parsed_rows
+                    ],
                 )
             }
 
             item_ids = {
-                str(row["itemId"])
-                for row in rows
-                if row.get("itemId") not in (None, "")
+                values["avito_item_id"]
+                for external_id, values in parsed_rows
+                if values.get("avito_item_id")
             }
             listing_ids = dict(
                 AvitoListing.objects.filter(
@@ -273,11 +360,12 @@ def fetch_call_window(account, token, start, end, client, heartbeat=None, *, cla
             )
 
             affected_phones = set()
-            for row in rows:
-                old = existing_calls.get(str(row.get("callId")))
-                call = upsert_call(
+            for external_id, values in parsed_rows:
+                old = existing_calls.get(external_id)
+                call = _save_call(
                     account,
-                    row,
+                    external_id,
+                    values,
                     existing_call=old,
                     listing_ids=listing_ids,
                 )
@@ -324,19 +412,20 @@ def fetch_call_window(account, token, start, end, client, heartbeat=None, *, cla
                 classify_changed_phones(account, affected_phones)
 
         if len(rows) < PAGE_SIZE:
-            return
+            return skipped_rows
 
     if end - start <= timedelta(seconds=1):
         raise AvitoApiError("Превышен предел страниц в минимальном периоде звонков.")
 
     middle = start + (end - start) / 2
     # Общая граница не оставляет пропусков; повторные звонки обработает upsert.
-    fetch_call_window(
+    skipped_rows += fetch_call_window(
         account, token, start, middle, client, heartbeat, classify=classify,
     )
-    fetch_call_window(
+    skipped_rows += fetch_call_window(
         account, token, middle, end, client, heartbeat, classify=classify,
     )
+    return skipped_rows
 
 
 def sync_calls_for_account(account_id, *, client=None, now=None):
@@ -361,10 +450,13 @@ def sync_calls_for_account(account_id, *, client=None, now=None):
     lease_token = uuid4().hex
     claimed = CallSyncState.objects.filter(pk=state.pk).filter(
         Q(lease_until__isnull=True) | Q(lease_until__lte=timezone.now())
+    ).filter(
+        Q(access_retry_at__isnull=True) | Q(access_retry_at__lte=now)
     ).update(
         lease_token=lease_token,
         lease_until=timezone.now() + LEASE,
         phase=CallSyncState.Phase.SYNCING,
+        access_retry_at=None,
     )
     if not claimed:
         return False
@@ -387,13 +479,21 @@ def sync_calls_for_account(account_id, *, client=None, now=None):
         backfill_upper_bound = recent_from
         while recent_from < now:
             recent_until = min(now, recent_from + WINDOW)
-            fetch_call_window(
+            skipped_rows = fetch_call_window(
                 account, token, recent_from, recent_until, client, heartbeat,
                 classify=state.classification_complete,
             )
+            state.has_invalid_calls = state.has_invalid_calls or skipped_rows > 0
+
             CallSyncState.objects.filter(
                 pk=state.pk, lease_token=lease_token,
-            ).update(last_synced_at=recent_until, last_error="")
+            ).update(
+                last_synced_at=recent_until,
+                has_invalid_calls=state.has_invalid_calls,
+                last_error=(
+                    INCOMPLETE_HISTORY_WARNING if state.has_invalid_calls else ""
+                ),
+            )
             recent_from = recent_until
 
         before = state.backfill_before
@@ -409,9 +509,11 @@ def sync_calls_for_account(account_id, *, client=None, now=None):
                 break
 
             start = max(HISTORY_START, before - WINDOW)
-            fetch_call_window(
+            skipped_rows = fetch_call_window(
                 account, token, start, before, client, heartbeat,
             )
+            state.has_invalid_calls = state.has_invalid_calls or skipped_rows > 0
+
             before = start
             complete = before <= HISTORY_START
             CallSyncState.objects.filter(
@@ -419,7 +521,10 @@ def sync_calls_for_account(account_id, *, client=None, now=None):
             ).update(
                 backfill_before=before,
                 backfill_complete=complete,
-                last_error="",
+                has_invalid_calls=state.has_invalid_calls,
+                last_error=(
+                    INCOMPLETE_HISTORY_WARNING if state.has_invalid_calls else ""
+                ),
             )
 
         if complete and not state.classification_complete:
@@ -431,6 +536,16 @@ def sync_calls_for_account(account_id, *, client=None, now=None):
             classify_account_history(account, state, lease_token, heartbeat)
 
         return not complete
+    except AvitoApiError as exc:
+        if exc.status_code == 403:
+            CallSyncState.objects.filter(
+                pk=state.pk, lease_token=lease_token,
+            ).update(
+                access_retry_at=timezone.now() + timedelta(
+                    hours=settings.AVITO_CALLS_FORBIDDEN_RETRY_HOURS,
+                ),
+            )
+        raise
     finally:
         CallSyncState.objects.filter(
             pk=state.pk, lease_token=lease_token,

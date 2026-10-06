@@ -2,8 +2,21 @@ import {useEffect, useRef, useState} from "react";
 import axios from "axios";
 import {useQueries, useQuery, useQueryClient} from "@tanstack/react-query";
 import {
-    Alert, Button, DatePicker, Divider, Empty, Input, Result, Select, Slider, Spin,
-    Space, Table, Tag, Typography, message,
+    Alert,
+    Button,
+    DatePicker,
+    Divider,
+    Empty,
+    Input,
+    Result,
+    Select,
+    Slider,
+    Spin,
+    Space,
+    Table,
+    Tag,
+    Typography,
+    message,
 } from "antd";
 import type {TableProps} from "antd";
 import dayjs from "dayjs";
@@ -13,18 +26,27 @@ import isoWeek from "dayjs/plugin/isoWeek";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
 import ruDatePickerLocale from "antd/es/date-picker/locale/ru_RU";
-
+import {CallReportEditor} from "../../features/call-report/ui/CallReportEditor.tsx";
 import {
-    AudioOutlined, CaretRightOutlined, CloseOutlined,
-    PauseOutlined, SoundOutlined,
+    AudioOutlined,
+    CaretRightOutlined,
+    CloseOutlined,
+    CopyOutlined,
+    EditOutlined,
+    FileTextOutlined,
+    PauseOutlined,
+    SoundOutlined,
 } from "@ant-design/icons";
-
 import {useAvitoProjectsQuery} from "../../features/avito";
 import {useCurrentWorkspace} from "../../features/workspace/model/useCurrentWorkspace";
 import {
-    getCallAudio, getCalls, getCallsSyncStatus,
+    getCallAudio,
+    getCalls,
+    getCallsSyncStatus,
     type CallRecord,
 } from "../../shared/api/calls";
+
+import {DailyCallReport} from "../../features/call-report/ui/DailyCallReport";
 
 import styles from "./CallsPage.module.scss";
 
@@ -42,10 +64,33 @@ function formatSeconds(seconds: number): string {
 function formatPhone(value: string): string {
     const phone = value.trim();
     if (!phone) return "Неизвестно";
-    const digits = phone.replace(/\D/g, "");
-    return /^\+?[\d\s()-]+$/.test(phone) && digits.length >= 10
-        ? `+${digits}`
-        : phone;
+    if (!/^\+?[\d\s()-]+$/.test(phone)) return phone;
+
+    let digits = phone.replace(/\D/g, "");
+
+    if (!phone.startsWith("+")) {
+        if (digits.length === 10) {
+            digits = `7${digits}`;
+        } else if (/^8\d{10}$/.test(digits)) {
+            digits = `7${digits.slice(1)}`;
+        }
+    }
+
+    const match = digits.match(/^7(\d{3})(\d{3})(\d{2})(\d{2})$/);
+    return match
+        ? `+7 (${match[1]}) ${match[2]}-${match[3]}-${match[4]}`
+        : digits.length >= 10
+            ? `+${digits}`
+            : phone;
+}
+
+async function copyPhone(phone: string): Promise<void> {
+    try {
+        await navigator.clipboard.writeText(phone);
+        message.success("Номер скопирован");
+    } catch {
+        message.error("Не удалось скопировать номер.");
+    }
 }
 
 interface LoadedAudio {
@@ -61,58 +106,123 @@ interface WeekCallsProps {
     accountId: number;
     search: string;
     columns: TableProps<CallRecord>["columns"];
+    activeCallId: number | null;
+    reportCallId: number | null;
+    onCloseReport: () => void;
 }
 
-function WeekCalls({days, workspaceId, accountId, search, columns}: WeekCallsProps) {
+function WeekCalls({
+                       days,
+                       workspaceId,
+                       accountId,
+                       search,
+                       columns,
+                       activeCallId,
+                       reportCallId,
+                       onCloseReport,
+                   }: WeekCallsProps) {
     const [pages, setPages] = useState<Record<string, number>>({});
     const dates = days.map((day) => day.format("YYYY-MM-DD"));
     const queries = useQueries({
         queries: dates.map((date) => ({
-            queryKey: ["calls", workspaceId, accountId, date, search, pages[date] ?? 1],
-            queryFn: ({signal}: {signal: AbortSignal}) => getCalls({
+            queryKey: [
+                "calls",
                 workspaceId,
-                avitoAccountId: accountId,
+                accountId,
                 date,
-                page: pages[date] ?? 1,
-                pageSize: CALLS_PAGE_SIZE,
-                search: search || undefined,
-                signal,
-            }),
+                search,
+                pages[date] ?? 1,
+            ],
+            queryFn: ({signal}: { signal: AbortSignal }) =>
+                getCalls({
+                    workspaceId,
+                    avitoAccountId: accountId,
+                    date,
+                    page: pages[date] ?? 1,
+                    pageSize: CALLS_PAGE_SIZE,
+                    search: search || undefined,
+                    signal,
+                }),
         })),
     });
-    const visibleDays = days.map((day, index) => ({
-        day,
-        date: dates[index],
-        query: queries[index],
-    })).filter(({query}) => !search || (query.data?.count ?? 0) > 0);
+    const visibleDays = days
+        .map((day, index) => ({
+            day,
+            date: dates[index],
+            query: queries[index],
+        }))
+        .filter(({query}) => !search || (query.data?.count ?? 0) > 0);
 
     return (
         <>
             {queries.some((query) => query.isError) && (
-                <Alert type="error" showIcon message="Не удалось загрузить звонки"
-                       style={{marginBottom: 16}}/>
+                <Alert
+                    type="error"
+                    showIcon
+                    message="Не удалось загрузить звонки"
+                    style={{marginBottom: 16}}
+                />
             )}
-            {queries.every((query) => query.isPending) && (
+            {queries.length > 0 && queries.every((query) => query.isPending) && (
                 <Spin aria-label="Загрузка звонков"/>
             )}
-            {search && queries.every((query) => query.isSuccess)
-                && visibleDays.length === 0 && (
+            {search &&
+                queries.every((query) => query.isSuccess) &&
+                visibleDays.length === 0 && (
                     <Empty description="По выбранной неделе ничего не найдено"/>
                 )}
             {visibleDays.map(({day, date, query}, index) => (
                 <section key={date} className={styles.daySection}>
-                    <Divider titlePlacement="left">
-                        {day.format("D MMMM YYYY [г.], ") +
-                            day.format("dddd").replace(
-                                /^./u,
-                                (letter) => letter.toLocaleUpperCase("ru-RU"),
+                    <DailyCallReport
+                        workspaceId={workspaceId}
+                        accountId={accountId}
+                        date={date}
+                        dateLabel={day.format("D MMMM")}
+                        heading={
+                            <Divider titlePlacement="left">
+                                <Space size={8}>
+                  <span>
+                    {day.format("D MMMM YYYY [г.], ") +
+                        day
+                            .format("dddd")
+                            .replace(/^./u, (letter) =>
+                                letter.toLocaleUpperCase("ru-RU"),
                             )}
-                    </Divider>
+                  </span>
+
+                                    {query.data && (
+                                        <Tag
+                                            color="blue"
+                                            aria-label={`Количество звонков за ${day.format("D MMMM")}`}>
+                                            Всего звонков: {query.data.count}
+                                        </Tag>
+                                    )}
+                                </Space>
+                            </Divider>
+                        }
+                    />
                     <Table<CallRecord>
                         bordered
                         rowKey="id"
+                        rowClassName={(call) =>
+                            call.id === activeCallId ? styles.activeRow : ""
+                        }
                         size="medium"
                         columns={columns}
+                        expandable={{
+                            showExpandColumn: false,
+                            expandedRowKeys: reportCallId === null ? [] : [reportCallId],
+                            rowExpandable: (call) => call.id === reportCallId,
+                            expandedRowRender: (call) => (
+                                <CallReportEditor
+                                    key={`${workspaceId}:${call.id}`}
+                                    call={call}
+                                    workspaceId={workspaceId}
+                                    accountId={accountId}
+                                    onClose={onCloseReport}
+                                />
+                            ),
+                        }}
                         tableLayout="fixed"
                         dataSource={query.data?.results ?? []}
                         loading={query.isFetching}
@@ -123,9 +233,11 @@ function WeekCalls({days, workspaceId, accountId, search, columns}: WeekCallsPro
                             total: query.data?.count ?? 0,
                             showSizeChanger: false,
                             hideOnSinglePage: true,
-                            onChange: (page) => setPages((current) => ({
-                                ...current, [date]: page,
-                            })),
+                            onChange: (page) =>
+                                setPages((current) => ({
+                                    ...current,
+                                    [date]: page,
+                                })),
                         }}
                         locale={{emptyText: "Нет доступных записей"}}
                     />
@@ -135,14 +247,20 @@ function WeekCalls({days, workspaceId, accountId, search, columns}: WeekCallsPro
     );
 }
 
-function CallsAudioPlayer({loadedAudio, onClose}: {
+function CallsAudioPlayer({
+                              loadedAudio,
+                              speed,
+                              onSpeedChange,
+                              onClose,
+                          }: {
     loadedAudio: LoadedAudio;
+    speed: number;
+    onSpeedChange: (speed: number) => void;
     onClose: () => void;
 }) {
     const [position, setPosition] = useState(0);
     const [duration, setDuration] = useState(0);
     const [volume, setVolume] = useState(1);
-    const [speed, setSpeed] = useState(1);
     const [playing, setPlaying] = useState(false);
     const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -163,16 +281,29 @@ function CallsAudioPlayer({loadedAudio, onClose}: {
     return (
         <>
             <div className={styles.playerSpacer} aria-hidden="true"/>
-            <div className={styles.player} role="region" aria-label="Плеер записи звонка">
+            <div
+                className={styles.player}
+                role="region"
+                aria-label="Плеер записи звонка">
                 <audio
                     ref={audioRef}
                     src={loadedAudio.url}
                     hidden
-                    onLoadedMetadata={(event) => {
+                    onLoadedMetadata={async (event) => {
                         const audio = event.currentTarget;
                         setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
                         audio.playbackRate = speed;
                         audio.volume = volume;
+
+                        try {
+                            await audio.play();
+                        } catch {
+                            if (audioRef.current === audio) {
+                                message.warning(
+                                    "Не удалось автоматически запустить аудио. Нажмите «Воспроизвести».",
+                                );
+                            }
+                        }
                     }}
                     onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
                     onPlay={() => setPlaying(true)}
@@ -195,8 +326,8 @@ function CallsAudioPlayer({loadedAudio, onClose}: {
                             .tz("Europe/Moscow")
                             .format("DD.MM.YYYY, HH:mm")}
                         {" · "}
-                        {loadedAudio.call.listing?.title
-                            || (loadedAudio.call.listing
+                        {loadedAudio.call.listing?.title ||
+                            (loadedAudio.call.listing
                                 ? `№ ${loadedAudio.call.listing.avito_id}`
                                 : "Объявление неизвестно")}
                     </Text>
@@ -235,7 +366,7 @@ function CallsAudioPlayer({loadedAudio, onClose}: {
                         value,
                     }))}
                     onChange={(value) => {
-                        setSpeed(value);
+                        onSpeedChange(value);
                         if (audioRef.current) audioRef.current.playbackRate = value;
                     }}
                 />
@@ -272,26 +403,44 @@ export function CallsPage() {
     const queryClient = useQueryClient();
     const accountsQuery = useAvitoProjectsQuery();
     const [accountId, setAccountId] = useState<number | null>(null);
-    const [week, setWeek] = useState(() => dayjs().tz("Europe/Moscow").locale("ru"));
+    const [week, setWeek] = useState(() =>
+        dayjs().tz("Europe/Moscow").locale("ru"),
+    );
     const [search, setSearch] = useState("");
     const [activeSearch, setActiveSearch] = useState("");
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [loadedAudio, setLoadedAudio] = useState<LoadedAudio | null>(null);
     const [loadingAudioId, setLoadingAudioId] = useState<number | null>(null);
-    const [unavailableAudioId, setUnavailableAudioId] = useState<number | null>(null);
+    const [unavailableAudioId, setUnavailableAudioId] = useState<number | null>(
+        null,
+    );
     const audioRequestRef = useRef<AbortController | null>(null);
-    const lastSyncVersion = useRef<{ scope: string; version: string } | null>(null);
-
+    const lastSyncVersion = useRef<{ scope: string; version: string } | null>(
+        null,
+    );
+    const [reportTarget, setReportTarget] = useState<{
+        call: CallRecord;
+        workspaceId: number;
+        accountId: number;
+        weekStartKey: string;
+    } | null>(null);
     const accounts = accountsQuery.data ?? [];
     const selectedAccountId = accounts.some((account) => account.id === accountId)
         ? accountId
         : (accounts[0]?.id ?? null);
+    const todayKey = dayjs().tz("Europe/Moscow").format("YYYY-MM-DD");
     const weekStartKey = week.startOf("isoWeek").format("YYYY-MM-DD");
     const days = Array.from({length: 7}, (_, index) =>
-        dayjs(weekStartKey).add(index, "day").locale("ru"),
-    );
+        dayjs(weekStartKey)
+            .add(6 - index, "day")
+            .locale("ru"),
+    ).filter((day) => day.format("YYYY-MM-DD") <= todayKey);
 
     useEffect(() => {
-        const timeout = window.setTimeout(() => setActiveSearch(search.trim()), 250);
+        const timeout = window.setTimeout(
+            () => setActiveSearch(search.trim()),
+            250,
+        );
         return () => window.clearTimeout(timeout);
     }, [search]);
 
@@ -303,15 +452,19 @@ export function CallsPage() {
             }
             return getCallsSyncStatus(currentWorkspaceId, selectedAccountId);
         },
-        enabled: canViewCalls
-            && currentWorkspaceId !== null
-            && selectedAccountId !== null,
+        enabled:
+            canViewCalls && currentWorkspaceId !== null && selectedAccountId !== null,
         refetchInterval: 60_000,
     });
 
     const syncStatus = syncStatusQuery.data;
     useEffect(() => {
-        if (!syncStatus || currentWorkspaceId === null || selectedAccountId === null) return;
+        if (
+            !syncStatus ||
+            currentWorkspaceId === null ||
+            selectedAccountId === null
+        )
+            return;
 
         const scope = `${currentWorkspaceId}:${selectedAccountId}`;
         const version = `${syncStatus.last_synced_at}:${syncStatus.backfill_complete}:${syncStatus.classification_complete}`;
@@ -322,9 +475,7 @@ export function CallsPage() {
             });
         }
         lastSyncVersion.current = {scope, version};
-    }, [
-        currentWorkspaceId, selectedAccountId, queryClient, syncStatus,
-    ]);
+    }, [currentWorkspaceId, selectedAccountId, queryClient, syncStatus]);
     const syncStatusTitle = syncStatus?.last_error
         ? "Ошибка синхронизации звонков"
         : syncStatus?.phase === "classifying"
@@ -340,6 +491,7 @@ export function CallsPage() {
                             : "Синхронизация ещё не запускалась";
 
     useEffect(() => {
+        setReportTarget(null);
         setLoadedAudio(null);
         setLoadingAudioId(null);
         setUnavailableAudioId(null);
@@ -363,13 +515,17 @@ export function CallsPage() {
 
         try {
             const blob = await getCallAudio(
-                currentWorkspaceId, call.id, controller.signal,
+                currentWorkspaceId,
+                call.id,
+                controller.signal,
             );
             if (controller.signal.aborted) return;
 
             const url = URL.createObjectURL(blob);
             controller.signal.addEventListener(
-                "abort", () => URL.revokeObjectURL(url), {once: true},
+                "abort",
+                () => URL.revokeObjectURL(url),
+                {once: true},
             );
 
             setLoadedAudio({call, url});
@@ -394,25 +550,51 @@ export function CallsPage() {
             dataIndex: "occurred_at",
             render: (value: string) =>
                 dayjs(value).tz("Europe/Moscow").format("HH:mm"),
-            width: 100
+            width: 100,
         },
         {
             title: "Номер",
             dataIndex: "buyer_phone",
-            render: (value: string) => formatPhone(value),
+            width: 220,
+            render: (value: string) => {
+                const phone = formatPhone(value);
+
+                return (
+                    <Space size={4}>
+                        <Text style={{fontWeight: "bold"}}>{phone}</Text>
+                        {value.trim() && (
+                            <Button
+                                type="text"
+                                size="small"
+                                icon={<CopyOutlined/>}
+                                aria-label="Скопировать номер"
+                                title="Скопировать номер"
+                                onClick={() => void copyPhone(phone)}
+                            />
+                        )}
+                    </Space>
+                );
+            },
         },
         {
             title: "Тип",
+            width: 150,
             dataIndex: "call_type",
             render: (value: CallRecord["call_type"]) =>
-                value === "new" ? "Новый"
-                    : value === "repeat" ? "Повторный" : "Неизвестно",
+                value === "new"
+                    ? "Новый"
+                    : value === "repeat"
+                        ? "Повторный"
+                        : "Неизвестно",
         },
         {
             title: "Длительность",
+            width: 150,
             dataIndex: "talk_duration",
             render: (seconds: number) => (
-                <Tag variant="outlined" color={seconds < 40 ? "red" : seconds <= 90 ? "blue" : "green"}>
+                <Tag
+                    variant="outlined"
+                    color={seconds < 40 ? "red" : seconds <= 90 ? "blue" : "green"}>
                     {formatSeconds(seconds)}
                 </Tag>
             ),
@@ -421,19 +603,68 @@ export function CallsPage() {
             title: "Объявление",
             dataIndex: "listing",
             render: (listing: CallRecord["listing"]) =>
-                listing ? (listing.title || `№ ${listing.avito_id}`) : "Неизвестно",
+                listing ? (
+                    <div>
+                        <div>{listing.title || "Без названия"}</div>
+                        <Text type="secondary">ID Авито: {listing.avito_id}</Text>
+                    </div>
+                ) : (
+                    "Неизвестно"
+                ),
         },
         {
-            title: "Запись",
-            render: (_, call) => unavailableAudioId === call.id
-                ? <Text type="secondary">Аудио пока недоступно</Text>
-                : <Button
-                    loading={loadingAudioId === call.id}
-                    onClick={() => void loadAudio(call)}
-                    size={"medium"}
-                >
-                    Прослушать
-                </Button>,
+            title: "Действия",
+            key: "actions",
+            width: 200,
+            render: (_, call) => {
+                const hasReport = Boolean(call.report_text);
+                const reportLabel = hasReport
+                    ? "Редактировать отчет"
+                    : "Добавить отчет";
+
+                return (
+                    <Space size={8}>
+                        {unavailableAudioId === call.id ? (
+                            <Text type="secondary">Аудио пока недоступно</Text>
+                        ) : (
+                            <Button
+                                color="blue"
+                                variant="outlined"
+                                icon={<CaretRightOutlined aria-hidden="true"/>}
+                                loading={loadingAudioId === call.id}
+                                onClick={() => void loadAudio(call)}>
+                                Послушать
+                            </Button>
+                        )}
+
+                        <Button
+                            color={hasReport ? "green" : "blue"}
+                            variant="solid"
+                            aria-label={reportLabel}
+                            title={reportLabel}
+                            icon={
+                                hasReport ? (
+                                    <EditOutlined aria-hidden="true"/>
+                                ) : (
+                                    <FileTextOutlined aria-hidden="true"/>
+                                )
+                            }
+                            onClick={() => {
+                                if (currentWorkspaceId === null || selectedAccountId === null) {
+                                    return;
+                                }
+
+                                setReportTarget({
+                                    call,
+                                    workspaceId: currentWorkspaceId,
+                                    accountId: selectedAccountId,
+                                    weekStartKey,
+                                });
+                            }}
+                        />
+                    </Space>
+                );
+            },
         },
     ];
 
@@ -497,15 +728,16 @@ export function CallsPage() {
 
             {syncStatus && (
                 <Alert
-                    type={syncStatus.last_error
-                        ? "error"
-                        : syncStatus.backfill_complete
-                        && syncStatus.classification_complete
-                        && !syncStatus.phase
-                            ? "success"
-                            : "info"}
+                    type={
+                        syncStatus.last_error
+                            ? "error"
+                            : syncStatus.backfill_complete &&
+                            syncStatus.classification_complete &&
+                            !syncStatus.phase
+                                ? "success"
+                                : "info"
+                    }
                     showIcon
-
                     title={
                         <Space size={8} wrap>
                             <span>{syncStatusTitle}</span>
@@ -540,12 +772,28 @@ export function CallsPage() {
                     accountId={selectedAccountId}
                     search={activeSearch}
                     columns={columns}
+                    activeCallId={loadedAudio?.call.id ?? null}
+                    reportCallId={
+                        reportTarget &&
+                        reportTarget.workspaceId === currentWorkspaceId &&
+                        reportTarget.accountId === selectedAccountId &&
+                        reportTarget.weekStartKey === weekStartKey
+                            ? reportTarget.call.id
+                            : null
+                    }
+                    onCloseReport={() =>
+                        setReportTarget((current) =>
+                            current === reportTarget ? null : current,
+                        )
+                    }
                 />
             )}
 
             {loadedAudio && (
                 <CallsAudioPlayer
                     loadedAudio={loadedAudio}
+                    speed={playbackSpeed}
+                    onSpeedChange={setPlaybackSpeed}
                     onClose={() => {
                         audioRequestRef.current?.abort();
                         setLoadedAudio(null);

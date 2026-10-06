@@ -9,6 +9,12 @@
   margin-bottom: 16px;
 }
 
+.daySection :global(.ant-table-tbody) > tr.activeRow > td,
+.daySection :global(.ant-table-tbody) > tr.activeRow:hover > td {
+  background: var(--ant-color-primary-bg);
+}
+
+
 .player {
   position: fixed;
   right: 0;
@@ -87,6 +93,7 @@
     margin: 0;
   }
 }
+
 
 .compactAlert {
   margin-bottom: 12px;

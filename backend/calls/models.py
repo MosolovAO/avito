@@ -27,6 +27,7 @@ class Call(models.Model):
         max_length=10, choices=Type.choices, null=True, blank=True,
     )
     avito_item_id = models.CharField(max_length=100, blank=True)
+    report_text = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -63,9 +64,12 @@ class CallSyncState(models.Model):
         max_length=16, choices=Phase.choices, null=True, blank=True,
     )
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    access_retry_at = models.DateTimeField(null=True, blank=True)
     backfill_before = models.DateTimeField(null=True, blank=True)
     backfill_complete = models.BooleanField(default=False)
     classification_complete = models.BooleanField(default=False)
     lease_until = models.DateTimeField(null=True, blank=True)
     lease_token = models.CharField(max_length=32, blank=True)
     last_error = models.TextField(blank=True)
+    has_invalid_calls = models.BooleanField(default=False)
+

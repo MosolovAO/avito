@@ -35,6 +35,24 @@ class AvitoApiClient:
         self.min_request_interval = settings.AVITO_API_MIN_REQUEST_INTERVAL_SECONDS
         self.max_retries = settings.AVITO_API_MAX_RETRIES
         self.default_retry_after = settings.AVITO_API_DEFAULT_RETRY_AFTER_SECONDS
+        self.max_retry_after = settings.AVITO_API_MAX_RETRY_AFTER_SECONDS
+
+    def _wait_before_retry(self, response):
+        retry_after = response.headers.get("Retry-After")
+
+        try:
+            delay = (
+                int(retry_after)
+                if retry_after and retry_after.isdigit()
+                else self.default_retry_after
+            )
+        except ValueError:
+            raise build_api_error(response) from None
+
+        if not 0 <= delay <= self.max_retry_after:
+            raise build_api_error(response)
+
+        time.sleep(delay)
 
     def _send_request(self, method, url, **kwargs):
         kwargs.setdefault("timeout", self.timeout)
@@ -227,25 +245,8 @@ class AvitoApiClient:
                 if attempt >= self.max_retries:
                     raise build_api_error(response)
 
-                retry_after = response.headers.get("Retry-After")
-                delay = int(retry_after) if retry_after and retry_after.isdigit() else self.default_retry_after
-                time.sleep(delay)
+                self._wait_before_retry(response)
                 continue
-
-            if (
-                    response.status_code in (401, 403)
-                    and token
-                    and retry_on_unauthorized
-            ):
-                self.refresh_access_token(token)
-
-                return self.request(
-                    method,
-                    path,
-                    token=token,
-                    retry_on_unauthorized=False,
-                    **kwargs,
-                )
 
             if response.status_code >= 400:
                 raise build_api_error(response)
@@ -278,9 +279,7 @@ class AvitoApiClient:
                 if attempt >= self.max_retries:
                     raise build_api_error(response)
 
-                retry_after = response.headers.get("Retry-After")
-                delay = int(retry_after) if retry_after and retry_after.isdigit() else self.default_retry_after
-                time.sleep(delay)
+                self._wait_before_retry(response)
                 continue
 
             elif response.status_code >= 400:

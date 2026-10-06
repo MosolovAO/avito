@@ -1,14 +1,18 @@
-import {fireEvent, render, screen, waitFor, within} from "@testing-library/react";
+import {act, cleanup, fireEvent, render, screen, waitFor, within} from "@testing-library/react";
 import {QueryClient, QueryClientProvider} from "@tanstack/react-query";
-import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
+import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi} from "vitest";
+import {ConfigProvider, message} from "antd";
 
 import {CallsPage} from "../calls/CallsPage";
 
 const state = vi.hoisted(() => ({
+    buyerPhone: "+70000000001",
     getCalls: vi.fn(),
     getCallsSyncStatus: vi.fn(),
     getCallAudio: vi.fn(),
 }));
+
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
 
 vi.mock("../../features/workspace/model/useCurrentWorkspace", () => ({
     useCurrentWorkspace: () => ({
@@ -28,15 +32,45 @@ vi.mock("../../shared/api/calls", () => ({
     getCalls: state.getCalls,
     getCallsSyncStatus: state.getCallsSyncStatus,
     getCallAudio: state.getCallAudio,
+    getCallDailyReport: vi.fn(),
+    saveCallReport: vi.fn(),
 }));
 
 describe("CallsPage", () => {
-    afterEach(() => {
+    beforeAll(() => {
+        ConfigProvider.config({
+            holderRender: (children) => (
+                <ConfigProvider theme={{token: {motion: false}}}>
+                    {children}
+                </ConfigProvider>
+            ),
+        });
+    });
+
+    afterAll(() => {
+        ConfigProvider.config({holderRender: undefined});
+    });
+
+    afterEach(async () => {
         vi.useRealTimers();
+        await act(async () => {
+            cleanup();
+            message.destroy();
+        });
+        await waitFor(() => {
+            expect(document.querySelector(".ant-message-notice")).toBeNull();
+        });
+        vi.restoreAllMocks();
+        if (originalClipboard) {
+            Object.defineProperty(navigator, "clipboard", originalClipboard);
+        } else {
+            Reflect.deleteProperty(navigator, "clipboard");
+        }
         vi.unstubAllGlobals();
     });
 
     beforeEach(() => {
+        state.buyerPhone = "+70000000001";
         state.getCalls.mockReset();
         state.getCallsSyncStatus.mockReset();
         state.getCallAudio.mockReset();
@@ -54,14 +88,86 @@ describe("CallsPage", () => {
                 id: 1,
                 external_id: "123456789",
                 occurred_at: new Date().toISOString(),
-                buyer_phone: "+70000000001",
+                buyer_phone: state.buyerPhone,
                 talk_duration: 74,
                 waiting_duration: 12,
                 is_missed: null,
+                report_text: "",
                 call_type: null,
                 listing: null,
             }] : [],
         }));
+    });
+
+    it.each([
+        ["+79991234567", "+7 (999) 123-45-67"],
+        ["8 (999) 123-45-67", "+7 (999) 123-45-67"],
+        ["9991234567", "+7 (999) 123-45-67"],
+        ["+7 (999) 123-45-67", "+7 (999) 123-45-67"],
+        ["+12025550123", "+12025550123"],
+        ["+82101234567", "+82101234567"],
+        ["", "Неизвестно"],
+    ])("formats the buyer phone %s as %s", async (phone, expected) => {
+        state.buyerPhone = phone;
+        render(
+            <QueryClientProvider client={new QueryClient({
+                defaultOptions: {queries: {retry: false}},
+            })}>
+                <CallsPage/>
+            </QueryClientProvider>,
+        );
+        const row = await screen.findByRole("row", {name: /Прослушать/});
+        const phoneCell = within(row).getAllByRole("cell")[1];
+
+        expect(phoneCell).toHaveTextContent(expected);
+        if (!phone) {
+            expect(within(phoneCell).queryByRole("button", {name: "Скопировать номер"}))
+                .not.toBeInTheDocument();
+        }
+    });
+
+    it("copies the displayed phone number with one click", async () => {
+        state.buyerPhone = "+79991234567";
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: {writeText},
+        });
+        render(
+            <QueryClientProvider client={new QueryClient({
+                defaultOptions: {queries: {retry: false}},
+            })}>
+                <CallsPage/>
+            </QueryClientProvider>,
+        );
+
+        fireEvent.click(await screen.findByRole("button", {name: "Скопировать номер"}));
+
+        await waitFor(() => expect(writeText)
+            .toHaveBeenCalledExactlyOnceWith("+7 (999) 123-45-67"));
+        expect(await screen.findByText("Номер скопирован")).toBeInTheDocument();
+        expect(state.getCallAudio).not.toHaveBeenCalled();
+    });
+
+    it("reports a clipboard failure without claiming the number was copied", async () => {
+        const writeText = vi.fn().mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+        Object.defineProperty(navigator, "clipboard", {
+            configurable: true,
+            value: {writeText},
+        });
+        render(
+            <QueryClientProvider client={new QueryClient({
+                defaultOptions: {queries: {retry: false}},
+            })}>
+                <CallsPage/>
+            </QueryClientProvider>,
+        );
+
+        fireEvent.click(await screen.findByRole("button", {name: "Скопировать номер"}));
+
+        expect(await screen.findByText("Не удалось скопировать номер."))
+            .toBeInTheDocument();
+        expect(screen.queryByText("Номер скопирован")).not.toBeInTheDocument();
     });
 
     it("shows unknown for data that Avito did not provide", async () => {
@@ -74,7 +180,7 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000001")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-01")).toBeInTheDocument();
         expect(screen.getAllByText("Неизвестно").length).toBeGreaterThanOrEqual(2);
     });
 
@@ -91,6 +197,7 @@ describe("CallsPage", () => {
                 talk_duration: 0,
                 waiting_duration: 12,
                 is_missed: true,
+                report_text: "",
                 call_type: null,
                 listing: null,
             }] : [],
@@ -124,6 +231,7 @@ describe("CallsPage", () => {
                     talk_duration: 74,
                     waiting_duration: 12,
                     is_missed: false,
+                    report_text: "",
                     call_type: "new",
                     listing: null,
                 },
@@ -135,6 +243,7 @@ describe("CallsPage", () => {
                     talk_duration: 74,
                     waiting_duration: 12,
                     is_missed: true,
+                    report_text: "",
                     call_type: "repeat",
                     listing: null,
                 },
@@ -149,7 +258,7 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000001")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-01")).toBeInTheDocument();
         expect(screen.getByRole("columnheader", {name: "Тип"})).toBeInTheDocument();
         expect(screen.getByText("Новый")).toBeInTheDocument();
         expect(screen.getByText("Повторный")).toBeInTheDocument();
@@ -175,7 +284,7 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000001")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-01")).toBeInTheDocument();
         expect(await screen.findByText("Ошибка синхронизации звонков"))
             .toBeInTheDocument();
         expect(screen.getByText("Ошибка Avito API (HTTP неизвестен)."))
@@ -209,6 +318,7 @@ describe("CallsPage", () => {
                     talk_duration: 74,
                     waiting_duration: 12,
                     is_missed: false,
+                    report_text: "",
                     call_type: "new",
                     listing: null,
                 },
@@ -220,6 +330,7 @@ describe("CallsPage", () => {
                     talk_duration: 74,
                     waiting_duration: 12,
                     is_missed: false,
+                    report_text: "",
                     call_type: "repeat",
                     listing: null,
                 }] : []),
@@ -234,15 +345,15 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000001")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-01")).toBeInTheDocument();
         expect(await screen.findByText("История звонков загружена, типы определены"))
             .toBeInTheDocument();
-        expect(screen.queryByText("+70000000002")).not.toBeInTheDocument();
+        expect(screen.queryByText("+7 (000) 000-00-02")).not.toBeInTheDocument();
 
         synced = true;
         fireEvent.click(screen.getByRole("button", {name: "Обновить"}));
 
-        expect(await screen.findByText("+70000000002")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-02")).toBeInTheDocument();
     });
 
     it("shows every day of the selected week, including days without calls", async () => {
@@ -260,6 +371,7 @@ describe("CallsPage", () => {
                 talk_duration: 10,
                 waiting_duration: 0,
                 is_missed: false,
+                report_text: "",
                 call_type: "new",
                 listing: null,
             }] : [],
@@ -273,10 +385,12 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000002")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-02")).toBeInTheDocument();
         expect(screen.getByText("7 сентября 2026 г., Понедельник")).toBeInTheDocument();
         expect(screen.getByText("8 сентября 2026 г., Вторник")).toBeInTheDocument();
         expect(screen.getByText("13 сентября 2026 г., Воскресенье")).toBeInTheDocument();
+        expect(screen.getByLabelText("Количество звонков за 7 сентября")).toHaveTextContent("0");
+        expect(screen.getByLabelText("Количество звонков за 8 сентября")).toHaveTextContent("1");
         expect(screen.getAllByText("Нет доступных записей")).toHaveLength(6);
         expect(state.getCalls.mock.calls.map(([args]) => args.date).sort()).toEqual([
             "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10",
@@ -302,6 +416,7 @@ describe("CallsPage", () => {
                     talk_duration: 10,
                     waiting_duration: 0,
                     is_missed: false,
+                    report_text: "",
                     call_type: "new",
                     listing: null,
                 })) : [],
@@ -316,12 +431,14 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+70000000001")).toBeInTheDocument();
-        expect(screen.queryByText("+70000000031")).not.toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-01")).toBeInTheDocument();
+        expect(screen.queryByText("+7 (000) 000-00-31")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Количество звонков за 8 сентября")).toHaveTextContent("31");
         expect(state.getCalls).toHaveBeenCalledTimes(7);
         fireEvent.click(screen.getByTitle("2"));
-        expect(await screen.findByText("+70000000031")).toBeInTheDocument();
-        expect(screen.queryByText("+70000000001")).not.toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-31")).toBeInTheDocument();
+        expect(screen.queryByText("+7 (000) 000-00-01")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Количество звонков за 8 сентября")).toHaveTextContent("31");
         expect(state.getCalls).toHaveBeenCalledTimes(8);
     });
 
@@ -340,6 +457,7 @@ describe("CallsPage", () => {
                 talk_duration: 10,
                 waiting_duration: 0,
                 is_missed: false,
+                report_text: "",
                 call_type: "new",
                 listing: null,
             }] : [],
@@ -362,7 +480,7 @@ describe("CallsPage", () => {
             .toBeInTheDocument();
         expect(screen.getByText("27 сентября 2026 г., Воскресенье"))
             .toBeInTheDocument();
-        expect(await screen.findByText("+70000000022")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (000) 000-00-22")).toBeInTheDocument();
         expect(screen.queryByText("7 сентября 2026 г., Понедельник"))
             .not.toBeInTheDocument();
     });
@@ -386,6 +504,7 @@ describe("CallsPage", () => {
                 talk_duration: 74,
                 waiting_duration: 12,
                 is_missed: false,
+                report_text: "",
                 call_type: "new",
                 listing: null,
             }] : [],
@@ -399,15 +518,15 @@ describe("CallsPage", () => {
             </QueryClientProvider>,
         );
 
-        expect(await screen.findByText("+79991234567")).toBeInTheDocument();
-        expect(screen.getByText("+70000000023")).toBeInTheDocument();
+        expect(await screen.findByText("+7 (999) 123-45-67")).toBeInTheDocument();
+        expect(screen.getByText("+7 (000) 000-00-23")).toBeInTheDocument();
         fireEvent.change(screen.getByPlaceholderText("Поиск по номеру или объявлению"), {
             target: {value: "+7 (999) 123-45-67"},
         });
 
         await waitFor(() => {
-            expect(screen.getByText("+79991234567")).toBeInTheDocument();
-            expect(screen.queryByText("+70000000023")).not.toBeInTheDocument();
+            expect(screen.getByText("+7 (999) 123-45-67")).toBeInTheDocument();
+            expect(screen.queryByText("+7 (000) 000-00-23")).not.toBeInTheDocument();
         });
         expect(screen.getByText("22 сентября 2026 г., Вторник"))
             .toBeInTheDocument();
@@ -439,6 +558,7 @@ describe("CallsPage", () => {
                 talk_duration: 74,
                 waiting_duration: 12,
                 is_missed: false,
+                report_text: "",
                 call_type: "new",
                 listing: {
                     id: 1,
@@ -499,7 +619,7 @@ describe("CallsPage", () => {
         const player = await screen.findByRole("region", {
             name: "Плеер записи звонка",
         });
-        expect(within(player).getByText("Разговор с +70000000001"))
+        expect(within(player).getByText("Разговор с +7 (000) 000-00-01"))
             .toBeInTheDocument();
         fireEvent.click(screen.getByLabelText("Закрыть плеер"));
 

@@ -179,6 +179,23 @@ CELERY_TASK_QUEUES = (
     ),
 )
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    },
+    "calls_audio": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.environ.get(
+            "CALLS_AUDIO_CACHE_URL", "redis://redis:6379/1",
+        ),
+        "KEY_PREFIX": "calls_audio",
+    },
+}
+
+AVITO_CALLS_AUDIO_THROTTLE_RATE = os.environ.get(
+    "AVITO_CALLS_AUDIO_THROTTLE_RATE", "30/min",
+)
+
 # CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 # CELERY_BEAT_SCHEDULE = {}
 # CELERY_ACCEPT_CONTENT = ['json']
@@ -281,6 +298,18 @@ AVITO_STATS_V2_PAGE_SIZE = int(
 )
 AVITO_STATS_HISTORY_DAYS = int(
     os.environ.get("AVITO_STATS_HISTORY_DAYS", "270")
+)
+AVITO_API_MAX_RETRY_AFTER_SECONDS = int(
+    os.environ.get("AVITO_API_MAX_RETRY_AFTER_SECONDS", "60")
+)
+AVITO_CALLS_SYNC_SOFT_TIME_LIMIT_SECONDS = int(
+    os.environ.get("AVITO_CALLS_SYNC_SOFT_TIME_LIMIT_SECONDS", "900")
+)
+AVITO_CALLS_SYNC_TIME_LIMIT_SECONDS = int(
+    os.environ.get("AVITO_CALLS_SYNC_TIME_LIMIT_SECONDS", "960")
+)
+AVITO_CALLS_FORBIDDEN_RETRY_HOURS = int(
+    os.environ.get("AVITO_CALLS_FORBIDDEN_RETRY_HOURS", "6")
 )
 
 EMAIL_BACKEND = os.environ.get(

@@ -15,7 +15,22 @@ def get_request_membership(request, required_permission=None):
 
     workspace_id = request.headers.get("X-Workspace-Id")
 
-    if workspace_id:
+    if workspace_id is not None:
+        try:
+            workspace_id = int(workspace_id)
+        except (TypeError, ValueError):
+            raise ValidationError({
+                "workspace": "X-Workspace-Id должен быть целым числом."
+            }) from None
+
+        if not 1 <= workspace_id <= 2 ** 63 - 1:
+            raise ValidationError({
+                "workspace": (
+                    "X-Workspace-Id должен быть положительным ID "
+                    "в допустимом диапазоне."
+                )
+            })
+
         membership = memberships.filter(workspace_id=workspace_id).first()
 
         if membership is None:

@@ -3,6 +3,10 @@ from zoneinfo import ZoneInfo
 from django.utils import timezone
 from asgiref.sync import sync_to_async
 
+from django.conf import settings
+from django.core.cache import caches
+from rest_framework.throttling import UserRateThrottle
+
 from django.db.models import Exists, OuterRef, Q
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -18,7 +22,8 @@ from accounts.workspace_context import get_request_workspace
 from avitotask.models import AvitoAccount, AvitoListing, AvitoOAuthToken
 from avitotask.services.avito_api import AvitoApiError
 from calls.models import Call, CallSyncState
-from calls.services import AudioUnavailable, open_call_audio
+from calls.services import AudioUnavailable, normalize_phone, open_call_audio
+from calls.reports import build_daily_call_report
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 
@@ -35,14 +40,22 @@ class CallSerializer(serializers.ModelSerializer):
     class Meta:
         model = Call
         fields = [
-            "id", "external_id", "occurred_at", "buyer_phone",
-            "talk_duration", "waiting_duration", "is_missed",
-            "call_type", "listing",
+            "id",
+            "external_id",
+            "occurred_at",
+            "buyer_phone",
+            "talk_duration",
+            "waiting_duration",
+            "is_missed",
+            "call_type",
+            "listing",
+            "report_text",
         ]
 
     def get_listing(self, obj):
         listing = (
-            obj.listing if obj.listing_id
+            obj.listing
+            if obj.listing_id
             else self.context.get("late_listings", {}).get(obj.avito_item_id)
         )
         if listing:
@@ -62,6 +75,78 @@ class CallSerializer(serializers.ModelSerializer):
         return None
 
 
+class CallReportSerializer(serializers.Serializer):
+    report_text = serializers.CharField(
+        max_length=20_000,
+        trim_whitespace=False,
+    )
+
+    def validate_report_text(self, value):
+        if not isinstance(self.initial_data["report_text"], str):
+            raise serializers.ValidationError(
+                "Отчет должен быть строкой.",
+            )
+        if not value.strip():
+            raise serializers.ValidationError(
+                "Введите текст отчета.",
+            )
+        return value
+
+
+class CallReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, pk):
+        workspace = get_request_workspace(
+            request,
+            required_permission=WorkspacePermission.VIEW_CALLS,
+        )
+        call = get_object_or_404(
+            Call,
+            pk=pk,
+            workspace=workspace,
+            avito_account__workspace=workspace,
+        )
+
+        serializer = CallReportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        call.report_text = serializer.validated_data["report_text"]
+        call.save(update_fields=["report_text", "updated_at"])
+
+        return Response({"report_text": call.report_text})
+
+
+class CallDailyReportQuerySerializer(serializers.Serializer):
+    avito_account_id = serializers.IntegerField(min_value=1)
+    date = serializers.DateField()
+
+
+class CallDailyReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        workspace = get_request_workspace(
+            request,
+            required_permission=WorkspacePermission.VIEW_CALLS,
+        )
+        query = CallDailyReportQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+
+        account = get_object_or_404(
+            AvitoAccount,
+            pk=query.validated_data["avito_account_id"],
+            workspace=workspace,
+        )
+
+        return Response(
+            build_daily_call_report(
+                account,
+                query.validated_data["date"],
+            )
+        )
+
+
 class CallPagination(PageNumberPagination):
     page_size = 30
     page_size_query_param = "page_size"
@@ -77,7 +162,8 @@ class CallListView(ListAPIView):
         if args and kwargs.get("many"):
             calls = args[0]
             missing_ids = {
-                call.avito_item_id for call in calls
+                call.avito_item_id
+                for call in calls
                 if not call.listing_id and call.avito_item_id
             }
             if missing_ids:
@@ -105,16 +191,22 @@ class CallListView(ListAPIView):
             workspace=workspace,
         )
 
-        calls = Call.objects.filter(
-            workspace=workspace,
-            avito_account=account,
-        ).select_related("listing").order_by("-occurred_at", "-id")
+        calls = (
+            Call.objects.filter(
+                workspace=workspace,
+                avito_account=account,
+            )
+            .select_related("listing")
+            .order_by("-occurred_at", "-id")
+        )
 
         day = query.validated_data.get("date")
         if day:
             start = datetime.combine(day, time.min, tzinfo=MOSCOW)
             end = datetime.combine(
-                day + timedelta(days=1), time.min, tzinfo=MOSCOW,
+                day + timedelta(days=1),
+                time.min,
+                tzinfo=MOSCOW,
             )
             calls = calls.filter(occurred_at__gte=start, occurred_at__lt=end)
 
@@ -138,7 +230,8 @@ class CallListView(ListAPIView):
             if all(char.isdigit() or char in "+ ()-" for char in search):
                 digits = "".join(char for char in search if char.isdigit())
                 if digits:
-                    matches |= Q(normalized_phone__contains=digits)
+                    phone = normalize_phone(search) or digits
+                    matches |= Q(normalized_phone__contains=phone)
             calls = calls.filter(matches)
 
         return calls
@@ -150,10 +243,10 @@ class _CallAudioStream:
         self.chunks = iter(upstream.iter_content(chunk_size=64 * 1024))
 
     async def __aiter__(self):
-        read_chunk = sync_to_async(next)
+        read_chunk = sync_to_async(lambda: next(self.chunks, None))
         try:
             while True:
-                chunk = await read_chunk(self.chunks, None)
+                chunk = await read_chunk()
                 if chunk is None:
                     break
                 yield chunk
@@ -164,8 +257,18 @@ class _CallAudioStream:
         self.upstream.close()
 
 
+class CallAudioThrottle(UserRateThrottle):
+    scope = "calls_audio"
+
+    def __init__(self):
+        self.rate = settings.AVITO_CALLS_AUDIO_THROTTLE_RATE
+        self.cache = caches["calls_audio"]
+        super().__init__()
+
+
 class CallAudioView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [CallAudioThrottle]
 
     def get(self, request, pk):
         workspace = get_request_workspace(
@@ -202,17 +305,13 @@ class CallAudioView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        def chunks():
-            try:
-                yield from upstream.iter_content(chunk_size=64 * 1024)
-            finally:
-                upstream.close()
-
         response = StreamingHttpResponse(
-            _CallAudioStream(upstream), content_type="audio/mpeg",
+            _CallAudioStream(upstream),
+            content_type=upstream.headers["Content-Type"],
         )
         length = upstream.headers.get("Content-Length")
-        if length and length.isdigit():
+        encoding = upstream.headers.get("Content-Encoding", "").strip().lower()
+        if encoding in ("", "identity") and length and length.isdigit():
             response["Content-Length"] = length
         response["Cache-Control"] = "private, no-store"
         response["X-Content-Type-Options"] = "nosniff"
@@ -237,20 +336,22 @@ class CallSyncStatusView(APIView):
         state = CallSyncState.objects.filter(avito_account=account).first()
 
         active = bool(
-            state and state.lease_until
-            and state.lease_until > timezone.now()
+            state and state.lease_until and state.lease_until > timezone.now()
         )
 
-        return Response({
-            "last_synced_at": (
-                state.last_synced_at.isoformat()
-                if state and state.last_synced_at else None
-            ),
-            "backfill_complete": state.backfill_complete if state else False,
-            "classification_complete": (
-                state.classification_complete if state else False
-            ),
-            "is_syncing": active,
-            "phase": state.phase if active else None,
-            "last_error": state.last_error if state else "",
-        })
+        return Response(
+            {
+                "last_synced_at": (
+                    state.last_synced_at.isoformat()
+                    if state and state.last_synced_at
+                    else None
+                ),
+                "backfill_complete": state.backfill_complete if state else False,
+                "classification_complete": (
+                    state.classification_complete if state else False
+                ),
+                "is_syncing": active,
+                "phase": state.phase if active else None,
+                "last_error": state.last_error if state else "",
+            }
+        )
